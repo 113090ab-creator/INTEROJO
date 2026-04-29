@@ -404,51 +404,56 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
 
 def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
     st.subheader("필터")
-    r1c1, r1c2, r1c3 = st.columns([1.0, 1.2, 1.6])
-    r2c1, r2c2 = st.columns([1.2, 1.0])
+    st.caption(f"업데이트: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
+    r1c1, r1c2, r1c3, r1c4 = st.columns([1.0, 1.2, 1.8, 0.9])
     initials = ["전체"] + sorted(df["이니셜"].dropna().unique().tolist())
     customers = ["전체"] + sorted(df["거래처"].dropna().unique().tolist())
-    summary_groups = ["전체"] + sorted(df["분류별요약"].dropna().unique().tolist())
-    sheet_groups = sorted(df["시트분류"].dropna().unique().tolist())
-
     with r1c1:
         selected_initial = st.selectbox("이니셜", initials, index=0, key="flt_initial")
     with r1c2:
         selected_customer = st.selectbox("거래처", customers, index=0, key="flt_customer")
     with r1c3:
         code_query = st.text_input("품목코드 검색", value="", key="flt_code").strip()
-    with r2c1:
-        selected_summary_group = st.selectbox("분류별 요약", summary_groups, index=0, key="flt_summary_group")
-    with r2c2:
+    with r1c4:
         only_with_stock = st.checkbox("공정재고만", value=False, key="flt_only_stock")
 
-    st.markdown("**시트 분류 선택**")
-    b1, b2 = st.columns([1, 1])
-    if b1.button("시트 전체 선택", key="flt_sheet_all"):
-        for idx, _ in enumerate(sheet_groups):
-            st.session_state[f"flt_sheet_chk_{idx}"] = True
-    if b2.button("시트 전체 해제", key="flt_sheet_none"):
-        for idx, _ in enumerate(sheet_groups):
-            st.session_state[f"flt_sheet_chk_{idx}"] = False
+    sheet_sum_map = (
+        df.groupby("시트분류", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
+    )
+    summary_sum_map = (
+        df.groupby("분류별요약", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
+    )
 
-    selected_sheet_groups: list[str] = []
-    for idx, group_name in enumerate(sheet_groups):
-        checkbox_key = f"flt_sheet_chk_{idx}"
-        if checkbox_key not in st.session_state:
-            st.session_state[checkbox_key] = True
-        checked = st.checkbox(group_name, key=checkbox_key)
-        if checked:
-            selected_sheet_groups.append(group_name)
+    sheet_options = ["전체"] + list(sheet_sum_map.keys())
+    summary_options = ["전체"] + list(summary_sum_map.keys())
+    sheet_count_map = {"전체": float(df["부족수량"].sum()), **sheet_sum_map}
+    summary_count_map = {"전체": float(df["부족수량"].sum()), **summary_sum_map}
+
+    selected_sheet_option = st.pills(
+        "시트 분류",
+        options=sheet_options,
+        default="전체",
+        key="flt_sheet_pills",
+        format_func=lambda x: format_pill_label(x, sheet_count_map),
+    )
+    selected_summary_option = st.pills(
+        "분류별 요약",
+        options=summary_options,
+        default="전체",
+        key="flt_summary_pills",
+        format_func=lambda x: format_pill_label(x, summary_count_map),
+    )
 
     filtered = df.copy()
     if selected_initial != "전체":
         filtered = filtered[filtered["이니셜"] == selected_initial]
     if selected_customer != "전체":
         filtered = filtered[filtered["거래처"] == selected_customer]
-    if selected_summary_group != "전체":
-        filtered = filtered[filtered["분류별요약"] == selected_summary_group]
-    filtered = filtered[filtered["시트분류"].isin(selected_sheet_groups)]
+    if selected_sheet_option and selected_sheet_option != "전체":
+        filtered = filtered[filtered["시트분류"] == selected_sheet_option]
+    if selected_summary_option and selected_summary_option != "전체":
+        filtered = filtered[filtered["분류별요약"] == selected_summary_option]
     if code_query:
         filtered = filtered[filtered["품목코드"].str.contains(code_query, case=False, na=False)]
     if only_with_stock:
