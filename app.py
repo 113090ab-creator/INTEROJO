@@ -106,6 +106,12 @@ def map_demand_code_to_process_code(demand_code: str, process_prefix: str) -> st
     return code
 
 
+def extract_power_from_code(item_code: str) -> str:
+    code = str(item_code).strip()
+    match = re.search(r"([+-]\d{1,2}\.\d{2})", code)
+    return match.group(1) if match else "-"
+
+
 @st.cache_data(show_spinner=False)
 def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     inv_path, dem_path = find_excel_files(BASE_DIR)
@@ -149,6 +155,7 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
             "거래처": dem.iloc[:, 1].astype(str).str.strip(),
             "이니셜": dem.iloc[:, 2].astype(str).str.strip(),
             "품목코드": dem.iloc[:, 3].astype(str).str.strip(),
+            "제품명": dem.iloc[:, 4].astype(str).str.strip(),
             "납기일": leak_due_date,
             "생산수량": shortage_qty,
         }
@@ -163,10 +170,17 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     dem_df = dem_df[(dem_df["품목코드"] != "") & (dem_df["품목코드"].str.lower() != "nan")]
     dem_df = dem_df[dem_df["품목코드"].str.startswith("P")]
     dem_df = dem_df[dem_df["생산수량"] > 0]
+    dem_df["제품명"] = dem_df["제품명"].replace({"nan": "", "None": ""})
 
     grouped_demand = (
         dem_df.groupby(["이니셜", "거래처", "품목코드"], as_index=False)
-        .agg({"생산수량": "sum", "납기일": "min"})
+        .agg(
+            {
+                "생산수량": "sum",
+                "납기일": "min",
+                "제품명": lambda s: next((v for v in s if str(v).strip() and str(v).strip().lower() != "nan"), "-"),
+            }
+        )
         .rename(columns={"생산수량": "부족수량"})
     )
 
@@ -203,6 +217,7 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     result = grouped_demand.merge(code_stock, on="품목코드", how="left")
     for col in ["사출창고", "분리창고", "검사접착창고", "누수규격검사 창고", "공정재고 합계"]:
         result[col] = result[col].fillna(0)
+    result["파워"] = result["품목코드"].map(extract_power_from_code)
     result["납기일"] = pd.to_datetime(result["납기일"], errors="coerce").dt.strftime("%Y-%m-%d")
     result["납기일"] = result["납기일"].fillna("-")
 
@@ -293,6 +308,8 @@ def main() -> None:
                 "거래처",
                 "이니셜",
                 "품목코드",
+                "제품명",
+                "파워",
                 "납기일",
                 "부족수량",
                 "사출창고",
