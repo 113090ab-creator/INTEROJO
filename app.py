@@ -54,15 +54,16 @@ def normalize_process_to_warehouse(process_label: str) -> str | None:
     return None
 
 
-def extract_demand_header_info(dem_path: Path) -> tuple[dict[str, str], list[int], list[int]]:
+def extract_demand_header_info(dem_path: Path) -> tuple[dict[str, str], dict[str, int], list[int], list[int]]:
     header_rows = pd.read_excel(dem_path, sheet_name=0, header=None, nrows=2)
     if header_rows.shape[0] < 2:
-        return {}, [], []
+        return {}, {}, [], []
 
     top_row = header_rows.iloc[0]
     second_row = header_rows.iloc[1]
 
     code_map: dict[str, str] = {}
+    warehouse_qty_col_indices: dict[str, int] = {}
     qty_col_indices: list[int] = []
     total_qty_col_indices: list[int] = []
 
@@ -87,8 +88,9 @@ def extract_demand_header_info(dem_path: Path) -> tuple[dict[str, str], list[int
         match = re.search(r"\[(.*?)\]", top_label)
         extracted_code = match.group(1).strip() if match else top_label
         code_map[warehouse_name] = extracted_code
+        warehouse_qty_col_indices[warehouse_name] = idx
 
-    return code_map, qty_col_indices, total_qty_col_indices
+    return code_map, warehouse_qty_col_indices, qty_col_indices, total_qty_col_indices
 
 
 def map_demand_code_to_process_code(demand_code: str, process_prefix: str) -> str:
@@ -108,7 +110,7 @@ def map_demand_code_to_process_code(demand_code: str, process_prefix: str) -> st
 @st.cache_data(show_spinner=False)
 def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     inv_path, dem_path = find_excel_files(BASE_DIR)
-    process_code_map, qty_col_indices, total_qty_col_indices = extract_demand_header_info(dem_path)
+    process_code_map, warehouse_qty_col_indices, qty_col_indices, total_qty_col_indices = extract_demand_header_info(dem_path)
 
     inv = pd.read_excel(inv_path, sheet_name=0)
     dem = pd.read_excel(dem_path, sheet_name=0, header=1)
@@ -116,7 +118,10 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     inv.columns = [str(c).strip() for c in inv.columns]
     dem.columns = [str(c).strip() for c in dem.columns]
 
-    if total_qty_col_indices:
+    leak_qty_idx = warehouse_qty_col_indices.get("누수규격검사 창고")
+    if leak_qty_idx is not None:
+        shortage_qty = pd.to_numeric(dem.iloc[:, leak_qty_idx], errors="coerce").fillna(0)
+    elif total_qty_col_indices:
         total_qty_col = dem.columns[total_qty_col_indices[-1]]
         shortage_qty = pd.to_numeric(dem[total_qty_col], errors="coerce").fillna(0)
     else:
@@ -150,6 +155,8 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     )
     dem_df = dem_df[~is_summary]
     dem_df = dem_df[(dem_df["품목코드"] != "") & (dem_df["품목코드"].str.lower() != "nan")]
+    dem_df = dem_df[dem_df["품목코드"].str.startswith("P")]
+    dem_df = dem_df[dem_df["생산수량"] > 0]
 
     grouped_demand = (
         dem_df.groupby(["이니셜", "거래처", "품목코드"], as_index=False)["생산수량"]
@@ -252,7 +259,7 @@ def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
 
 def main() -> None:
     st.title("이니셜/거래처/품목코드 기준 제품 부족수량 현황")
-    st.caption("기준: 생산수량 = 부족수량")
+    st.caption("기준: 누수규격검사 생산수량 = 부족수량, 품목코드는 P코드만 표시")
 
     try:
         df, file_info, process_map_df = load_data()
