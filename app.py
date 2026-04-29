@@ -290,8 +290,8 @@ def main() -> None:
     st.dataframe(
         filtered[
             [
-                "이니셜",
                 "거래처",
+                "이니셜",
                 "품목코드",
                 "납기일",
                 "부족수량",
