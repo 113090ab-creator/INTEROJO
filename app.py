@@ -112,9 +112,45 @@ def extract_power_from_code(item_code: str) -> str:
     return match.group(1) if match else "-"
 
 
+def find_product_name_reference_file(base_dir: Path) -> Path | None:
+    candidates = [
+        p
+        for p in base_dir.glob("*.xlsx")
+        if not p.name.startswith("~$") and ("제품명" in p.stem and "기준" in p.stem)
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
+def load_product_name_map(base_dir: Path) -> dict[str, str]:
+    ref_path = find_product_name_reference_file(base_dir)
+    if ref_path is None:
+        return {}
+
+    ref = pd.read_excel(ref_path, sheet_name=0, usecols=[0, 1])
+    ref.columns = [str(c).strip() for c in ref.columns]
+
+    code_col = ref.columns[0]
+    name_col = ref.columns[1]
+    ref_df = ref[[code_col, name_col]].copy()
+    ref_df[code_col] = ref_df[code_col].astype(str).str.strip()
+    ref_df[name_col] = ref_df[name_col].astype(str).str.strip()
+    ref_df = ref_df[
+        ref_df[code_col].str.startswith("P")
+        & (ref_df[code_col].str.lower() != "nan")
+        & (ref_df[name_col] != "")
+        & (ref_df[name_col].str.lower() != "nan")
+    ]
+    ref_df["코드5"] = ref_df[code_col].str[:5]
+    ref_df = ref_df.drop_duplicates(subset=["코드5"], keep="first")
+    return ref_df.set_index("코드5")[name_col].to_dict()
+
+
 @st.cache_data(show_spinner=False)
 def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     inv_path, dem_path = find_excel_files(BASE_DIR)
+    product_name_map = load_product_name_map(BASE_DIR)
     process_code_map, warehouse_qty_col_indices, qty_col_indices, total_qty_col_indices = extract_demand_header_info(dem_path)
 
     inv = pd.read_excel(inv_path, sheet_name=0)
@@ -183,6 +219,10 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         )
         .rename(columns={"생산수량": "부족수량"})
     )
+    grouped_demand["코드5"] = grouped_demand["품목코드"].str[:5]
+    grouped_demand["제품명"] = grouped_demand["코드5"].map(product_name_map).fillna(grouped_demand["제품명"])
+    grouped_demand["제품명"] = grouped_demand["제품명"].replace({"": "-", "nan": "-", "None": "-"}).fillna("-")
+    grouped_demand = grouped_demand.drop(columns=["코드5"])
 
     target_inv = inv_df[inv_df["창고"].isin(TARGET_WAREHOUSES)].copy()
     stock_lookup: dict[str, dict[str, float]] = {}
