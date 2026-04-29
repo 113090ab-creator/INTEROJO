@@ -192,6 +192,59 @@ def load_sheet2_group_map(base_dir: Path) -> dict[str, str]:
     return df.set_index("코드5")["시트이름"].to_dict()
 
 
+def summarize_unique(values: pd.Series, head_count: int = 1) -> str:
+    uniq = [v for v in values.astype(str).str.strip().tolist() if v and v.lower() != "nan"]
+    # 순서를 유지한 unique
+    uniq = list(dict.fromkeys(uniq))
+    if not uniq:
+        return "-"
+    if len(uniq) <= head_count:
+        return ", ".join(uniq)
+    return f"{', '.join(uniq[:head_count])} 외 {len(uniq) - head_count}"
+
+
+def build_qcode_summary(df: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "Q코드",
+        "파워",
+        "대표 이니셜",
+        "대표 P코드",
+        "부족수량 합계",
+        "분리창고",
+        "사출창고",
+        "공정재고 합계",
+    ]
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+
+    q_df = df.copy()
+    q_df["Q코드"] = q_df["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "Q"))
+    q_df["파워"] = q_df["Q코드"].map(extract_power_from_code)
+
+    summary = (
+        q_df.groupby(["Q코드", "파워"], as_index=False)
+        .agg(
+            {
+                "이니셜": lambda s: summarize_unique(s, head_count=1),
+                "품목코드": lambda s: summarize_unique(s, head_count=1),
+                "부족수량": "sum",
+                "분리창고": "max",
+                "사출창고": "max",
+                "공정재고 합계": "max",
+            }
+        )
+        .rename(
+            columns={
+                "이니셜": "대표 이니셜",
+                "품목코드": "대표 P코드",
+                "부족수량": "부족수량 합계",
+            }
+        )
+        .sort_values(["부족수량 합계", "Q코드"], ascending=[False, True])
+    )
+    return summary[columns]
+
+
 @st.cache_data(show_spinner=False)
 def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     inv_path, dem_path = find_excel_files(BASE_DIR)
@@ -410,34 +463,50 @@ def main() -> None:
         st.stop()
 
     filtered = apply_filters(df)
+    q_summary = build_qcode_summary(filtered)
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("현황 행 수", f"{len(filtered):,}")
-    c2.metric("부족수량 합계", f"{filtered['부족수량'].sum():,.0f}")
-    c3.metric("공정재고 합계", f"{filtered['공정재고 합계'].sum():,.0f}")
+    tab_p, tab_q = st.tabs(["P코드 기준 현황", "Q코드 기준 집계"])
 
-    st.dataframe(
-        filtered[
-            [
-                "거래처",
-                "이니셜",
-                "품목코드",
-                "제품명",
-                "분류별요약",
-                "시트분류",
-                "파워",
-                "납기일",
-                "부족수량",
-                "사출창고",
-                "분리창고",
-                "검사접착창고",
-                "누수규격검사 창고",
-                "공정재고 합계",
-            ]
-        ].sort_values(["부족수량", "이니셜", "거래처"], ascending=[False, True, True]),
-        use_container_width=True,
-        height=700,
-    )
+    with tab_p:
+        c1, c2, c3 = st.columns(3)
+        c1.metric("현황 행 수", f"{len(filtered):,}")
+        c2.metric("부족수량 합계", f"{filtered['부족수량'].sum():,.0f}")
+        c3.metric("공정재고 합계", f"{filtered['공정재고 합계'].sum():,.0f}")
+
+        st.dataframe(
+            filtered[
+                [
+                    "거래처",
+                    "이니셜",
+                    "품목코드",
+                    "제품명",
+                    "분류별요약",
+                    "시트분류",
+                    "파워",
+                    "납기일",
+                    "부족수량",
+                    "사출창고",
+                    "분리창고",
+                    "검사접착창고",
+                    "누수규격검사 창고",
+                    "공정재고 합계",
+                ]
+            ].sort_values(["부족수량", "이니셜", "거래처"], ascending=[False, True, True]),
+            use_container_width=True,
+            height=700,
+        )
+
+    with tab_q:
+        q1, q2, q3 = st.columns(3)
+        q1.metric("Q코드 수", f"{len(q_summary):,}")
+        q2.metric("Q기준 부족수량 합계", f"{q_summary['부족수량 합계'].sum():,.0f}")
+        q3.metric("Q기준 공정재고 합계", f"{q_summary['공정재고 합계'].sum():,.0f}")
+
+        st.dataframe(
+            q_summary,
+            use_container_width=True,
+            height=700,
+        )
 
     # 요청사항: 파일/매핑 상세 정보는 화면에서 숨김
 
