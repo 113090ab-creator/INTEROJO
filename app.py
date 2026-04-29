@@ -118,6 +118,7 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     dem.columns = [str(c).strip() for c in dem.columns]
 
     leak_qty_idx = warehouse_qty_col_indices.get("누수규격검사 창고")
+    leak_due_idx = leak_qty_idx + 1 if leak_qty_idx is not None and (leak_qty_idx + 1) < dem.shape[1] else None
     if leak_qty_idx is not None:
         shortage_qty = pd.to_numeric(dem.iloc[:, leak_qty_idx], errors="coerce").fillna(0)
     elif total_qty_col_indices:
@@ -128,6 +129,11 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         if not qty_cols:
             raise ValueError("수요 파일에서 '생산 수량' 컬럼을 찾지 못했습니다.")
         shortage_qty = dem[qty_cols].apply(pd.to_numeric, errors="coerce").fillna(0).sum(axis=1)
+
+    if leak_due_idx is not None:
+        leak_due_date = pd.to_datetime(dem.iloc[:, leak_due_idx], errors="coerce")
+    else:
+        leak_due_date = pd.Series(pd.NaT, index=dem.index, dtype="datetime64[ns]")
 
     inv_df = pd.DataFrame(
         {
@@ -143,6 +149,7 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
             "거래처": dem.iloc[:, 1].astype(str).str.strip(),
             "이니셜": dem.iloc[:, 2].astype(str).str.strip(),
             "품목코드": dem.iloc[:, 3].astype(str).str.strip(),
+            "납기일": leak_due_date,
             "생산수량": shortage_qty,
         }
     )
@@ -158,8 +165,8 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     dem_df = dem_df[dem_df["생산수량"] > 0]
 
     grouped_demand = (
-        dem_df.groupby(["이니셜", "거래처", "품목코드"], as_index=False)["생산수량"]
-        .sum()
+        dem_df.groupby(["이니셜", "거래처", "품목코드"], as_index=False)
+        .agg({"생산수량": "sum", "납기일": "min"})
         .rename(columns={"생산수량": "부족수량"})
     )
 
@@ -196,6 +203,8 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     result = grouped_demand.merge(code_stock, on="품목코드", how="left")
     for col in ["사출창고", "분리창고", "검사접착창고", "누수규격검사 창고", "공정재고 합계"]:
         result[col] = result[col].fillna(0)
+    result["납기일"] = pd.to_datetime(result["납기일"], errors="coerce").dt.strftime("%Y-%m-%d")
+    result["납기일"] = result["납기일"].fillna("-")
 
     process_map_df = pd.DataFrame(
         {
@@ -284,6 +293,7 @@ def main() -> None:
                 "이니셜",
                 "거래처",
                 "품목코드",
+                "납기일",
                 "부족수량",
                 "사출창고",
                 "분리창고",
