@@ -203,6 +203,11 @@ def summarize_unique(values: pd.Series, head_count: int = 1) -> str:
     return f"{', '.join(uniq[:head_count])} 외 {len(uniq) - head_count}"
 
 
+def format_pill_label(option: str, value_map: dict[str, float]) -> str:
+    value = float(value_map.get(option, 0))
+    return f"{option} ({value:,.0f})"
+
+
 def build_qcode_summary(df: pd.DataFrame) -> pd.DataFrame:
     columns = [
         "Q코드",
