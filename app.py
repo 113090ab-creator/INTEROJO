@@ -112,6 +112,15 @@ def extract_power_from_code(item_code: str) -> str:
     return match.group(1) if match else "-"
 
 
+def classify_product_name_group(product_name: str) -> str:
+    name_upper = str(product_name).upper()
+    if "PIA" in name_upper:
+        return "PIA"
+    if "BELLA" in name_upper:
+        return "BELLA"
+    return "기타 해외"
+
+
 def find_product_name_reference_file(base_dir: Path) -> Path | None:
     candidates = [
         p
@@ -239,7 +248,8 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     grouped_demand["코드5"] = grouped_demand["품목코드"].str[:5]
     grouped_demand["제품명"] = grouped_demand["코드5"].map(product_name_map).fillna(grouped_demand["제품명"])
     grouped_demand["제품명"] = grouped_demand["제품명"].replace({"": "-", "nan": "-", "None": "-"}).fillna("-")
-    grouped_demand["유사제품그룹"] = grouped_demand["코드5"].map(product_group_map).fillna("기타")
+    grouped_demand["분류별요약"] = grouped_demand["코드5"].map(product_group_map).fillna("기타")
+    grouped_demand["제품명그룹"] = grouped_demand["제품명"].map(classify_product_name_group)
     grouped_demand = grouped_demand.drop(columns=["코드5"])
 
     target_inv = inv_df[inv_df["창고"].isin(TARGET_WAREHOUSES)].copy()
@@ -316,11 +326,12 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
 
 def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
     st.subheader("필터")
-    f1, f2, f3, f4, f5 = st.columns([1.1, 1.3, 1.5, 1.3, 0.9])
+    f1, f2, f3, f4, f5, f6 = st.columns([1.0, 1.2, 1.4, 1.2, 1.1, 0.8])
 
     initials = ["전체"] + sorted(df["이니셜"].dropna().unique().tolist())
     customers = ["전체"] + sorted(df["거래처"].dropna().unique().tolist())
-    groups = ["전체"] + sorted(df["유사제품그룹"].dropna().unique().tolist())
+    summary_groups = ["전체"] + sorted(df["분류별요약"].dropna().unique().tolist())
+    name_groups = ["전체"] + sorted(df["제품명그룹"].dropna().unique().tolist())
 
     with f1:
         selected_initial = st.selectbox("이니셜", initials, index=0, key="flt_initial")
@@ -329,8 +340,10 @@ def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
     with f3:
         code_query = st.text_input("품목코드 검색", value="", key="flt_code").strip()
     with f4:
-        selected_group = st.selectbox("유사제품 그룹", groups, index=0, key="flt_group")
+        selected_summary_group = st.selectbox("분류별 요약", summary_groups, index=0, key="flt_summary_group")
     with f5:
+        selected_name_group = st.selectbox("제품명 그룹", name_groups, index=0, key="flt_name_group")
+    with f6:
         only_with_stock = st.checkbox("공정재고만", value=False, key="flt_only_stock")
 
     filtered = df.copy()
@@ -338,8 +351,10 @@ def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
         filtered = filtered[filtered["이니셜"] == selected_initial]
     if selected_customer != "전체":
         filtered = filtered[filtered["거래처"] == selected_customer]
-    if selected_group != "전체":
-        filtered = filtered[filtered["유사제품그룹"] == selected_group]
+    if selected_summary_group != "전체":
+        filtered = filtered[filtered["분류별요약"] == selected_summary_group]
+    if selected_name_group != "전체":
+        filtered = filtered[filtered["제품명그룹"] == selected_name_group]
     if code_query:
         filtered = filtered[filtered["품목코드"].str.contains(code_query, case=False, na=False)]
     if only_with_stock:
@@ -372,7 +387,8 @@ def main() -> None:
                 "이니셜",
                 "품목코드",
                 "제품명",
-                "유사제품그룹",
+                "분류별요약",
+                "제품명그룹",
                 "파워",
                 "납기일",
                 "부족수량",
