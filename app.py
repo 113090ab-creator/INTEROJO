@@ -123,19 +123,28 @@ def find_product_name_reference_file(base_dir: Path) -> Path | None:
     return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
-def load_product_name_map(base_dir: Path) -> dict[str, str]:
+def load_product_reference_maps(base_dir: Path) -> tuple[dict[str, str], dict[str, str]]:
     ref_path = find_product_name_reference_file(base_dir)
     if ref_path is None:
-        return {}
+        return {}, {}
 
-    ref = pd.read_excel(ref_path, sheet_name=0, usecols=[0, 1])
+    ref = pd.read_excel(ref_path, sheet_name=0)
     ref.columns = [str(c).strip() for c in ref.columns]
 
-    code_col = ref.columns[0]
-    name_col = ref.columns[1]
-    ref_df = ref[[code_col, name_col]].copy()
+    code_col = "제품명코드" if "제품명코드" in ref.columns else ref.columns[0]
+    name_col = "제품명" if "제품명" in ref.columns else ref.columns[1]
+    group_col = "분류요약" if "분류요약" in ref.columns else None
+    if group_col is None and "판매제품군" in ref.columns:
+        group_col = "판매제품군"
+    if group_col is None and "생산제품군" in ref.columns:
+        group_col = "생산제품군"
+
+    selected_cols = [code_col, name_col] + ([group_col] if group_col is not None else [])
+    ref_df = ref[selected_cols].copy()
     ref_df[code_col] = ref_df[code_col].astype(str).str.strip()
     ref_df[name_col] = ref_df[name_col].astype(str).str.strip()
+    if group_col is not None:
+        ref_df[group_col] = ref_df[group_col].astype(str).str.strip()
     ref_df = ref_df[
         ref_df[code_col].str.startswith("P")
         & (ref_df[code_col].str.lower() != "nan")
@@ -144,13 +153,21 @@ def load_product_name_map(base_dir: Path) -> dict[str, str]:
     ]
     ref_df["코드5"] = ref_df[code_col].str[:5]
     ref_df = ref_df.drop_duplicates(subset=["코드5"], keep="first")
-    return ref_df.set_index("코드5")[name_col].to_dict()
+    name_map = ref_df.set_index("코드5")[name_col].to_dict()
+
+    if group_col is None:
+        group_map: dict[str, str] = {}
+    else:
+        group_df = ref_df[(ref_df[group_col] != "") & (ref_df[group_col].str.lower() != "nan")]
+        group_map = group_df.set_index("코드5")[group_col].to_dict()
+
+    return name_map, group_map
 
 
 @st.cache_data(show_spinner=False)
 def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     inv_path, dem_path = find_excel_files(BASE_DIR)
-    product_name_map = load_product_name_map(BASE_DIR)
+    product_name_map, product_group_map = load_product_reference_maps(BASE_DIR)
     process_code_map, warehouse_qty_col_indices, qty_col_indices, total_qty_col_indices = extract_demand_header_info(dem_path)
 
     inv = pd.read_excel(inv_path, sheet_name=0)
@@ -222,6 +239,7 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     grouped_demand["코드5"] = grouped_demand["품목코드"].str[:5]
     grouped_demand["제품명"] = grouped_demand["코드5"].map(product_name_map).fillna(grouped_demand["제품명"])
     grouped_demand["제품명"] = grouped_demand["제품명"].replace({"": "-", "nan": "-", "None": "-"}).fillna("-")
+    grouped_demand["유사제품그룹"] = grouped_demand["코드5"].map(product_group_map).fillna("기타")
     grouped_demand = grouped_demand.drop(columns=["코드5"])
 
     target_inv = inv_df[inv_df["창고"].isin(TARGET_WAREHOUSES)].copy()
@@ -298,10 +316,11 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
 
 def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
     st.subheader("필터")
-    f1, f2, f3, f4 = st.columns([1.2, 1.4, 1.6, 1.0])
+    f1, f2, f3, f4, f5 = st.columns([1.1, 1.3, 1.5, 1.3, 0.9])
 
     initials = ["전체"] + sorted(df["이니셜"].dropna().unique().tolist())
     customers = ["전체"] + sorted(df["거래처"].dropna().unique().tolist())
+    groups = ["전체"] + sorted(df["유사제품그룹"].dropna().unique().tolist())
 
     with f1:
         selected_initial = st.selectbox("이니셜", initials, index=0, key="flt_initial")
@@ -310,6 +329,8 @@ def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
     with f3:
         code_query = st.text_input("품목코드 검색", value="", key="flt_code").strip()
     with f4:
+        selected_group = st.selectbox("유사제품 그룹", groups, index=0, key="flt_group")
+    with f5:
         only_with_stock = st.checkbox("공정재고만", value=False, key="flt_only_stock")
 
     filtered = df.copy()
@@ -317,6 +338,8 @@ def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
         filtered = filtered[filtered["이니셜"] == selected_initial]
     if selected_customer != "전체":
         filtered = filtered[filtered["거래처"] == selected_customer]
+    if selected_group != "전체":
+        filtered = filtered[filtered["유사제품그룹"] == selected_group]
     if code_query:
         filtered = filtered[filtered["품목코드"].str.contains(code_query, case=False, na=False)]
     if only_with_stock:
@@ -349,6 +372,7 @@ def main() -> None:
                 "이니셜",
                 "품목코드",
                 "제품명",
+                "유사제품그룹",
                 "파워",
                 "납기일",
                 "부족수량",
