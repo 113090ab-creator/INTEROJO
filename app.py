@@ -351,7 +351,7 @@ def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
     initials = ["전체"] + sorted(df["이니셜"].dropna().unique().tolist())
     customers = ["전체"] + sorted(df["거래처"].dropna().unique().tolist())
     summary_groups = ["전체"] + sorted(df["분류별요약"].dropna().unique().tolist())
-    sheet_groups = ["전체"] + sorted(df["시트분류"].dropna().unique().tolist())
+    sheet_groups = sorted(df["시트분류"].dropna().unique().tolist())
 
     with f1:
         selected_initial = st.selectbox("이니셜", initials, index=0, key="flt_initial")
@@ -362,7 +362,12 @@ def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
     with f4:
         selected_summary_group = st.selectbox("분류별 요약", summary_groups, index=0, key="flt_summary_group")
     with f5:
-        selected_sheet_group = st.selectbox("시트 분류", sheet_groups, index=0, key="flt_sheet_group")
+        selected_sheet_groups = st.multiselect(
+            "시트 분류",
+            options=sheet_groups,
+            default=sheet_groups,
+            key="flt_sheet_groups",
+        )
     with f6:
         only_with_stock = st.checkbox("공정재고만", value=False, key="flt_only_stock")
 
@@ -373,8 +378,7 @@ def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
         filtered = filtered[filtered["거래처"] == selected_customer]
     if selected_summary_group != "전체":
         filtered = filtered[filtered["분류별요약"] == selected_summary_group]
-    if selected_sheet_group != "전체":
-        filtered = filtered[filtered["시트분류"] == selected_sheet_group]
+    filtered = filtered[filtered["시트분류"].isin(selected_sheet_groups)]
     if code_query:
         filtered = filtered[filtered["품목코드"].str.contains(code_query, case=False, na=False)]
     if only_with_stock:
