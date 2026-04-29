@@ -18,17 +18,27 @@ TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 
 
 def find_excel_files(base_dir: Path) -> tuple[Path, Path]:
-    xlsx_files = [
-        p
-        for p in base_dir.glob("*.xlsx")
-        if not p.name.startswith("~$")
-    ]
+    xlsx_files = [p for p in base_dir.glob("*.xlsx") if not p.name.startswith("~$")]
     if len(xlsx_files) < 2:
         raise FileNotFoundError("xlsx 파일 2개(재고/수요)가 필요합니다.")
 
-    # 용량이 큰 파일을 재고, 작은 파일을 수요로 가정
-    xlsx_files.sort(key=lambda p: p.stat().st_size, reverse=True)
-    return xlsx_files[0], xlsx_files[-1]
+    inventory_candidates = [p for p in xlsx_files if "재고" in p.name]
+    inv_path = max(inventory_candidates, key=lambda p: p.stat().st_size) if inventory_candidates else max(
+        xlsx_files, key=lambda p: p.stat().st_size
+    )
+
+    demand_candidates = [p for p in xlsx_files if p != inv_path]
+    demand_named = [p for p in demand_candidates if "수요" in p.name]
+    if demand_named:
+        demand_candidates = demand_named
+
+    full_process_candidates = [p for p in demand_candidates if "전공정" in p.stem]
+    if full_process_candidates:
+        dem_path = max(full_process_candidates, key=lambda p: p.stat().st_mtime)
+    else:
+        dem_path = max(demand_candidates, key=lambda p: p.stat().st_mtime)
+
+    return inv_path, dem_path
 
 
 def normalize_process_to_warehouse(process_label: str) -> str | None:
@@ -44,22 +54,30 @@ def normalize_process_to_warehouse(process_label: str) -> str | None:
     return None
 
 
-def extract_process_code_map(dem_path: Path) -> dict[str, str]:
-    # 수요 시트의 1행(공정 라벨)과 2행(컬럼명)을 함께 읽어 공정코드 매핑 추출
+def extract_demand_header_info(dem_path: Path) -> tuple[dict[str, str], list[int], list[int]]:
     header_rows = pd.read_excel(dem_path, sheet_name=0, header=None, nrows=2)
     if header_rows.shape[0] < 2:
-        return {}
+        return {}, [], []
 
     top_row = header_rows.iloc[0]
     second_row = header_rows.iloc[1]
+
     code_map: dict[str, str] = {}
+    qty_col_indices: list[int] = []
+    total_qty_col_indices: list[int] = []
 
     for idx, column_name in second_row.items():
         if "생산 수량" not in str(column_name):
             continue
 
+        idx = int(idx)
+        qty_col_indices.append(idx)
+
         top_label = str(top_row.iloc[idx]).strip()
         if not top_label or top_label.lower() == "nan":
+            continue
+        if "총합계" in top_label:
+            total_qty_col_indices.append(idx)
             continue
 
         warehouse_name = normalize_process_to_warehouse(top_label)
@@ -70,13 +88,27 @@ def extract_process_code_map(dem_path: Path) -> dict[str, str]:
         extracted_code = match.group(1).strip() if match else top_label
         code_map[warehouse_name] = extracted_code
 
-    return code_map
+    return code_map, qty_col_indices, total_qty_col_indices
+
+
+def map_demand_code_to_process_code(demand_code: str, process_prefix: str) -> str:
+    code = str(demand_code).strip()
+    if not code or code.lower() == "nan":
+        return code
+
+    # 수요코드(P...)를 사출/분리 재고코드(R.../Q...) 체계로 변환
+    letter_pattern = re.match(r"^P(\d{4})([A-Z])(.*)$", code)
+    if letter_pattern:
+        return f"{process_prefix}{letter_pattern.group(1)}{letter_pattern.group(3)}"
+    if code.startswith("P"):
+        return f"{process_prefix}{code[1:]}"
+    return code
 
 
 @st.cache_data(show_spinner=False)
 def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     inv_path, dem_path = find_excel_files(BASE_DIR)
-    process_code_map = extract_process_code_map(dem_path)
+    process_code_map, qty_col_indices, total_qty_col_indices = extract_demand_header_info(dem_path)
 
     inv = pd.read_excel(inv_path, sheet_name=0)
     dem = pd.read_excel(dem_path, sheet_name=0, header=1)
@@ -84,7 +116,15 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     inv.columns = [str(c).strip() for c in inv.columns]
     dem.columns = [str(c).strip() for c in dem.columns]
 
-    # 재고 기본 컬럼
+    if total_qty_col_indices:
+        total_qty_col = dem.columns[total_qty_col_indices[-1]]
+        shortage_qty = pd.to_numeric(dem[total_qty_col], errors="coerce").fillna(0)
+    else:
+        qty_cols = [dem.columns[i] for i in qty_col_indices]
+        if not qty_cols:
+            raise ValueError("수요 파일에서 '생산 수량' 컬럼을 찾지 못했습니다.")
+        shortage_qty = dem[qty_cols].apply(pd.to_numeric, errors="coerce").fillna(0).sum(axis=1)
+
     inv_df = pd.DataFrame(
         {
             "품목코드": inv.iloc[:, 1].astype(str).str.strip(),
@@ -94,17 +134,15 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     )
     inv_df = inv_df[(inv_df["품목코드"] != "") & (inv_df["품목코드"].str.lower() != "nan")]
 
-    # 수요 기본 컬럼
     dem_df = pd.DataFrame(
         {
             "거래처": dem.iloc[:, 1].astype(str).str.strip(),
             "이니셜": dem.iloc[:, 2].astype(str).str.strip(),
             "품목코드": dem.iloc[:, 3].astype(str).str.strip(),
-            "생산수량": pd.to_numeric(dem.iloc[:, 5], errors="coerce").fillna(0),
+            "생산수량": shortage_qty,
         }
     )
 
-    # 총합계 행 제거
     is_summary = (
         (dem_df["거래처"] == "총합계")
         | (dem_df["이니셜"] == "총합계")
@@ -113,36 +151,43 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     dem_df = dem_df[~is_summary]
     dem_df = dem_df[(dem_df["품목코드"] != "") & (dem_df["품목코드"].str.lower() != "nan")]
 
-    # 생산수량 = 부족수량 (요청사항)
     grouped_demand = (
         dem_df.groupby(["이니셜", "거래처", "품목코드"], as_index=False)["생산수량"]
         .sum()
         .rename(columns={"생산수량": "부족수량"})
     )
 
-    # 품목코드 x 공정창고 재고
     target_inv = inv_df[inv_df["창고"].isin(TARGET_WAREHOUSES)].copy()
-    inv_pivot = target_inv.pivot_table(
-        index="품목코드",
-        columns="창고",
-        values="재고량",
-        aggfunc="sum",
-        fill_value=0,
-    ).reset_index()
+    stock_lookup: dict[str, dict[str, float]] = {}
+    for raw_name, display_name in WAREHOUSE_MAP.items():
+        stock_lookup[display_name] = (
+            target_inv[target_inv["창고"] == raw_name]
+            .groupby("품목코드")["재고량"]
+            .sum()
+            .to_dict()
+        )
 
-    for raw_name in TARGET_WAREHOUSES:
-        if raw_name not in inv_pivot.columns:
-            inv_pivot[raw_name] = 0
-
-    inv_pivot = inv_pivot.rename(columns=WAREHOUSE_MAP)
-    inv_pivot["공정재고 합계"] = (
-        inv_pivot["사출창고"]
-        + inv_pivot["분리창고"]
-        + inv_pivot["검사접착창고"]
-        + inv_pivot["누수규격검사 창고"]
+    code_stock = pd.DataFrame({"품목코드": grouped_demand["품목코드"].drop_duplicates()})
+    code_stock["사출창고"] = code_stock["품목코드"].map(
+        lambda x: stock_lookup["사출창고"].get(map_demand_code_to_process_code(x, "R"), 0)
+    )
+    code_stock["분리창고"] = code_stock["품목코드"].map(
+        lambda x: stock_lookup["분리창고"].get(map_demand_code_to_process_code(x, "Q"), 0)
+    )
+    code_stock["검사접착창고"] = code_stock["품목코드"].map(
+        lambda x: stock_lookup["검사접착창고"].get(x, 0)
+    )
+    code_stock["누수규격검사 창고"] = code_stock["품목코드"].map(
+        lambda x: stock_lookup["누수규격검사 창고"].get(x, 0)
+    )
+    code_stock["공정재고 합계"] = (
+        code_stock["사출창고"]
+        + code_stock["분리창고"]
+        + code_stock["검사접착창고"]
+        + code_stock["누수규격검사 창고"]
     )
 
-    result = grouped_demand.merge(inv_pivot, on="품목코드", how="left")
+    result = grouped_demand.merge(code_stock, on="품목코드", how="left")
     for col in ["사출창고", "분리창고", "검사접착창고", "누수규격검사 창고", "공정재고 합계"]:
         result[col] = result[col].fillna(0)
 
@@ -155,16 +200,30 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
                 process_code_map.get("검사접착창고", "-"),
                 process_code_map.get("누수규격검사 창고", "-"),
             ],
+            "재고코드 매핑 규칙": [
+                "P코드 -> R코드 변환",
+                "P코드 -> Q코드 변환",
+                "P코드 그대로 사용",
+                "P코드 그대로 사용",
+            ],
+            "재고>0 품목수": [
+                int((code_stock["사출창고"] > 0).sum()),
+                int((code_stock["분리창고"] > 0).sum()),
+                int((code_stock["검사접착창고"] > 0).sum()),
+                int((code_stock["누수규격검사 창고"] > 0).sum()),
+            ],
         }
     )
 
-    return result, pd.DataFrame(
+    file_info_df = pd.DataFrame(
         {
             "재고파일": [inv_path.name],
             "수요파일": [dem_path.name],
             "행수(현황표)": [len(result)],
         }
-    ), process_map_df
+    )
+
+    return result, file_info_df, process_map_df
 
 
 def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
@@ -227,9 +286,9 @@ def main() -> None:
     st.dataframe(file_info, use_container_width=True, hide_index=True)
 
     st.subheader("수요정보 공정코드 매핑")
+    st.caption("사출/분리는 수요코드(P...)를 재고코드(R.../Q...)로 변환해 매핑합니다.")
     st.dataframe(process_map_df, use_container_width=True, hide_index=True)
 
 
 if __name__ == "__main__":
     main()
-
