@@ -211,6 +211,7 @@ def format_pill_label(option: str, value_map: dict[str, float]) -> str:
 def build_qcode_summary(df: pd.DataFrame) -> pd.DataFrame:
     columns = [
         "Q코드",
+        "Q기준 제품명",
         "파워",
         "대표 이니셜",
         "대표 P코드",
@@ -230,6 +231,7 @@ def build_qcode_summary(df: pd.DataFrame) -> pd.DataFrame:
         q_df.groupby(["Q코드", "파워"], as_index=False)
         .agg(
             {
+                "제품명": lambda s: summarize_unique(s, head_count=1),
                 "이니셜": lambda s: summarize_unique(s, head_count=1),
                 "품목코드": lambda s: summarize_unique(s, head_count=1),
                 "부족수량": "sum",
@@ -240,6 +242,7 @@ def build_qcode_summary(df: pd.DataFrame) -> pd.DataFrame:
         )
         .rename(
             columns={
+                "제품명": "Q기준 제품명",
                 "이니셜": "대표 이니셜",
                 "품목코드": "대표 P코드",
                 "부족수량": "부족수량 합계",
