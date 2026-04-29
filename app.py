@@ -112,15 +112,6 @@ def extract_power_from_code(item_code: str) -> str:
     return match.group(1) if match else "-"
 
 
-def classify_customer_group(customer_name: str) -> str:
-    name_upper = str(customer_name).upper()
-    if "PIA" in name_upper:
-        return "PIA"
-    if "BELLA" in name_upper:
-        return "BELLA"
-    return "기타 해외"
-
-
 def find_product_name_reference_file(base_dir: Path) -> Path | None:
     candidates = [
         p
@@ -173,10 +164,39 @@ def load_product_reference_maps(base_dir: Path) -> tuple[dict[str, str], dict[st
     return name_map, group_map
 
 
+def load_sheet2_group_map(base_dir: Path) -> dict[str, str]:
+    ref_path = find_product_name_reference_file(base_dir)
+    if ref_path is None:
+        return {}
+
+    sheet_names = pd.ExcelFile(ref_path).sheet_names
+    if len(sheet_names) < 2:
+        return {}
+
+    sheet2 = pd.read_excel(ref_path, sheet_name=sheet_names[1])
+    sheet2.columns = [str(c).strip() for c in sheet2.columns]
+    if "코드" not in sheet2.columns or "시트이름" not in sheet2.columns:
+        return {}
+
+    df = sheet2[["코드", "시트이름"]].copy()
+    df["코드"] = df["코드"].astype(str).str.strip()
+    df["시트이름"] = df["시트이름"].astype(str).str.strip()
+    df = df[
+        df["코드"].str.startswith("P")
+        & (df["코드"].str.lower() != "nan")
+        & (df["시트이름"] != "")
+        & (df["시트이름"].str.lower() != "nan")
+    ]
+    df["코드5"] = df["코드"].str[:5]
+    df = df.drop_duplicates(subset=["코드5"], keep="first")
+    return df.set_index("코드5")["시트이름"].to_dict()
+
+
 @st.cache_data(show_spinner=False)
 def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     inv_path, dem_path = find_excel_files(BASE_DIR)
     product_name_map, product_group_map = load_product_reference_maps(BASE_DIR)
+    sheet2_group_map = load_sheet2_group_map(BASE_DIR)
     process_code_map, warehouse_qty_col_indices, qty_col_indices, total_qty_col_indices = extract_demand_header_info(dem_path)
 
     inv = pd.read_excel(inv_path, sheet_name=0)
@@ -249,7 +269,7 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     grouped_demand["제품명"] = grouped_demand["코드5"].map(product_name_map).fillna(grouped_demand["제품명"])
     grouped_demand["제품명"] = grouped_demand["제품명"].replace({"": "-", "nan": "-", "None": "-"}).fillna("-")
     grouped_demand["분류별요약"] = grouped_demand["코드5"].map(product_group_map).fillna("기타")
-    grouped_demand["거래처그룹"] = grouped_demand["거래처"].map(classify_customer_group)
+    grouped_demand["시트분류"] = grouped_demand["코드5"].map(sheet2_group_map).fillna("기타 해외")
     grouped_demand = grouped_demand.drop(columns=["코드5"])
 
     target_inv = inv_df[inv_df["창고"].isin(TARGET_WAREHOUSES)].copy()
@@ -331,7 +351,7 @@ def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
     initials = ["전체"] + sorted(df["이니셜"].dropna().unique().tolist())
     customers = ["전체"] + sorted(df["거래처"].dropna().unique().tolist())
     summary_groups = ["전체"] + sorted(df["분류별요약"].dropna().unique().tolist())
-    customer_groups = ["전체"] + sorted(df["거래처그룹"].dropna().unique().tolist())
+    sheet_groups = ["전체"] + sorted(df["시트분류"].dropna().unique().tolist())
 
     with f1:
         selected_initial = st.selectbox("이니셜", initials, index=0, key="flt_initial")
@@ -342,7 +362,7 @@ def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
     with f4:
         selected_summary_group = st.selectbox("분류별 요약", summary_groups, index=0, key="flt_summary_group")
     with f5:
-        selected_customer_group = st.selectbox("거래처 그룹", customer_groups, index=0, key="flt_customer_group")
+        selected_sheet_group = st.selectbox("시트 분류", sheet_groups, index=0, key="flt_sheet_group")
     with f6:
         only_with_stock = st.checkbox("공정재고만", value=False, key="flt_only_stock")
 
@@ -353,8 +373,8 @@ def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
         filtered = filtered[filtered["거래처"] == selected_customer]
     if selected_summary_group != "전체":
         filtered = filtered[filtered["분류별요약"] == selected_summary_group]
-    if selected_customer_group != "전체":
-        filtered = filtered[filtered["거래처그룹"] == selected_customer_group]
+    if selected_sheet_group != "전체":
+        filtered = filtered[filtered["시트분류"] == selected_sheet_group]
     if code_query:
         filtered = filtered[filtered["품목코드"].str.contains(code_query, case=False, na=False)]
     if only_with_stock:
@@ -388,7 +408,7 @@ def main() -> None:
                 "품목코드",
                 "제품명",
                 "분류별요약",
-                "거래처그룹",
+                "시트분류",
                 "파워",
                 "납기일",
                 "부족수량",
