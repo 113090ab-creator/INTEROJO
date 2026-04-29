@@ -266,7 +266,7 @@ def main() -> None:
     st.caption("기준: 누수규격검사 생산수량 = 부족수량, 품목코드는 P코드만 표시")
 
     try:
-        df, file_info, process_map_df = load_data()
+        df, _, _ = load_data()
     except Exception as exc:
         st.error(f"데이터 로드 실패: {exc}")
         st.stop()
@@ -296,12 +296,7 @@ def main() -> None:
         height=700,
     )
 
-    st.subheader("데이터 파일 정보")
-    st.dataframe(file_info, use_container_width=True, hide_index=True)
-
-    st.subheader("수요정보 공정코드 매핑")
-    st.caption("사출/분리는 수요코드(P...)를 재고코드(R.../Q...)로 변환해 매핑합니다.")
-    st.dataframe(process_map_df, use_container_width=True, hide_index=True)
+    # 요청사항: 파일/매핑 상세 정보는 화면에서 숨김
 
 
 if __name__ == "__main__":
