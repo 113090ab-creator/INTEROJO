@@ -235,6 +235,7 @@ def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
     selected_initial = st.sidebar.selectbox("이니셜", initials, index=0)
     selected_customer = st.sidebar.selectbox("거래처", customers, index=0)
     code_query = st.sidebar.text_input("품목코드 검색", value="").strip()
+    only_with_stock = st.sidebar.checkbox("공정재고 있는 항목만", value=False)
 
     filtered = df.copy()
     if selected_initial != "전체":
@@ -243,6 +244,8 @@ def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
         filtered = filtered[filtered["거래처"] == selected_customer]
     if code_query:
         filtered = filtered[filtered["품목코드"].str.contains(code_query, case=False, na=False)]
+    if only_with_stock:
+        filtered = filtered[filtered["공정재고 합계"] > 0]
 
     return filtered
 
