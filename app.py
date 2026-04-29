@@ -346,30 +346,42 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
 
 def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
     st.subheader("필터")
-    f1, f2, f3, f4, f5, f6 = st.columns([1.0, 1.2, 1.4, 1.2, 1.1, 0.8])
+    r1c1, r1c2, r1c3 = st.columns([1.0, 1.2, 1.6])
+    r2c1, r2c2 = st.columns([1.2, 1.0])
 
     initials = ["전체"] + sorted(df["이니셜"].dropna().unique().tolist())
     customers = ["전체"] + sorted(df["거래처"].dropna().unique().tolist())
     summary_groups = ["전체"] + sorted(df["분류별요약"].dropna().unique().tolist())
     sheet_groups = sorted(df["시트분류"].dropna().unique().tolist())
 
-    with f1:
+    with r1c1:
         selected_initial = st.selectbox("이니셜", initials, index=0, key="flt_initial")
-    with f2:
+    with r1c2:
         selected_customer = st.selectbox("거래처", customers, index=0, key="flt_customer")
-    with f3:
+    with r1c3:
         code_query = st.text_input("품목코드 검색", value="", key="flt_code").strip()
-    with f4:
+    with r2c1:
         selected_summary_group = st.selectbox("분류별 요약", summary_groups, index=0, key="flt_summary_group")
-    with f5:
-        selected_sheet_groups = st.multiselect(
-            "시트 분류",
-            options=sheet_groups,
-            default=sheet_groups,
-            key="flt_sheet_groups",
-        )
-    with f6:
+    with r2c2:
         only_with_stock = st.checkbox("공정재고만", value=False, key="flt_only_stock")
+
+    st.markdown("**시트 분류 선택**")
+    b1, b2 = st.columns([1, 1])
+    if b1.button("시트 전체 선택", key="flt_sheet_all"):
+        for idx, _ in enumerate(sheet_groups):
+            st.session_state[f"flt_sheet_chk_{idx}"] = True
+    if b2.button("시트 전체 해제", key="flt_sheet_none"):
+        for idx, _ in enumerate(sheet_groups):
+            st.session_state[f"flt_sheet_chk_{idx}"] = False
+
+    selected_sheet_groups: list[str] = []
+    for idx, group_name in enumerate(sheet_groups):
+        checkbox_key = f"flt_sheet_chk_{idx}"
+        if checkbox_key not in st.session_state:
+            st.session_state[checkbox_key] = True
+        checked = st.checkbox(group_name, key=checkbox_key)
+        if checked:
+            selected_sheet_groups.append(group_name)
 
     filtered = df.copy()
     if selected_initial != "전체":
