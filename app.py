@@ -273,6 +273,50 @@ def load_sheet2_group_map(base_dir: Path) -> dict[str, str]:
     return df.set_index("코드5")["시트이름"].to_dict()
 
 
+def load_rq_code_maps(base_dir: Path) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+    ref_path = find_product_name_reference_file(base_dir)
+    if ref_path is None:
+        return {}, {}, {}
+
+    sheet_names = pd.ExcelFile(ref_path).sheet_names
+    if len(sheet_names) < 2:
+        return {}, {}, {}
+
+    sheet2 = pd.read_excel(ref_path, sheet_name=sheet_names[1])
+    sheet2.columns = [str(c).strip() for c in sheet2.columns]
+    required = {"코드", "Q코드", "R코드"}
+    if not required.issubset(sheet2.columns):
+        return {}, {}, {}
+
+    name_col = "제품명" if "제품명" in sheet2.columns else None
+
+    df = sheet2.copy()
+    for col in ["코드", "Q코드", "R코드"]:
+        df[col] = df[col].astype(str).str.strip()
+    if name_col:
+        df[name_col] = df[name_col].astype(str).str.strip()
+
+    df = df[
+        df["코드"].str.startswith("P")
+        & (df["코드"].str.lower() != "nan")
+        & (df["Q코드"].str.lower() != "nan")
+        & (df["R코드"].str.lower() != "nan")
+        & (df["Q코드"] != "")
+        & (df["R코드"] != "")
+    ]
+
+    df["코드5"] = df["코드"].str[:5]
+    df = df.drop_duplicates(subset=["코드5"], keep="first")
+
+    q_map = df.set_index("코드5")["Q코드"].to_dict()
+    r_map = df.set_index("코드5")["R코드"].to_dict()
+    if name_col:
+        r_name_map = df.set_index("코드5")[name_col].to_dict()
+    else:
+        r_name_map = {}
+    return r_map, q_map, r_name_map
+
+
 def build_data_refresh_key(base_dir: Path) -> str:
     inv_path, dem_path = find_excel_files(base_dir)
     ref_path = find_product_name_reference_file(base_dir)
@@ -355,8 +399,12 @@ def filter_with_terms_any(df: pd.DataFrame, columns: list[str], query: str) -> p
 
 def add_rq_group_columns(df: pd.DataFrame) -> pd.DataFrame:
     enriched = df.copy()
-    enriched["R코드"] = enriched["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "R"))
-    enriched["Q코드"] = enriched["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "Q"))
+    if "R코드" not in enriched.columns:
+        enriched["R코드"] = enriched["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "R"))
+    if "Q코드" not in enriched.columns:
+        enriched["Q코드"] = enriched["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "Q"))
+    if "R코드 제품명" not in enriched.columns:
+        enriched["R코드 제품명"] = enriched.get("제품명", "-")
     enriched["RQ그룹"] = enriched["R코드"].astype(str) + " | " + enriched["Q코드"].astype(str)
     return enriched
 
@@ -365,6 +413,7 @@ def build_rq_group_summary(df: pd.DataFrame) -> pd.DataFrame:
     columns = [
         "R코드",
         "Q코드",
+        "R코드 제품명",
         "P코드 수",
         "제품명 예시",
         "P코드 예시",
@@ -381,6 +430,7 @@ def build_rq_group_summary(df: pd.DataFrame) -> pd.DataFrame:
         df.groupby(["R코드", "Q코드"], as_index=False)
         .agg(
             {
+                "R코드 제품명": lambda s: summarize_unique(s, head_count=1),
                 "제품명": lambda s: summarize_unique(s, head_count=3),
                 "품목코드": lambda s: summarize_unique(s, head_count=5),
                 "부족수량": "sum",
@@ -457,6 +507,7 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
     inv_path, dem_path = find_excel_files(BASE_DIR)
     product_name_map, product_group_map = load_product_reference_maps(BASE_DIR)
     sheet2_group_map = load_sheet2_group_map(BASE_DIR)
+    r_code_map, q_code_map, r_name_map = load_rq_code_maps(BASE_DIR)
     process_code_map, warehouse_qty_col_indices, qty_col_indices, total_qty_col_indices = extract_demand_header_info(dem_path)
 
     inv = pd.read_excel(inv_path, sheet_name=0)
@@ -520,6 +571,13 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
     grouped_demand["코드5"] = grouped_demand["품목코드"].str[:5]
     grouped_demand["제품명"] = grouped_demand["코드5"].map(product_name_map).fillna(grouped_demand["제품명"])
     grouped_demand["제품명"] = grouped_demand["제품명"].replace({"": "-", "nan": "-", "None": "-"}).fillna("-")
+    grouped_demand["R코드"] = grouped_demand["코드5"].map(r_code_map)
+    grouped_demand["Q코드"] = grouped_demand["코드5"].map(q_code_map)
+    grouped_demand["R코드 제품명"] = grouped_demand["코드5"].map(r_name_map)
+    grouped_demand["R코드"] = grouped_demand["R코드"].fillna(grouped_demand["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "R")))
+    grouped_demand["Q코드"] = grouped_demand["Q코드"].fillna(grouped_demand["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "Q")))
+    grouped_demand["R코드 제품명"] = grouped_demand["R코드 제품명"].fillna(grouped_demand["제품명"])
+    grouped_demand["R코드 제품명"] = grouped_demand["R코드 제품명"].replace({"": "-", "nan": "-", "None": "-"}).fillna("-")
     grouped_demand["분류별요약"] = grouped_demand["코드5"].map(product_group_map).fillna("기타")
     grouped_demand["시트분류"] = grouped_demand["코드5"].map(sheet2_group_map).fillna("기타 해외")
     grouped_demand = grouped_demand.drop(columns=["코드5"])
@@ -615,11 +673,11 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
         only_same_rq_group = st.checkbox("동일 RQ그룹만", value=False, key="flt_only_same_rq_group")
 
     product_query = st.text_input(
-        "제품명 검색",
+        "R코드 제품명 검색",
         value="",
         key="flt_product_query",
         placeholder="예: 1-Day_58, Bella, Chai Cafe",
-        help="콤마(,)로 여러 제품명을 입력하면 OR 조건으로 검색합니다.",
+        help="콤마(,)로 여러 R코드 제품명을 입력하면 OR 조건으로 검색합니다.",
     ).strip()
 
     sheet_sum_map = (
@@ -629,13 +687,13 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
         df.groupby("분류별요약", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
     )
     product_sum_map = (
-        df.groupby("제품명", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
+        df.groupby("R코드 제품명", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
     )
 
     sheet_options = ["전체"] + list(sheet_sum_map.keys())
     summary_options = ["전체"] + list(summary_sum_map.keys())
     product_top_n = 20
-    product_options = ["전체"] + list(product_sum_map.keys())[:product_top_n]
+    product_options = ["전체"] + [p for p in list(product_sum_map.keys()) if str(p).strip() not in {"", "-", "nan", "None"}][:product_top_n]
     sheet_count_map = {"전체": float(df["부족수량"].sum()), **sheet_sum_map}
     summary_count_map = {"전체": float(df["부족수량"].sum()), **summary_sum_map}
     product_count_map = {"전체": float(df["부족수량"].sum())}
@@ -657,7 +715,7 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
         format_func=lambda x: format_pill_label(x, summary_count_map),
     )
     selected_product_option = st.pills(
-        "제품명 (상위)",
+        "R코드 제품명 (상위)",
         options=product_options,
         default="전체",
         key="flt_product_pills",
@@ -686,9 +744,9 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
         selected_rq_option = "전체"
 
     filtered = df.copy()
-    search_cols = [c for c in ["이니셜", "거래처", "품목코드", "제품명", "R코드", "Q코드"] if c in filtered.columns]
+    search_cols = [c for c in ["이니셜", "거래처", "품목코드", "제품명", "R코드 제품명", "R코드", "Q코드"] if c in filtered.columns]
     filtered = filter_with_terms_any(filtered, search_cols, unified_query)
-    filtered = filter_with_terms(filtered, "제품명", product_query)
+    filtered = filter_with_terms(filtered, "R코드 제품명", product_query)
     if exclude_safe_initial:
         filtered = filtered[~filtered["이니셜"].astype(str).str.contains("안전", na=False)]
     if selected_sheet_option and selected_sheet_option != "전체":
@@ -696,7 +754,7 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
     if selected_summary_option and selected_summary_option != "전체":
         filtered = filtered[filtered["분류별요약"] == selected_summary_option]
     if selected_product_option and selected_product_option != "전체":
-        filtered = filtered[filtered["제품명"] == selected_product_option]
+        filtered = filtered[filtered["R코드 제품명"] == selected_product_option]
     if selected_rq_option != "전체" and selected_rq_option in rq_option_map:
         r_code, q_code = rq_option_map[selected_rq_option]
         filtered = filtered[(filtered["R코드"].astype(str) == r_code) & (filtered["Q코드"].astype(str) == q_code)]
@@ -759,6 +817,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
                 "품목코드",
                 "R코드",
                 "Q코드",
+                "R코드 제품명",
                 "제품명",
                 "분류별요약",
                 "시트분류",
