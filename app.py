@@ -22,10 +22,17 @@ def find_excel_files(base_dir: Path) -> tuple[Path, Path]:
     if len(xlsx_files) < 2:
         raise FileNotFoundError("xlsx 파일 2개(재고/수요)가 필요합니다.")
 
-    inventory_candidates = [p for p in xlsx_files if "재고" in p.name]
-    inv_path = max(inventory_candidates, key=lambda p: p.stat().st_size) if inventory_candidates else max(
-        xlsx_files, key=lambda p: p.stat().st_size
-    )
+    odv_candidates = [p for p in xlsx_files if p.stem.upper().startswith("ODV_WIP")]
+    if not odv_candidates:
+        odv_candidates = [p for p in xlsx_files if "ODV" in p.stem.upper() and "WIP" in p.stem.upper()]
+
+    if odv_candidates:
+        inv_path = max(odv_candidates, key=lambda p: p.stat().st_mtime)
+    else:
+        inventory_candidates = [p for p in xlsx_files if "재고" in p.name]
+        inv_path = max(inventory_candidates, key=lambda p: p.stat().st_size) if inventory_candidates else max(
+            xlsx_files, key=lambda p: p.stat().st_size
+        )
 
     demand_candidates = [p for p in xlsx_files if p != inv_path]
     demand_named = [p for p in demand_candidates if "수요" in p.name]
@@ -39,6 +46,61 @@ def find_excel_files(base_dir: Path) -> tuple[Path, Path]:
         dem_path = max(demand_candidates, key=lambda p: p.stat().st_mtime)
 
     return inv_path, dem_path
+
+
+def pick_first_existing_column(columns: list[str], candidates: list[str]) -> str | None:
+    for col in candidates:
+        if col in columns:
+            return col
+    return None
+
+
+def canonicalize_warehouse_label(raw_label: str) -> str:
+    label = str(raw_label).strip()
+    if not label or label.lower() == "nan":
+        return ""
+
+    if label in WAREHOUSE_MAP:
+        return label
+
+    display_to_key = {display: key for key, display in WAREHOUSE_MAP.items()}
+    if label in display_to_key:
+        return display_to_key[label]
+
+    normalized = normalize_process_to_warehouse(label)
+    if normalized is None:
+        return label.replace(" ", "")
+
+    return display_to_key.get(normalized, normalized)
+
+
+def build_inventory_df(inv: pd.DataFrame) -> pd.DataFrame:
+    inv.columns = [str(c).strip() for c in inv.columns]
+    columns = inv.columns.tolist()
+
+    qty_col = pick_first_existing_column(columns, ["총 재공 수량", "WIP_QTY", "재고량"])
+    item_col = pick_first_existing_column(columns, ["제품 코드", "ITEM_ID", "제품코드", "품목코드"])
+    warehouse_col = pick_first_existing_column(columns, ["버퍼 코드", "제품위치(창고)", "PROP02", "창고"])
+
+    # Fallback for unknown layouts
+    if qty_col is None:
+        qty_col = columns[6] if len(columns) > 6 else columns[0]
+    if item_col is None:
+        item_col = columns[8] if len(columns) > 8 else (columns[1] if len(columns) > 1 else columns[0])
+    if warehouse_col is None:
+        warehouse_col = columns[10] if len(columns) > 10 else (columns[5] if len(columns) > 5 else columns[0])
+
+    inv_df = pd.DataFrame(
+        {
+            "품목코드": inv[item_col].astype(str).str.strip(),
+            "창고": inv[warehouse_col].astype(str).str.strip().map(canonicalize_warehouse_label),
+            "재고량": pd.to_numeric(inv[qty_col], errors="coerce").fillna(0),
+        }
+    )
+
+    inv_df = inv_df[(inv_df["품목코드"] != "") & (inv_df["품목코드"].str.lower() != "nan")]
+    inv_df = inv_df[(inv_df["창고"] != "") & (inv_df["창고"].str.lower() != "nan")]
+    return inv_df
 
 
 def normalize_process_to_warehouse(process_label: str) -> str | None:
@@ -263,7 +325,6 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     inv = pd.read_excel(inv_path, sheet_name=0)
     dem = pd.read_excel(dem_path, sheet_name=0, header=1)
 
-    inv.columns = [str(c).strip() for c in inv.columns]
     dem.columns = [str(c).strip() for c in dem.columns]
 
     leak_qty_idx = warehouse_qty_col_indices.get("누수규격검사 창고")
@@ -284,14 +345,7 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     else:
         leak_due_date = pd.Series(pd.NaT, index=dem.index, dtype="datetime64[ns]")
 
-    inv_df = pd.DataFrame(
-        {
-            "품목코드": inv.iloc[:, 1].astype(str).str.strip(),
-            "창고": inv.iloc[:, 5].astype(str).str.strip(),
-            "재고량": pd.to_numeric(inv.iloc[:, 0], errors="coerce").fillna(0),
-        }
-    )
-    inv_df = inv_df[(inv_df["품목코드"] != "") & (inv_df["품목코드"].str.lower() != "nan")]
+    inv_df = build_inventory_df(inv)
 
     dem_df = pd.DataFrame(
         {
