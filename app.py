@@ -57,7 +57,12 @@ def get_data_updated_at(base_dir: Path) -> str:
     except FileNotFoundError:
         return "-"
 
-    latest_path = max([inv_path, dem_path], key=lambda p: p.stat().st_mtime)
+    paths = [inv_path, dem_path]
+    ref_path = find_product_name_reference_file(base_dir)
+    if ref_path is not None:
+        paths.append(ref_path)
+
+    latest_path = max(paths, key=lambda p: p.stat().st_mtime)
     latest_dt = datetime.fromtimestamp(latest_path.stat().st_mtime, tz=DISPLAY_TZ)
     return latest_dt.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -596,18 +601,36 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
     return filtered
 
 
-def main() -> None:
-    st.title("이니셜/거래처/품목코드 기준 제품 부족수량 현황")
-    st.caption("기준: 누수규격검사 생산수량 = 부족수량, 품목코드는 P코드만 표시")
+@st.cache_data(show_spinner=False)
+def load_leadji_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    _ = refresh_key
+    ref_path = find_product_name_reference_file(BASE_DIR)
+    if ref_path is None:
+        return pd.DataFrame(), pd.DataFrame()
 
-    try:
-        refresh_key = build_data_refresh_key(BASE_DIR)
-        df, _, _ = load_data(refresh_key)
-    except Exception as exc:
-        st.error(f"데이터 로드 실패: {exc}")
-        st.stop()
+    sheet_names = pd.ExcelFile(ref_path).sheet_names
+    leadji_info_sheet = next((s for s in sheet_names if s.replace(" ", "") == "리드지정보"), None)
+    leadji_stock_sheet = next((s for s in sheet_names if s.replace(" ", "") == "리드지재고"), None)
 
-    updated_at = get_data_updated_at(BASE_DIR)
+    leadji_info = pd.read_excel(ref_path, sheet_name=leadji_info_sheet) if leadji_info_sheet else pd.DataFrame()
+    leadji_stock = pd.read_excel(ref_path, sheet_name=leadji_stock_sheet) if leadji_stock_sheet else pd.DataFrame()
+
+    if not leadji_info.empty:
+        leadji_info.columns = [str(c).strip() for c in leadji_info.columns]
+        for col in leadji_info.columns:
+            if "소요량" in col:
+                leadji_info[col] = pd.to_numeric(leadji_info[col], errors="coerce").fillna(0)
+
+    if not leadji_stock.empty:
+        leadji_stock.columns = [str(c).strip() for c in leadji_stock.columns]
+        for col in ["기초", "입고", "출고", "재고", "검사대기"]:
+            if col in leadji_stock.columns:
+                leadji_stock[col] = pd.to_numeric(leadji_stock[col], errors="coerce").fillna(0)
+
+    return leadji_info, leadji_stock
+
+
+def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
     filtered = apply_filters(df, updated_at)
     q_summary = build_qcode_summary(filtered)
 
@@ -659,7 +682,160 @@ def main() -> None:
             height=700,
         )
 
-    # 요청사항: 파일/매핑 상세 정보는 화면에서 숨김
+
+def render_leadji_dashboard(updated_at: str, leadji_info: pd.DataFrame, leadji_stock: pd.DataFrame) -> None:
+    st.subheader("리드지 현황")
+    st.caption(f"업데이트: {updated_at}")
+
+    info_tab, stock_tab = st.tabs(["리드지 정보", "리드지 재고"])
+
+    with info_tab:
+        if leadji_info.empty:
+            st.warning("리드지정보 시트를 찾지 못했습니다.")
+        else:
+            qcol, _ = st.columns([3.0, 1.0])
+            with qcol:
+                info_query = st.text_input(
+                    "통합 검색 (판매/생산/분리/B코드)",
+                    value="",
+                    key="leadji_info_query",
+                    placeholder="예: T4061, P1089, BS0054",
+                ).strip()
+
+            filtered_info = leadji_info.copy()
+            info_search_cols = [
+                c
+                for c in ["판매", "판매명", "생산", "생산명", "분리", "분리명", "B1코드", "B1코드명", "B2코드", "B2코드명", "B3코드", "B3코드명"]
+                if c in filtered_info.columns
+            ]
+            if info_search_cols:
+                filtered_info = filter_with_terms_any(filtered_info, info_search_cols, info_query)
+
+            m1, m2, m3 = st.columns(3)
+            for metric_col, metric_box, metric_name in [
+                ("판매", m1, "판매 코드 수"),
+                ("생산", m2, "생산 코드 수"),
+                ("분리", m3, "분리 코드 수"),
+            ]:
+                if metric_col in filtered_info.columns:
+                    valid = (
+                        filtered_info[metric_col]
+                        .astype(str)
+                        .str.strip()
+                        .replace({"nan": "", "None": ""})
+                    )
+                    metric_box.metric(metric_name, f"{(valid != '').sum():,}")
+                else:
+                    metric_box.metric(metric_name, "-")
+
+            info_cols = [
+                c
+                for c in [
+                    "신규분류요약",
+                    "판매",
+                    "판매명",
+                    "생산",
+                    "생산명",
+                    "분리",
+                    "분리명",
+                    "B1코드",
+                    "B1코드명",
+                    "B1소요량",
+                    "B2코드",
+                    "B2코드명",
+                    "B2소요량",
+                    "B3코드",
+                    "B3코드명",
+                    "B3소요량",
+                ]
+                if c in filtered_info.columns
+            ]
+            info_table = filtered_info[info_cols] if info_cols else filtered_info
+            st.dataframe(
+                format_numeric_columns_for_display(info_table),
+                use_container_width=True,
+                height=700,
+            )
+
+    with stock_tab:
+        if leadji_stock.empty:
+            st.warning("리드지 재고 시트를 찾지 못했습니다.")
+        else:
+            qcol, optcol = st.columns([3.0, 1.0])
+            with qcol:
+                stock_query = st.text_input(
+                    "통합 검색 (품목코드/품목명/중분류/창고)",
+                    value="",
+                    key="leadji_stock_query",
+                    placeholder="예: BS0054, 리드지, 원료창고",
+                ).strip()
+            with optcol:
+                only_positive_stock = st.checkbox("재고>0만", value=True, key="leadji_only_positive")
+
+            filtered_stock = leadji_stock.copy()
+            stock_search_cols = [c for c in ["품목코드", "품목명", "중분류", "창고", "구분"] if c in filtered_stock.columns]
+            if stock_search_cols:
+                filtered_stock = filter_with_terms_any(filtered_stock, stock_search_cols, stock_query)
+
+            if only_positive_stock and "재고" in filtered_stock.columns:
+                filtered_stock = filtered_stock[filtered_stock["재고"] > 0]
+
+            c1, c2, c3 = st.columns(3)
+            if "품목코드" in filtered_stock.columns:
+                c1.metric("재고 품목 수", f"{filtered_stock['품목코드'].astype(str).nunique():,}")
+            else:
+                c1.metric("재고 품목 수", "-")
+            c2.metric("재고 합계", f"{filtered_stock['재고'].sum():,.0f}" if "재고" in filtered_stock.columns else "-")
+            c3.metric("검사대기 합계", f"{filtered_stock['검사대기'].sum():,.0f}" if "검사대기" in filtered_stock.columns else "-")
+
+            stock_cols = [
+                c
+                for c in [
+                    "창고",
+                    "구분",
+                    "품목코드",
+                    "품목명",
+                    "규격",
+                    "대분류",
+                    "중분류",
+                    "Lot.No",
+                    "기초",
+                    "입고",
+                    "출고",
+                    "재고",
+                    "검사대기",
+                    "단위",
+                ]
+                if c in filtered_stock.columns
+            ]
+            stock_table = filtered_stock[stock_cols] if stock_cols else filtered_stock
+            st.dataframe(
+                format_numeric_columns_for_display(stock_table),
+                use_container_width=True,
+                height=700,
+            )
+
+
+def main() -> None:
+    st.title("이니셜/거래처/품목코드 기준 제품 부족수량 현황")
+    st.caption("기준: 누수규격검사 생산수량 = 부족수량, 품목코드는 P코드만 표시")
+
+    try:
+        refresh_key = build_data_refresh_key(BASE_DIR)
+        df, _, _ = load_data(refresh_key)
+        leadji_info, leadji_stock = load_leadji_data(refresh_key)
+    except Exception as exc:
+        st.error(f"데이터 로드 실패: {exc}")
+        st.stop()
+
+    updated_at = get_data_updated_at(BASE_DIR)
+    top_shortage_tab, top_leadji_tab = st.tabs(["제품 부족수량 현황", "리드지 현황"])
+
+    with top_shortage_tab:
+        render_shortage_dashboard(df, updated_at)
+
+    with top_leadji_tab:
+        render_leadji_dashboard(updated_at, leadji_info, leadji_stock)
 
 
 if __name__ == "__main__":
