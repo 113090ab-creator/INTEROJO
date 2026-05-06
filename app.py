@@ -353,6 +353,56 @@ def filter_with_terms_any(df: pd.DataFrame, columns: list[str], query: str) -> p
     return df[mask]
 
 
+def add_rq_group_columns(df: pd.DataFrame) -> pd.DataFrame:
+    enriched = df.copy()
+    enriched["R코드"] = enriched["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "R"))
+    enriched["Q코드"] = enriched["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "Q"))
+    enriched["RQ그룹"] = enriched["R코드"].astype(str) + " | " + enriched["Q코드"].astype(str)
+    return enriched
+
+
+def build_rq_group_summary(df: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "R코드",
+        "Q코드",
+        "P코드 수",
+        "P코드 예시",
+        "부족수량 합계",
+        "사출창고 합계",
+        "분리창고 합계",
+        "공정재고 합계",
+        "사출 부족수량",
+    ]
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+
+    grouped = (
+        df.groupby(["R코드", "Q코드"], as_index=False)
+        .agg(
+            {
+                "품목코드": lambda s: summarize_unique(s, head_count=5),
+                "부족수량": "sum",
+                "사출창고": "sum",
+                "분리창고": "sum",
+                "공정재고 합계": "sum",
+            }
+        )
+        .rename(
+            columns={
+                "품목코드": "P코드 예시",
+                "부족수량": "부족수량 합계",
+                "사출창고": "사출창고 합계",
+                "분리창고": "분리창고 합계",
+            }
+        )
+    )
+    p_count = df.groupby(["R코드", "Q코드"])["품목코드"].nunique().rename("P코드 수").reset_index()
+    grouped = grouped.merge(p_count, on=["R코드", "Q코드"], how="left")
+    grouped["사출 부족수량"] = grouped["부족수량 합계"] - grouped["사출창고 합계"]
+    grouped = grouped.sort_values(["부족수량 합계", "P코드 수"], ascending=[False, False])
+    return grouped[columns]
+
+
 def build_qcode_summary(df: pd.DataFrame) -> pd.DataFrame:
     columns = [
         "Q코드",
@@ -547,10 +597,10 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
     st.subheader("필터")
     st.caption(f"업데이트: {updated_at}")
 
-    r1c1, r1c2 = st.columns([3.0, 0.9])
+    r1c1, r1c2 = st.columns([3.0, 1.2])
     with r1c1:
         unified_query = st.text_input(
-            "통합 검색 (이니셜/거래처/품목코드)",
+            "통합 검색 (이니셜/거래처/품목코드/R코드/Q코드)",
             value="",
             key="flt_unified_query",
             placeholder="예: PIA, 국내, P1234",
@@ -559,6 +609,7 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
     with r1c2:
         only_with_stock = st.checkbox("공정재고만", value=False, key="flt_only_stock")
         exclude_safe_initial = st.checkbox("안전 이니셜 제외", value=False, key="flt_exclude_safe_initial")
+        only_same_rq_group = st.checkbox("동일 RQ그룹만", value=False, key="flt_only_same_rq_group")
 
     sheet_sum_map = (
         df.groupby("시트분류", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
@@ -587,14 +638,42 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
         format_func=lambda x: format_pill_label(x, summary_count_map),
     )
 
+    rq_option_map: dict[str, tuple[str, str]] = {}
+    if {"R코드", "Q코드", "품목코드", "부족수량"}.issubset(df.columns):
+        rq_meta = (
+            df.groupby(["R코드", "Q코드"], as_index=False)
+            .agg({"품목코드": "nunique", "부족수량": "sum"})
+            .rename(columns={"품목코드": "p_count", "부족수량": "sum_shortage"})
+            .sort_values(["p_count", "sum_shortage"], ascending=[False, False])
+        )
+        rq_options = ["전체"]
+        for _, row in rq_meta.iterrows():
+            r_code = str(row["R코드"])
+            q_code = str(row["Q코드"])
+            p_count = int(row["p_count"])
+            shortage = float(row["sum_shortage"])
+            label = f"{r_code} | {q_code} (P:{p_count}, 부족:{shortage:,.0f})"
+            rq_option_map[label] = (r_code, q_code)
+            rq_options.append(label)
+        selected_rq_option = st.selectbox("RQ 그룹 선택", options=rq_options, index=0, key="flt_rq_group")
+    else:
+        selected_rq_option = "전체"
+
     filtered = df.copy()
-    filtered = filter_with_terms_any(filtered, ["이니셜", "거래처", "품목코드"], unified_query)
+    search_cols = [c for c in ["이니셜", "거래처", "품목코드", "R코드", "Q코드"] if c in filtered.columns]
+    filtered = filter_with_terms_any(filtered, search_cols, unified_query)
     if exclude_safe_initial:
         filtered = filtered[~filtered["이니셜"].astype(str).str.contains("안전", na=False)]
     if selected_sheet_option and selected_sheet_option != "전체":
         filtered = filtered[filtered["시트분류"] == selected_sheet_option]
     if selected_summary_option and selected_summary_option != "전체":
         filtered = filtered[filtered["분류별요약"] == selected_summary_option]
+    if selected_rq_option != "전체" and selected_rq_option in rq_option_map:
+        r_code, q_code = rq_option_map[selected_rq_option]
+        filtered = filtered[(filtered["R코드"].astype(str) == r_code) & (filtered["Q코드"].astype(str) == q_code)]
+    if only_same_rq_group and {"R코드", "Q코드", "품목코드"}.issubset(filtered.columns):
+        p_count_per_group = filtered.groupby(["R코드", "Q코드"])["품목코드"].transform("nunique")
+        filtered = filtered[p_count_per_group >= 2]
     if only_with_stock:
         filtered = filtered[filtered["공정재고 합계"] > 0]
 
@@ -631,10 +710,12 @@ def load_leadji_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 
 def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
-    filtered = apply_filters(df, updated_at)
+    enriched_df = add_rq_group_columns(df)
+    filtered = apply_filters(enriched_df, updated_at)
     q_summary = build_qcode_summary(filtered)
+    rq_summary = build_rq_group_summary(filtered)
 
-    tab_p, tab_q = st.tabs(["P코드 기준 현황", "Q코드 기준 집계"])
+    tab_p, tab_q, tab_rq = st.tabs(["P코드 기준 현황", "Q코드 기준 집계", "RQ코드 그룹 집계"])
 
     with tab_p:
         c1, c2, c3 = st.columns(3)
@@ -647,6 +728,8 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
                 "거래처",
                 "이니셜",
                 "품목코드",
+                "R코드",
+                "Q코드",
                 "제품명",
                 "분류별요약",
                 "시트분류",
@@ -681,6 +764,25 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
             use_container_width=True,
             height=700,
         )
+
+    with tab_rq:
+        r1, r2, r3 = st.columns(3)
+        r1.metric("RQ 그룹 수", f"{len(rq_summary):,}")
+        if rq_summary.empty:
+            r2.metric("동일 RQ 그룹 수(P코드2+)", "0")
+            r3.metric("사출 부족수량 합계", "0")
+            st.info("표시할 RQ 그룹 데이터가 없습니다.")
+        else:
+            same_group_count = int((rq_summary["P코드 수"] >= 2).sum())
+            r2.metric("동일 RQ 그룹 수(P코드2+)", f"{same_group_count:,}")
+            r3.metric("사출 부족수량 합계", f"{rq_summary['사출 부족수량'].sum():,.0f}")
+
+            rq_table_display = format_numeric_columns_for_display(rq_summary)
+            st.dataframe(
+                rq_table_display,
+                use_container_width=True,
+                height=700,
+            )
 
 
 def render_leadji_dashboard(updated_at: str, leadji_info: pd.DataFrame, leadji_stock: pd.DataFrame) -> None:
