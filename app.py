@@ -321,6 +321,18 @@ def filter_with_terms(df: pd.DataFrame, column: str, query: str) -> pd.DataFrame
     return df[df[column].astype(str).str.contains(pattern, case=False, na=False)]
 
 
+def filter_with_terms_any(df: pd.DataFrame, columns: list[str], query: str) -> pd.DataFrame:
+    terms = split_query_terms(query)
+    if not terms:
+        return df
+
+    pattern = "|".join(re.escape(term) for term in terms)
+    mask = pd.Series(False, index=df.index)
+    for col in columns:
+        mask = mask | df[col].astype(str).str.contains(pattern, case=False, na=False)
+    return df[mask]
+
+
 def build_qcode_summary(df: pd.DataFrame) -> pd.DataFrame:
     columns = [
         "Q코드",
@@ -514,29 +526,16 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
     st.subheader("필터")
     st.caption(f"업데이트: {updated_at}")
 
-    r1c1, r1c2, r1c3, r1c4 = st.columns([1.0, 1.2, 1.8, 0.9])
+    r1c1, r1c2 = st.columns([3.0, 0.9])
     with r1c1:
-        initial_query = st.text_input(
-            "이니셜 검색",
+        unified_query = st.text_input(
+            "통합 검색 (이니셜/거래처/품목코드)",
             value="",
-            key="flt_initial_query",
-            placeholder="예: PIA, MON",
+            key="flt_unified_query",
+            placeholder="예: PIA, 국내, P1234",
+            help="콤마(,)로 여러 키워드를 입력하면 OR 조건으로 검색합니다.",
         ).strip()
     with r1c2:
-        customer_query = st.text_input(
-            "거래처 검색",
-            value="",
-            key="flt_customer_query",
-            placeholder="예: 국내, 중국",
-        ).strip()
-    with r1c3:
-        code_query = st.text_input(
-            "품목코드 검색",
-            value="",
-            key="flt_code",
-            placeholder="예: P1234, P5678",
-        ).strip()
-    with r1c4:
         only_with_stock = st.checkbox("공정재고만", value=False, key="flt_only_stock")
         exclude_safe_initial = st.checkbox("안전 이니셜 제외", value=False, key="flt_exclude_safe_initial")
 
@@ -568,15 +567,13 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
     )
 
     filtered = df.copy()
-    filtered = filter_with_terms(filtered, "이니셜", initial_query)
-    filtered = filter_with_terms(filtered, "거래처", customer_query)
+    filtered = filter_with_terms_any(filtered, ["이니셜", "거래처", "품목코드"], unified_query)
     if exclude_safe_initial:
         filtered = filtered[~filtered["이니셜"].astype(str).str.contains("안전", na=False)]
     if selected_sheet_option and selected_sheet_option != "전체":
         filtered = filtered[filtered["시트분류"] == selected_sheet_option]
     if selected_summary_option and selected_summary_option != "전체":
         filtered = filtered[filtered["분류별요약"] == selected_summary_option]
-    filtered = filter_with_terms(filtered, "품목코드", code_query)
     if only_with_stock:
         filtered = filtered[filtered["공정재고 합계"] > 0]
 
