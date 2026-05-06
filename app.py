@@ -1,5 +1,7 @@
 import re
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
@@ -7,6 +9,7 @@ import streamlit as st
 st.set_page_config(page_title="제품 부족수량 현황", layout="wide")
 
 BASE_DIR = Path(__file__).resolve().parent
+DISPLAY_TZ = ZoneInfo("Asia/Seoul")
 
 WAREHOUSE_MAP = {
     "사출창고": "사출창고",
@@ -55,7 +58,8 @@ def get_data_updated_at(base_dir: Path) -> str:
         return "-"
 
     latest_path = max([inv_path, dem_path], key=lambda p: p.stat().st_mtime)
-    return pd.Timestamp.fromtimestamp(latest_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+    latest_dt = datetime.fromtimestamp(latest_path.stat().st_mtime, tz=DISPLAY_TZ)
+    return latest_dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def pick_first_existing_column(columns: list[str], candidates: list[str]) -> str | None:
@@ -509,6 +513,7 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
         ).strip()
     with r1c4:
         only_with_stock = st.checkbox("공정재고만", value=False, key="flt_only_stock")
+        exclude_safe_initial = st.checkbox("안전 이니셜 제외", value=False, key="flt_exclude_safe_initial")
 
     sheet_sum_map = (
         df.groupby("시트분류", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
@@ -540,6 +545,8 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
     filtered = df.copy()
     filtered = filter_with_terms(filtered, "이니셜", initial_query)
     filtered = filter_with_terms(filtered, "거래처", customer_query)
+    if exclude_safe_initial:
+        filtered = filtered[~filtered["이니셜"].astype(str).str.contains("안전", na=False)]
     if selected_sheet_option and selected_sheet_option != "전체":
         filtered = filtered[filtered["시트분류"] == selected_sheet_option]
     if selected_summary_option and selected_summary_option != "전체":
