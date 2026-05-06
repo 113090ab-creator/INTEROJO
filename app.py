@@ -366,6 +366,7 @@ def build_rq_group_summary(df: pd.DataFrame) -> pd.DataFrame:
         "R코드",
         "Q코드",
         "P코드 수",
+        "제품명 예시",
         "P코드 예시",
         "부족수량 합계",
         "사출창고 합계",
@@ -380,6 +381,7 @@ def build_rq_group_summary(df: pd.DataFrame) -> pd.DataFrame:
         df.groupby(["R코드", "Q코드"], as_index=False)
         .agg(
             {
+                "제품명": lambda s: summarize_unique(s, head_count=3),
                 "품목코드": lambda s: summarize_unique(s, head_count=5),
                 "부족수량": "sum",
                 "사출창고": "sum",
@@ -389,6 +391,7 @@ def build_rq_group_summary(df: pd.DataFrame) -> pd.DataFrame:
         )
         .rename(
             columns={
+                "제품명": "제품명 예시",
                 "품목코드": "P코드 예시",
                 "부족수량": "부족수량 합계",
                 "사출창고": "사출창고 합계",
@@ -600,7 +603,7 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
     r1c1, r1c2 = st.columns([3.0, 1.2])
     with r1c1:
         unified_query = st.text_input(
-            "통합 검색 (이니셜/거래처/품목코드/R코드/Q코드)",
+            "통합 검색 (이니셜/거래처/품목코드/제품명/R코드/Q코드)",
             value="",
             key="flt_unified_query",
             placeholder="예: PIA, 국내, P1234",
@@ -611,17 +614,33 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
         exclude_safe_initial = st.checkbox("안전 이니셜 제외", value=False, key="flt_exclude_safe_initial")
         only_same_rq_group = st.checkbox("동일 RQ그룹만", value=False, key="flt_only_same_rq_group")
 
+    product_query = st.text_input(
+        "제품명 검색",
+        value="",
+        key="flt_product_query",
+        placeholder="예: 1-Day_58, Bella, Chai Cafe",
+        help="콤마(,)로 여러 제품명을 입력하면 OR 조건으로 검색합니다.",
+    ).strip()
+
     sheet_sum_map = (
         df.groupby("시트분류", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
     )
     summary_sum_map = (
         df.groupby("분류별요약", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
     )
+    product_sum_map = (
+        df.groupby("제품명", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
+    )
 
     sheet_options = ["전체"] + list(sheet_sum_map.keys())
     summary_options = ["전체"] + list(summary_sum_map.keys())
+    product_top_n = 20
+    product_options = ["전체"] + list(product_sum_map.keys())[:product_top_n]
     sheet_count_map = {"전체": float(df["부족수량"].sum()), **sheet_sum_map}
     summary_count_map = {"전체": float(df["부족수량"].sum()), **summary_sum_map}
+    product_count_map = {"전체": float(df["부족수량"].sum())}
+    for product_name in product_options[1:]:
+        product_count_map[product_name] = float(product_sum_map.get(product_name, 0))
 
     selected_sheet_option = st.pills(
         "시트 분류",
@@ -636,6 +655,13 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
         default="전체",
         key="flt_summary_pills",
         format_func=lambda x: format_pill_label(x, summary_count_map),
+    )
+    selected_product_option = st.pills(
+        "제품명 (상위)",
+        options=product_options,
+        default="전체",
+        key="flt_product_pills",
+        format_func=lambda x: format_pill_label(x, product_count_map),
     )
 
     rq_option_map: dict[str, tuple[str, str]] = {}
@@ -660,14 +686,17 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
         selected_rq_option = "전체"
 
     filtered = df.copy()
-    search_cols = [c for c in ["이니셜", "거래처", "품목코드", "R코드", "Q코드"] if c in filtered.columns]
+    search_cols = [c for c in ["이니셜", "거래처", "품목코드", "제품명", "R코드", "Q코드"] if c in filtered.columns]
     filtered = filter_with_terms_any(filtered, search_cols, unified_query)
+    filtered = filter_with_terms(filtered, "제품명", product_query)
     if exclude_safe_initial:
         filtered = filtered[~filtered["이니셜"].astype(str).str.contains("안전", na=False)]
     if selected_sheet_option and selected_sheet_option != "전체":
         filtered = filtered[filtered["시트분류"] == selected_sheet_option]
     if selected_summary_option and selected_summary_option != "전체":
         filtered = filtered[filtered["분류별요약"] == selected_summary_option]
+    if selected_product_option and selected_product_option != "전체":
+        filtered = filtered[filtered["제품명"] == selected_product_option]
     if selected_rq_option != "전체" and selected_rq_option in rq_option_map:
         r_code, q_code = rq_option_map[selected_rq_option]
         filtered = filtered[(filtered["R코드"].astype(str) == r_code) & (filtered["Q코드"].astype(str) == q_code)]
