@@ -284,6 +284,31 @@ def format_pill_label(option: str, value_map: dict[str, float]) -> str:
     return f"{option} ({value:,.0f})"
 
 
+def build_thousand_separator_config(df: pd.DataFrame) -> dict[str, st.column_config.NumberColumn]:
+    config: dict[str, st.column_config.NumberColumn] = {}
+    for col in df.columns:
+        if pd.api.types.is_numeric_dtype(df[col]):
+            config[col] = st.column_config.NumberColumn(format="%,.0f")
+    return config
+
+
+def format_numeric_columns_for_display(df: pd.DataFrame) -> pd.DataFrame:
+    display_df = df.copy()
+    numeric_cols = display_df.select_dtypes(include="number").columns
+
+    for col in numeric_cols:
+        series = pd.to_numeric(display_df[col], errors="coerce")
+        non_null = series.dropna()
+        is_integer_like = non_null.empty or ((non_null % 1) == 0).all()
+
+        if is_integer_like:
+            display_df[col] = series.map(lambda x: "" if pd.isna(x) else f"{x:,.0f}")
+        else:
+            display_df[col] = series.map(lambda x: "" if pd.isna(x) else f"{x:,.2f}")
+
+    return display_df
+
+
 def split_query_terms(query: str) -> list[str]:
     return [term.strip() for term in str(query).split(",") if term.strip()]
 
@@ -580,25 +605,28 @@ def main() -> None:
         c2.metric("부족수량 합계", f"{filtered['부족수량'].sum():,.0f}")
         c3.metric("공정재고 합계", f"{filtered['공정재고 합계'].sum():,.0f}")
 
+        p_table = filtered[
+            [
+                "거래처",
+                "이니셜",
+                "품목코드",
+                "제품명",
+                "분류별요약",
+                "시트분류",
+                "파워",
+                "납기일",
+                "부족수량",
+                "사출창고",
+                "분리창고",
+                "검사접착창고",
+                "누수규격검사 창고",
+                "공정재고 합계",
+            ]
+        ].sort_values(["부족수량", "이니셜", "거래처"], ascending=[False, True, True])
+        p_table_display = format_numeric_columns_for_display(p_table)
+
         st.dataframe(
-            filtered[
-                [
-                    "거래처",
-                    "이니셜",
-                    "품목코드",
-                    "제품명",
-                    "분류별요약",
-                    "시트분류",
-                    "파워",
-                    "납기일",
-                    "부족수량",
-                    "사출창고",
-                    "분리창고",
-                    "검사접착창고",
-                    "누수규격검사 창고",
-                    "공정재고 합계",
-                ]
-            ].sort_values(["부족수량", "이니셜", "거래처"], ascending=[False, True, True]),
+            p_table_display,
             use_container_width=True,
             height=700,
         )
@@ -609,8 +637,10 @@ def main() -> None:
         q2.metric("Q기준 부족수량 합계", f"{q_summary['부족수량 합계'].sum():,.0f}")
         q3.metric("Q기준 공정재고 합계", f"{q_summary['공정재고 합계'].sum():,.0f}")
 
+        q_table = q_summary.copy()
+        q_table_display = format_numeric_columns_for_display(q_table)
         st.dataframe(
-            q_summary,
+            q_table_display,
             use_container_width=True,
             height=700,
         )
