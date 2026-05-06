@@ -268,6 +268,21 @@ def load_sheet2_group_map(base_dir: Path) -> dict[str, str]:
     return df.set_index("코드5")["시트이름"].to_dict()
 
 
+def build_data_refresh_key(base_dir: Path) -> str:
+    inv_path, dem_path = find_excel_files(base_dir)
+    ref_path = find_product_name_reference_file(base_dir)
+
+    paths = [inv_path, dem_path]
+    if ref_path is not None:
+        paths.append(ref_path)
+
+    parts = []
+    for p in paths:
+        stat = p.stat()
+        parts.append(f"{p.name}:{stat.st_size}:{stat.st_mtime_ns}")
+    return "|".join(parts)
+
+
 def summarize_unique(values: pd.Series, head_count: int = 1) -> str:
     uniq = [v for v in values.astype(str).str.strip().tolist() if v and v.lower() != "nan"]
     # 순서를 유지한 unique
@@ -379,7 +394,8 @@ def build_qcode_summary(df: pd.DataFrame) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False)
-def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    _ = refresh_key
     inv_path, dem_path = find_excel_files(BASE_DIR)
     product_name_map, product_group_map = load_product_reference_maps(BASE_DIR)
     sheet2_group_map = load_sheet2_group_map(BASE_DIR)
@@ -585,7 +601,8 @@ def main() -> None:
     st.caption("기준: 누수규격검사 생산수량 = 부족수량, 품목코드는 P코드만 표시")
 
     try:
-        df, _, _ = load_data()
+        refresh_key = build_data_refresh_key(BASE_DIR)
+        df, _, _ = load_data(refresh_key)
     except Exception as exc:
         st.error(f"데이터 로드 실패: {exc}")
         st.stop()
