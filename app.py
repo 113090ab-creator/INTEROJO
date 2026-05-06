@@ -48,6 +48,16 @@ def find_excel_files(base_dir: Path) -> tuple[Path, Path]:
     return inv_path, dem_path
 
 
+def get_data_updated_at(base_dir: Path) -> str:
+    try:
+        inv_path, dem_path = find_excel_files(base_dir)
+    except FileNotFoundError:
+        return "-"
+
+    latest_path = max([inv_path, dem_path], key=lambda p: p.stat().st_mtime)
+    return pd.Timestamp.fromtimestamp(latest_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+
+
 def pick_first_existing_column(columns: list[str], candidates: list[str]) -> str | None:
     for col in candidates:
         if col in columns:
@@ -270,6 +280,18 @@ def format_pill_label(option: str, value_map: dict[str, float]) -> str:
     return f"{option} ({value:,.0f})"
 
 
+def split_query_terms(query: str) -> list[str]:
+    return [term.strip() for term in str(query).split(",") if term.strip()]
+
+
+def filter_with_terms(df: pd.DataFrame, column: str, query: str) -> pd.DataFrame:
+    terms = split_query_terms(query)
+    if not terms:
+        return df
+    pattern = "|".join(re.escape(term) for term in terms)
+    return df[df[column].astype(str).str.contains(pattern, case=False, na=False)]
+
+
 def build_qcode_summary(df: pd.DataFrame) -> pd.DataFrame:
     columns = [
         "Q코드",
@@ -459,19 +481,32 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     return result, file_info_df, process_map_df
 
 
-def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
+def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
     st.subheader("필터")
-    st.caption(f"업데이트: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    st.caption(f"업데이트: {updated_at}")
 
     r1c1, r1c2, r1c3, r1c4 = st.columns([1.0, 1.2, 1.8, 0.9])
-    initials = ["전체"] + sorted(df["이니셜"].dropna().unique().tolist())
-    customers = ["전체"] + sorted(df["거래처"].dropna().unique().tolist())
     with r1c1:
-        selected_initial = st.selectbox("이니셜", initials, index=0, key="flt_initial")
+        initial_query = st.text_input(
+            "이니셜 검색",
+            value="",
+            key="flt_initial_query",
+            placeholder="예: PIA, MON",
+        ).strip()
     with r1c2:
-        selected_customer = st.selectbox("거래처", customers, index=0, key="flt_customer")
+        customer_query = st.text_input(
+            "거래처 검색",
+            value="",
+            key="flt_customer_query",
+            placeholder="예: 국내, 중국",
+        ).strip()
     with r1c3:
-        code_query = st.text_input("품목코드 검색", value="", key="flt_code").strip()
+        code_query = st.text_input(
+            "품목코드 검색",
+            value="",
+            key="flt_code",
+            placeholder="예: P1234, P5678",
+        ).strip()
     with r1c4:
         only_with_stock = st.checkbox("공정재고만", value=False, key="flt_only_stock")
 
@@ -503,16 +538,13 @@ def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
     )
 
     filtered = df.copy()
-    if selected_initial != "전체":
-        filtered = filtered[filtered["이니셜"] == selected_initial]
-    if selected_customer != "전체":
-        filtered = filtered[filtered["거래처"] == selected_customer]
+    filtered = filter_with_terms(filtered, "이니셜", initial_query)
+    filtered = filter_with_terms(filtered, "거래처", customer_query)
     if selected_sheet_option and selected_sheet_option != "전체":
         filtered = filtered[filtered["시트분류"] == selected_sheet_option]
     if selected_summary_option and selected_summary_option != "전체":
         filtered = filtered[filtered["분류별요약"] == selected_summary_option]
-    if code_query:
-        filtered = filtered[filtered["품목코드"].str.contains(code_query, case=False, na=False)]
+    filtered = filter_with_terms(filtered, "품목코드", code_query)
     if only_with_stock:
         filtered = filtered[filtered["공정재고 합계"] > 0]
 
@@ -529,7 +561,8 @@ def main() -> None:
         st.error(f"데이터 로드 실패: {exc}")
         st.stop()
 
-    filtered = apply_filters(df)
+    updated_at = get_data_updated_at(BASE_DIR)
+    filtered = apply_filters(df, updated_at)
     q_summary = build_qcode_summary(filtered)
 
     tab_p, tab_q = st.tabs(["P코드 기준 현황", "Q코드 기준 집계"])
