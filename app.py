@@ -503,6 +503,9 @@ def add_rq_group_columns(df: pd.DataFrame) -> pd.DataFrame:
         enriched["Q코드"] = enriched["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "Q"))
     if "R코드 제품명" not in enriched.columns:
         enriched["R코드 제품명"] = enriched.get("제품명", "-")
+    enriched["R코드5"] = enriched["R코드"].astype(str).str[:5]
+    enriched["Q코드5"] = enriched["Q코드"].astype(str).str[:5]
+    enriched["P코드5"] = enriched["품목코드"].astype(str).str[:5]
     enriched["RQ그룹"] = enriched["R코드"].astype(str) + " | " + enriched["Q코드"].astype(str)
     return enriched
 
@@ -512,7 +515,7 @@ def build_rq_group_summary(df: pd.DataFrame) -> pd.DataFrame:
         "R코드",
         "Q코드",
         "R코드 제품명",
-        "P코드 수",
+        "P코드5 수",
         "제품명 예시",
         "P코드 예시",
         "부족수량 합계",
@@ -525,7 +528,7 @@ def build_rq_group_summary(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=columns)
 
     grouped = (
-        df.groupby(["R코드", "Q코드"], as_index=False)
+        df.groupby(["R코드5", "Q코드5"], as_index=False)
         .agg(
             {
                 "R코드 제품명": lambda s: summarize_unique(s, head_count=1),
@@ -539,6 +542,8 @@ def build_rq_group_summary(df: pd.DataFrame) -> pd.DataFrame:
         )
         .rename(
             columns={
+                "R코드5": "R코드",
+                "Q코드5": "Q코드",
                 "제품명": "제품명 예시",
                 "품목코드": "P코드 예시",
                 "부족수량": "부족수량 합계",
@@ -547,10 +552,11 @@ def build_rq_group_summary(df: pd.DataFrame) -> pd.DataFrame:
             }
         )
     )
-    p_count = df.groupby(["R코드", "Q코드"])["품목코드"].nunique().rename("P코드 수").reset_index()
+    p_count = df.groupby(["R코드5", "Q코드5"])["P코드5"].nunique().rename("P코드5 수").reset_index()
+    p_count = p_count.rename(columns={"R코드5": "R코드", "Q코드5": "Q코드"})
     grouped = grouped.merge(p_count, on=["R코드", "Q코드"], how="left")
     grouped["사출 부족수량"] = grouped["부족수량 합계"] - grouped["사출창고 합계"]
-    grouped = grouped.sort_values(["부족수량 합계", "P코드 수"], ascending=[False, False])
+    grouped = grouped.sort_values(["부족수량 합계", "P코드5 수"], ascending=[False, False])
     return grouped[columns]
 
 
@@ -783,8 +789,8 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
     with r1c2:
         only_with_stock = st.checkbox("공정재고만", value=False, key="flt_only_stock")
         exclude_safe_initial = st.checkbox("안전 이니셜 제외", value=False, key="flt_exclude_safe_initial")
-        only_same_rq_group = st.checkbox("동일 RQ그룹만", value=False, key="flt_only_same_rq_group")
-        only_same_r_group = st.checkbox("동일 R코드만(P코드2+)", value=False, key="flt_only_same_r_group")
+        only_same_rq_group = st.checkbox("동일 RQ그룹만(R5/Q5, P5종류2+)", value=False, key="flt_only_same_rq_group")
+        only_same_r_group = st.checkbox("동일 R코드5만(P5종류2+)", value=False, key="flt_only_same_r_group")
 
     product_query = st.text_input(
         "R코드(5자리) 제품명 검색",
@@ -822,20 +828,20 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
     )
 
     rq_option_map: dict[str, tuple[str, str]] = {}
-    if {"R코드", "Q코드", "품목코드", "부족수량"}.issubset(df.columns):
+    if {"R코드5", "Q코드5", "P코드5", "부족수량"}.issubset(df.columns):
         rq_meta = (
-            df.groupby(["R코드", "Q코드"], as_index=False)
-            .agg({"품목코드": "nunique", "부족수량": "sum"})
-            .rename(columns={"품목코드": "p_count", "부족수량": "sum_shortage"})
+            df.groupby(["R코드5", "Q코드5"], as_index=False)
+            .agg({"P코드5": "nunique", "부족수량": "sum"})
+            .rename(columns={"P코드5": "p_count", "부족수량": "sum_shortage"})
             .sort_values(["p_count", "sum_shortage"], ascending=[False, False])
         )
         rq_options = ["전체"]
         for _, row in rq_meta.iterrows():
-            r_code = str(row["R코드"])
-            q_code = str(row["Q코드"])
+            r_code = str(row["R코드5"])
+            q_code = str(row["Q코드5"])
             p_count = int(row["p_count"])
             shortage = float(row["sum_shortage"])
-            label = f"{r_code} | {q_code} (P:{p_count}, 부족:{shortage:,.0f})"
+            label = f"{r_code} | {q_code} (P5:{p_count}, 부족:{shortage:,.0f})"
             rq_option_map[label] = (r_code, q_code)
             rq_options.append(label)
         selected_rq_option = st.selectbox("RQ 그룹 선택", options=rq_options, index=0, key="flt_rq_group")
@@ -851,14 +857,14 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
         base_filtered = base_filtered[base_filtered["시트분류"] == selected_sheet_option]
     if selected_summary_option and selected_summary_option != "전체":
         base_filtered = base_filtered[base_filtered["분류별요약"] == selected_summary_option]
-    if selected_rq_option != "전체" and selected_rq_option in rq_option_map:
+    if selected_rq_option != "전체" and selected_rq_option in rq_option_map and {"R코드5", "Q코드5"}.issubset(base_filtered.columns):
         r_code, q_code = rq_option_map[selected_rq_option]
-        base_filtered = base_filtered[(base_filtered["R코드"].astype(str) == r_code) & (base_filtered["Q코드"].astype(str) == q_code)]
-    if only_same_rq_group and {"R코드", "Q코드", "품목코드"}.issubset(base_filtered.columns):
-        p_count_per_group = base_filtered.groupby(["R코드", "Q코드"])["품목코드"].transform("nunique")
+        base_filtered = base_filtered[(base_filtered["R코드5"].astype(str) == r_code) & (base_filtered["Q코드5"].astype(str) == q_code)]
+    if only_same_rq_group and {"R코드5", "Q코드5", "P코드5"}.issubset(base_filtered.columns):
+        p_count_per_group = base_filtered.groupby(["R코드5", "Q코드5"])["P코드5"].transform("nunique")
         base_filtered = base_filtered[p_count_per_group >= 2]
-    if only_same_r_group and {"R코드", "품목코드"}.issubset(base_filtered.columns):
-        p_count_per_r = base_filtered.groupby("R코드")["품목코드"].transform("nunique")
+    if only_same_r_group and {"R코드5", "P코드5"}.issubset(base_filtered.columns):
+        p_count_per_r = base_filtered.groupby("R코드5")["P코드5"].transform("nunique")
         base_filtered = base_filtered[p_count_per_r >= 2]
     if only_with_stock:
         base_filtered = base_filtered[base_filtered["공정재고 합계"] > 0]
@@ -983,12 +989,12 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         r1, r2, r3 = st.columns(3)
         r1.metric("RQ 그룹 수", f"{len(rq_summary):,}")
         if rq_summary.empty:
-            r2.metric("동일 RQ 그룹 수(P코드2+)", "0")
+            r2.metric("동일 RQ 그룹 수(P코드5 2+)", "0")
             r3.metric("사출 부족수량 합계", "0")
             st.info("표시할 RQ 그룹 데이터가 없습니다.")
         else:
-            same_group_count = int((rq_summary["P코드 수"] >= 2).sum())
-            r2.metric("동일 RQ 그룹 수(P코드2+)", f"{same_group_count:,}")
+            same_group_count = int((rq_summary["P코드5 수"] >= 2).sum())
+            r2.metric("동일 RQ 그룹 수(P코드5 2+)", f"{same_group_count:,}")
             r3.metric("사출 부족수량 합계", f"{rq_summary['사출 부족수량'].sum():,.0f}")
 
             rq_table_display = format_numeric_columns_for_display(rq_summary)
