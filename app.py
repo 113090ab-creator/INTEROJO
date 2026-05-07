@@ -797,14 +797,6 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
         exclude_safe_initial = st.checkbox("안전 이니셜 제외", value=False, key="flt_exclude_safe_initial")
         only_same_rq_group = st.checkbox("동일 RQ그룹만(R5/Q5, P5종류2+)", value=False, key="flt_only_same_rq_group")
 
-    product_query = st.text_input(
-        "R코드(5자리) 제품명 검색",
-        value="",
-        key="flt_product_query",
-        placeholder="예: 1-Day_58, Bella, Chai Cafe",
-        help="콤마(,)로 여러 R코드(5자리 기준) 제품명을 입력하면 OR 조건으로 검색합니다.",
-    ).strip()
-
     sheet_sum_map = (
         scope_df.groupby("시트분류", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
     )
@@ -812,13 +804,10 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
         scope_df.groupby("분류별요약", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
     )
 
-    sheet_options = ["전체"]
-    summary_options = ["전체"]
+    sheet_options = ["전체"] + list(sheet_sum_map.keys())
+    summary_options = ["전체"] + list(summary_sum_map.keys())
     sheet_count_map = {"전체": float(scope_df["부족수량"].sum()), **sheet_sum_map}
     summary_count_map = {"전체": float(scope_df["부족수량"].sum()), **summary_sum_map}
-
-    st.session_state["flt_sheet_pills"] = "전체"
-    st.session_state["flt_summary_pills"] = "전체"
 
     selected_sheet_option = st.pills(
         "시트 분류",
@@ -826,7 +815,6 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
         default="전체",
         key="flt_sheet_pills",
         format_func=lambda x: format_pill_label(x, sheet_count_map),
-        disabled=True,
     )
     selected_summary_option = st.pills(
         "분류별 요약",
@@ -834,7 +822,6 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
         default="전체",
         key="flt_summary_pills",
         format_func=lambda x: format_pill_label(x, summary_count_map),
-        disabled=True,
     )
 
     rq_option_map: dict[str, tuple[str, str]] = {}
@@ -857,6 +844,14 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
         selected_rq_option = st.selectbox("RQ 그룹 선택", options=rq_options, index=0, key="flt_rq_group")
     else:
         selected_rq_option = "전체"
+
+    product_query = st.text_input(
+        "R코드(5자리) 제품명 검색",
+        value="",
+        key="flt_product_query",
+        placeholder="예: 1-Day_58, Bella, Chai Cafe",
+        help="콤마(,)로 여러 R코드(5자리 기준) 제품명을 입력하면 OR 조건으로 검색합니다.",
+    ).strip()
 
     base_filtered = scope_df.copy()
     search_cols = [c for c in ["이니셜", "거래처", "품목코드", "제품명", "R코드 제품명", "R코드", "Q코드"] if c in base_filtered.columns]
