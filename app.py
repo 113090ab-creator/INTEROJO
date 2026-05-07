@@ -311,10 +311,12 @@ def load_rq_code_maps(base_dir: Path) -> tuple[dict[str, str], dict[str, str], d
     q_map = code5_df.set_index("코드5")["Q코드"].to_dict()
     r_map = code5_df.set_index("코드5")["R코드"].to_dict()
     if name_col:
-        r_name_df = df[(df[name_col] != "") & (df[name_col].str.lower() != "nan")]
-        r_name_df = r_name_df.drop_duplicates(subset=["R코드", name_col], keep="first")
-        r_name_df = r_name_df.drop_duplicates(subset=["R코드"], keep="first")
-        r_name_map = r_name_df.set_index("R코드")[name_col].to_dict()
+        r_name_df = df[(df[name_col] != "") & (df[name_col].str.lower() != "nan")].copy()
+        r_name_df["R코드5"] = r_name_df["R코드"].str[:5]
+        r_name_df = r_name_df[(r_name_df["R코드5"] != "") & (r_name_df["R코드5"].str.lower() != "nan")]
+        r_name_df = r_name_df.drop_duplicates(subset=["R코드5", name_col], keep="first")
+        r_name_df = r_name_df.drop_duplicates(subset=["R코드5"], keep="first")
+        r_name_map = r_name_df.set_index("R코드5")[name_col].to_dict()
     else:
         r_name_map = {}
     return r_map, q_map, r_name_map
@@ -576,13 +578,14 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
     grouped_demand["제품명"] = grouped_demand["제품명"].replace({"": "-", "nan": "-", "None": "-"}).fillna("-")
     grouped_demand["R코드"] = grouped_demand["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "R"))
     grouped_demand["Q코드"] = grouped_demand["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "Q"))
-    grouped_demand["R코드 제품명"] = grouped_demand["R코드"].map(r_name_map)
-    grouped_demand["R코드 제품명"] = grouped_demand["R코드 제품명"].fillna(grouped_demand["R코드"])
+    grouped_demand["R코드5"] = grouped_demand["R코드"].astype(str).str[:5]
+    grouped_demand["R코드 제품명"] = grouped_demand["R코드5"].map(r_name_map)
+    grouped_demand["R코드 제품명"] = grouped_demand["R코드 제품명"].fillna(grouped_demand["R코드5"])
     grouped_demand["R코드 제품명"] = grouped_demand["R코드 제품명"].fillna(grouped_demand["제품명"])
     grouped_demand["R코드 제품명"] = grouped_demand["R코드 제품명"].replace({"": "-", "nan": "-", "None": "-"}).fillna("-")
     grouped_demand["분류별요약"] = grouped_demand["코드5"].map(product_group_map).fillna("기타")
     grouped_demand["시트분류"] = grouped_demand["코드5"].map(sheet2_group_map).fillna("기타 해외")
-    grouped_demand = grouped_demand.drop(columns=["코드5"])
+    grouped_demand = grouped_demand.drop(columns=["코드5", "R코드5"])
 
     target_inv = inv_df[inv_df["창고"].isin(TARGET_WAREHOUSES)].copy()
     stock_lookup: dict[str, dict[str, float]] = {}
@@ -675,11 +678,11 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
         only_same_rq_group = st.checkbox("동일 RQ그룹만", value=False, key="flt_only_same_rq_group")
 
     product_query = st.text_input(
-        "R코드 제품명 검색",
+        "R코드(5자리) 제품명 검색",
         value="",
         key="flt_product_query",
         placeholder="예: 1-Day_58, Bella, Chai Cafe",
-        help="콤마(,)로 여러 R코드 제품명을 입력하면 OR 조건으로 검색합니다.",
+        help="콤마(,)로 여러 R코드(5자리 기준) 제품명을 입력하면 OR 조건으로 검색합니다.",
     ).strip()
 
     sheet_sum_map = (
