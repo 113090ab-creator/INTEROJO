@@ -606,7 +606,7 @@ def build_qcode_summary(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_summary_group_totals_with_safe_split(df: pd.DataFrame) -> pd.DataFrame:
-    columns = ["분류별요약", "안전 포함", "안전 미포함", "총수량"]
+    columns = ["분류별요약", "오더 부족수량", "안전재고 부족수량", "총수량"]
     if df.empty or "부족수량" not in df.columns:
         return pd.DataFrame(columns=columns)
 
@@ -618,28 +618,26 @@ def build_summary_group_totals_with_safe_split(df: pd.DataFrame) -> pd.DataFrame
 
     group_label = base["분류별요약"].astype(str).str.strip()
     base["분류별요약"] = group_label.replace({"": "(미분류)", "nan": "(미분류)", "None": "(미분류)"})
-    base["안전구분"] = base["이니셜"].astype(str).str.contains("안전", na=False).map({True: "안전 포함", False: "안전 미포함"})
-
-    grouped = (
-        base.groupby(["분류별요약", "안전구분"], as_index=False)["부족수량"].sum()
-        .pivot(index="분류별요약", columns="안전구분", values="부족수량")
-        .fillna(0)
-        .reset_index()
+    include_qty = base.groupby("분류별요약", as_index=False)["부족수량"].sum().rename(columns={"부족수량": "안전 포함"})
+    exclude_qty = (
+        base[~base["이니셜"].astype(str).str.contains("안전", na=False)]
+        .groupby("분류별요약", as_index=False)["부족수량"]
+        .sum()
+        .rename(columns={"부족수량": "안전 미포함"})
     )
 
-    for col in ["안전 포함", "안전 미포함"]:
-        if col not in grouped.columns:
-            grouped[col] = 0
-
-    grouped["총수량"] = grouped["안전 포함"] + grouped["안전 미포함"]
+    grouped = include_qty.merge(exclude_qty, on="분류별요약", how="left").fillna(0)
+    grouped["오더 부족수량"] = grouped["안전 미포함"]
+    grouped["안전재고 부족수량"] = grouped["안전 포함"] - grouped["안전 미포함"]
+    grouped["총수량"] = grouped["오더 부족수량"] + grouped["안전재고 부족수량"]
     grouped = grouped[columns].sort_values("총수량", ascending=False)
 
     total_row = pd.DataFrame(
         [
             {
                 "분류별요약": "전체",
-                "안전 포함": grouped["안전 포함"].sum(),
-                "안전 미포함": grouped["안전 미포함"].sum(),
+                "오더 부족수량": grouped["오더 부족수량"].sum(),
+                "안전재고 부족수량": grouped["안전재고 부족수량"].sum(),
                 "총수량": grouped["총수량"].sum(),
             }
         ]
@@ -1003,14 +1001,15 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
 
     with tab_p:
         st.markdown("**전체 수요 요약 (분류별요약 × 안전 포함 여부)**")
+        st.caption("오더 부족수량 = 안전 미포함, 안전재고 부족수량 = 안전 포함 - 안전 미포함, 총수량 = 오더 부족수량 + 안전재고 부족수량")
         if full_demand_summary.empty:
             st.info("전체 수요 요약을 계산할 데이터가 없습니다.")
         else:
             total_row = full_demand_summary.iloc[0]
             s1, s2, s3 = st.columns(3)
             s1.metric("전체 수요 총수량", f"{float(total_row['총수량']):,.0f}")
-            s2.metric("안전 포함 수량", f"{float(total_row['안전 포함']):,.0f}")
-            s3.metric("안전 미포함 수량", f"{float(total_row['안전 미포함']):,.0f}")
+            s2.metric("오더 부족수량", f"{float(total_row['오더 부족수량']):,.0f}")
+            s3.metric("안전재고 부족수량", f"{float(total_row['안전재고 부족수량']):,.0f}")
             st.dataframe(
                 format_numeric_columns_for_display(full_demand_summary),
                 use_container_width=True,
