@@ -319,6 +319,34 @@ def load_rq_code_maps(base_dir: Path) -> tuple[dict[str, str], dict[str, str], d
         r_name_map = r_name_df.set_index("R코드5")[name_col].to_dict()
     else:
         r_name_map = {}
+
+    # Fallback: enrich R코드5 -> 제품명 from sheet0(제품명정보).
+    # 제품명코드가 P/Q/R/T/U + 4자리인 경우 모두 R + 4자리 키로 정규화한다.
+    try:
+        sheet1 = pd.read_excel(ref_path, sheet_name=sheet_names[0])
+        sheet1.columns = [str(c).strip() for c in sheet1.columns]
+        if len(sheet1.columns) >= 2:
+            code_col = "제품명코드" if "제품명코드" in sheet1.columns else sheet1.columns[0]
+            name1_col = "제품명" if "제품명" in sheet1.columns else sheet1.columns[1]
+            fb = sheet1[[code_col, name1_col]].copy()
+            fb[code_col] = fb[code_col].astype(str).str.strip()
+            fb[name1_col] = fb[name1_col].astype(str).str.strip()
+            fb = fb[
+                (fb[code_col] != "")
+                & (fb[code_col].str.lower() != "nan")
+                & (fb[name1_col] != "")
+                & (fb[name1_col].str.lower() != "nan")
+            ]
+            fb["코드5"] = fb[code_col].str[:5]
+            fb = fb[fb["코드5"].str.match(r"^[PQRSTU]\d{4}$", na=False)]
+            fb["R코드5"] = "R" + fb["코드5"].str[-4:]
+            fb = fb.drop_duplicates(subset=["R코드5", name1_col], keep="first")
+            fb = fb.drop_duplicates(subset=["R코드5"], keep="first")
+            for k, v in fb.set_index("R코드5")[name1_col].to_dict().items():
+                if k not in r_name_map:
+                    r_name_map[k] = v
+    except Exception:
+        pass
     return r_map, q_map, r_name_map
 
 
@@ -580,8 +608,8 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
     grouped_demand["Q코드"] = grouped_demand["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "Q"))
     grouped_demand["R코드5"] = grouped_demand["R코드"].astype(str).str[:5]
     grouped_demand["R코드 제품명"] = grouped_demand["R코드5"].map(r_name_map)
-    grouped_demand["R코드 제품명"] = grouped_demand["R코드 제품명"].fillna(grouped_demand["R코드5"])
     grouped_demand["R코드 제품명"] = grouped_demand["R코드 제품명"].fillna(grouped_demand["제품명"])
+    grouped_demand["R코드 제품명"] = grouped_demand["R코드 제품명"].fillna(grouped_demand["R코드5"])
     grouped_demand["R코드 제품명"] = grouped_demand["R코드 제품명"].replace({"": "-", "nan": "-", "None": "-"}).fillna("-")
     grouped_demand["분류별요약"] = grouped_demand["코드5"].map(product_group_map).fillna("기타")
     grouped_demand["시트분류"] = grouped_demand["코드5"].map(sheet2_group_map).fillna("기타 해외")
