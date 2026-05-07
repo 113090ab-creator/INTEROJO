@@ -350,6 +350,71 @@ def load_rq_code_maps(base_dir: Path) -> tuple[dict[str, str], dict[str, str], d
     return r_map, q_map, r_name_map
 
 
+def load_leadji_process_maps(base_dir: Path) -> tuple[dict[str, str], dict[str, str]]:
+    ref_path = find_product_name_reference_file(base_dir)
+    if ref_path is None:
+        return {}, {}
+
+    sheet_names = pd.ExcelFile(ref_path).sheet_names
+    if len(sheet_names) < 3:
+        return {}, {}
+
+    leadji_sheet = next((s for s in sheet_names if s.replace(" ", "") == "리드지정보"), sheet_names[2])
+    leadji = pd.read_excel(ref_path, sheet_name=leadji_sheet)
+    leadji.columns = [str(c).strip() for c in leadji.columns]
+
+    prod_col = "생산" if "생산" in leadji.columns else (leadji.columns[3] if len(leadji.columns) > 3 else None)
+    q_col = "분리" if "분리" in leadji.columns else (leadji.columns[9] if len(leadji.columns) > 9 else None)
+    r_col = "사출" if "사출" in leadji.columns else (leadji.columns[21] if len(leadji.columns) > 21 else None)
+    if prod_col is None or q_col is None or r_col is None:
+        return {}, {}
+
+    df = leadji[[prod_col, q_col, r_col]].copy()
+    for col in [prod_col, q_col, r_col]:
+        df[col] = df[col].astype(str).str.strip()
+        df.loc[df[col].str.lower() == "nan", col] = ""
+
+    df = df[df[prod_col].str.startswith("P")]
+    if df.empty:
+        return {}, {}
+
+    df["코드5"] = df[prod_col].str[:5]
+    df = df[(df["코드5"] != "") & (df["코드5"].str.lower() != "nan")]
+
+    def normalize_to_code(code: str, prefix: str) -> str:
+        v = str(code).strip()
+        if not v or v.lower() == "nan":
+            return ""
+        if v.startswith(prefix):
+            return v
+        if v.startswith("P"):
+            return f"{prefix}{v[1:]}"
+        return v
+
+    df["Q정규"] = df[q_col].map(lambda x: normalize_to_code(x, "Q"))
+    df["R정규"] = df[r_col].map(lambda x: normalize_to_code(x, "R"))
+
+    q_df = df[df["Q정규"] != ""].drop_duplicates(subset=["코드5"], keep="first")
+    r_df = df[df["R정규"] != ""].drop_duplicates(subset=["코드5"], keep="first")
+    q_map = q_df.set_index("코드5")["Q정규"].to_dict()
+    r_map = r_df.set_index("코드5")["R정규"].to_dict()
+    return r_map, q_map
+
+
+def merge_mapped_base_code(inferred_code: str, mapped_base_code: str, prefix: str) -> str:
+    inferred = str(inferred_code).strip()
+    mapped = str(mapped_base_code).strip()
+
+    if not mapped or mapped.lower() == "nan":
+        return inferred
+    if not inferred or inferred.lower() == "nan":
+        return mapped
+
+    if inferred.startswith(prefix) and mapped.startswith(prefix) and len(inferred) >= 5 and len(mapped) >= 5:
+        return mapped[:5] + inferred[5:]
+    return mapped
+
+
 def build_data_refresh_key(base_dir: Path) -> str:
     inv_path, dem_path = find_excel_files(base_dir)
     ref_path = find_product_name_reference_file(base_dir)
@@ -540,7 +605,8 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
     inv_path, dem_path = find_excel_files(BASE_DIR)
     product_name_map, product_group_map = load_product_reference_maps(BASE_DIR)
     sheet2_group_map = load_sheet2_group_map(BASE_DIR)
-    _, _, r_name_map = load_rq_code_maps(BASE_DIR)
+    r_ref_map, q_ref_map, r_name_map = load_rq_code_maps(BASE_DIR)
+    leadji_r_map, leadji_q_map = load_leadji_process_maps(BASE_DIR)
     process_code_map, warehouse_qty_col_indices, qty_col_indices, total_qty_col_indices = extract_demand_header_info(dem_path)
 
     inv = pd.read_excel(inv_path, sheet_name=0)
@@ -604,8 +670,19 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
     grouped_demand["코드5"] = grouped_demand["품목코드"].str[:5]
     grouped_demand["제품명"] = grouped_demand["코드5"].map(product_name_map).fillna(grouped_demand["제품명"])
     grouped_demand["제품명"] = grouped_demand["제품명"].replace({"": "-", "nan": "-", "None": "-"}).fillna("-")
-    grouped_demand["R코드"] = grouped_demand["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "R"))
-    grouped_demand["Q코드"] = grouped_demand["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "Q"))
+
+    inferred_r = grouped_demand["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "R"))
+    inferred_q = grouped_demand["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "Q"))
+    mapped_r_base = grouped_demand["코드5"].map(r_ref_map).fillna(grouped_demand["코드5"].map(leadji_r_map))
+    mapped_q_base = grouped_demand["코드5"].map(q_ref_map).fillna(grouped_demand["코드5"].map(leadji_q_map))
+
+    grouped_demand["R코드"] = [
+        merge_mapped_base_code(inferred, mapped, "R") for inferred, mapped in zip(inferred_r, mapped_r_base)
+    ]
+    grouped_demand["Q코드"] = [
+        merge_mapped_base_code(inferred, mapped, "Q") for inferred, mapped in zip(inferred_q, mapped_q_base)
+    ]
+
     grouped_demand["R코드5"] = grouped_demand["R코드"].astype(str).str[:5]
     grouped_demand["R코드 제품명"] = grouped_demand["R코드5"].map(r_name_map)
     grouped_demand["R코드 제품명"] = grouped_demand["R코드 제품명"].fillna(grouped_demand["제품명"])
@@ -626,11 +703,14 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
         )
 
     code_stock = pd.DataFrame({"품목코드": grouped_demand["품목코드"].drop_duplicates()})
+    rq_by_p = grouped_demand.drop_duplicates(subset=["품목코드"], keep="first").set_index("품목코드")[["R코드", "Q코드"]]
+    r_by_p = rq_by_p["R코드"].to_dict()
+    q_by_p = rq_by_p["Q코드"].to_dict()
     code_stock["사출창고"] = code_stock["품목코드"].map(
-        lambda x: stock_lookup["사출창고"].get(map_demand_code_to_process_code(x, "R"), 0)
+        lambda x: stock_lookup["사출창고"].get(r_by_p.get(x, map_demand_code_to_process_code(x, "R")), 0)
     )
     code_stock["분리창고"] = code_stock["품목코드"].map(
-        lambda x: stock_lookup["분리창고"].get(map_demand_code_to_process_code(x, "Q"), 0)
+        lambda x: stock_lookup["분리창고"].get(q_by_p.get(x, map_demand_code_to_process_code(x, "Q")), 0)
     )
     code_stock["검사접착창고"] = code_stock["품목코드"].map(
         lambda x: stock_lookup["검사접착창고"].get(x, 0)
@@ -662,8 +742,8 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
                 process_code_map.get("누수규격검사 창고", "-"),
             ],
             "재고코드 매핑 규칙": [
-                "P코드 -> R코드 변환",
-                "P코드 -> Q코드 변환",
+                "분류정보/리드지정보 우선, 없으면 P코드->R코드 유추",
+                "분류정보/리드지정보 우선, 없으면 P코드->Q코드 유추",
                 "P코드 그대로 사용",
                 "P코드 그대로 사용",
             ],
