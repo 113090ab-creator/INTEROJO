@@ -776,12 +776,9 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
 def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
     st.subheader("필터")
     st.caption(f"업데이트: {updated_at}")
-    st.caption("기본 적용: R코드5 기준 P코드5 종류 2개 이상만 표시")
+    st.caption("기본 적용: 전체 수요")
 
     scope_df = df.copy()
-    if {"R코드5", "P코드5"}.issubset(scope_df.columns):
-        r_scope_count = scope_df.groupby("R코드5")["P코드5"].transform("nunique")
-        scope_df = scope_df[r_scope_count >= 2]
 
     r1c1, r1c2 = st.columns([3.0, 1.2])
     with r1c1:
@@ -826,8 +823,11 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
 
     rq_option_map: dict[str, tuple[str, str]] = {}
     if {"R코드5", "Q코드5", "P코드5", "부족수량"}.issubset(scope_df.columns):
+        rq_scope_df = scope_df.copy()
+        r_scope_count = rq_scope_df.groupby("R코드5")["P코드5"].transform("nunique")
+        rq_scope_df = rq_scope_df[r_scope_count >= 2]
         rq_meta = (
-            scope_df.groupby(["R코드5", "Q코드5"], as_index=False)
+            rq_scope_df.groupby(["R코드5", "Q코드5"], as_index=False)
             .agg({"P코드5": "nunique", "부족수량": "sum"})
             .rename(columns={"P코드5": "p_count", "부족수량": "sum_shortage"})
             .sort_values(["p_count", "sum_shortage"], ascending=[False, False])
@@ -979,7 +979,9 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         q2.metric("Q기준 부족수량 합계", f"{q_summary['부족수량 합계'].sum():,.0f}")
         q3.metric("Q기준 공정재고 합계", f"{q_summary['공정재고 합계'].sum():,.0f}")
 
-        q_table = filtered[detail_columns].sort_values(["Q코드5", "Q코드", "부족수량"], ascending=[True, True, False])
+        q_sort_cols = ["Q코드5", "Q코드", "부족수량"] if {"Q코드5", "Q코드", "부족수량"}.issubset(filtered.columns) else ["Q코드", "부족수량"]
+        q_sort_asc = [True, True, False] if len(q_sort_cols) == 3 else [True, False]
+        q_table = filtered.sort_values(q_sort_cols, ascending=q_sort_asc)[detail_columns]
         q_table_display = format_numeric_columns_for_display(q_table)
         st.dataframe(
             q_table_display,
@@ -999,7 +1001,9 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
             r2.metric("동일 RQ 그룹 수(P코드5 2+)", f"{same_group_count:,}")
             r3.metric("사출 부족수량 합계", f"{rq_summary['사출 부족수량'].sum():,.0f}")
 
-            rq_table = filtered[detail_columns].sort_values(["R코드5", "Q코드5", "부족수량"], ascending=[True, True, False])
+            rq_sort_cols = ["R코드5", "Q코드5", "부족수량"] if {"R코드5", "Q코드5", "부족수량"}.issubset(filtered.columns) else ["R코드", "Q코드", "부족수량"]
+            rq_sort_asc = [True, True, False]
+            rq_table = filtered.sort_values(rq_sort_cols, ascending=rq_sort_asc)[detail_columns]
             rq_table_display = format_numeric_columns_for_display(rq_table)
             st.dataframe(
                 rq_table_display,
