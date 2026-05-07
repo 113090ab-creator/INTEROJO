@@ -605,6 +605,48 @@ def build_qcode_summary(df: pd.DataFrame) -> pd.DataFrame:
     return summary[columns]
 
 
+def build_summary_group_totals_with_safe_split(df: pd.DataFrame) -> pd.DataFrame:
+    columns = ["분류별요약", "안전 포함", "안전 미포함", "총수량"]
+    if df.empty or "부족수량" not in df.columns:
+        return pd.DataFrame(columns=columns)
+
+    base = df.copy()
+    if "분류별요약" not in base.columns:
+        base["분류별요약"] = "(미분류)"
+    if "이니셜" not in base.columns:
+        base["이니셜"] = ""
+
+    group_label = base["분류별요약"].astype(str).str.strip()
+    base["분류별요약"] = group_label.replace({"": "(미분류)", "nan": "(미분류)", "None": "(미분류)"})
+    base["안전구분"] = base["이니셜"].astype(str).str.contains("안전", na=False).map({True: "안전 포함", False: "안전 미포함"})
+
+    grouped = (
+        base.groupby(["분류별요약", "안전구분"], as_index=False)["부족수량"].sum()
+        .pivot(index="분류별요약", columns="안전구분", values="부족수량")
+        .fillna(0)
+        .reset_index()
+    )
+
+    for col in ["안전 포함", "안전 미포함"]:
+        if col not in grouped.columns:
+            grouped[col] = 0
+
+    grouped["총수량"] = grouped["안전 포함"] + grouped["안전 미포함"]
+    grouped = grouped[columns].sort_values("총수량", ascending=False)
+
+    total_row = pd.DataFrame(
+        [
+            {
+                "분류별요약": "전체",
+                "안전 포함": grouped["안전 포함"].sum(),
+                "안전 미포함": grouped["안전 미포함"].sum(),
+                "총수량": grouped["총수량"].sum(),
+            }
+        ]
+    )
+    return pd.concat([total_row, grouped], ignore_index=True)
+
+
 @st.cache_data(show_spinner=False)
 def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     _ = refresh_key
@@ -932,6 +974,7 @@ def load_leadji_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
     enriched_df = add_rq_group_columns(df)
+    full_demand_summary = build_summary_group_totals_with_safe_split(enriched_df)
     filtered = apply_filters(enriched_df, updated_at)
     q_summary = build_qcode_summary(filtered)
     rq_summary = build_rq_group_summary(filtered)
@@ -959,6 +1002,21 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
     tab_p, tab_q, tab_rq = st.tabs(["P코드 기준 현황", "Q코드 기준 집계", "RQ코드 그룹 집계"])
 
     with tab_p:
+        st.markdown("**전체 수요 요약 (분류별요약 × 안전 포함 여부)**")
+        if full_demand_summary.empty:
+            st.info("전체 수요 요약을 계산할 데이터가 없습니다.")
+        else:
+            total_row = full_demand_summary.iloc[0]
+            s1, s2, s3 = st.columns(3)
+            s1.metric("전체 수요 총수량", f"{float(total_row['총수량']):,.0f}")
+            s2.metric("안전 포함 수량", f"{float(total_row['안전 포함']):,.0f}")
+            s3.metric("안전 미포함 수량", f"{float(total_row['안전 미포함']):,.0f}")
+            st.dataframe(
+                format_numeric_columns_for_display(full_demand_summary),
+                use_container_width=True,
+                height=320,
+            )
+
         c1, c2, c3 = st.columns(3)
         c1.metric("현황 행 수", f"{len(filtered):,}")
         c2.metric("부족수량 합계", f"{filtered['부족수량'].sum():,.0f}")
