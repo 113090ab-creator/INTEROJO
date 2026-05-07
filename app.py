@@ -784,9 +784,7 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
         only_with_stock = st.checkbox("공정재고만", value=False, key="flt_only_stock")
         exclude_safe_initial = st.checkbox("안전 이니셜 제외", value=False, key="flt_exclude_safe_initial")
         only_same_rq_group = st.checkbox("동일 RQ그룹만", value=False, key="flt_only_same_rq_group")
-        if "flt_only_same_r_group" not in st.session_state:
-            st.session_state["flt_only_same_r_group"] = True
-        only_same_r_group = st.checkbox("동일 R코드만(P코드2+, 파워포함)", key="flt_only_same_r_group")
+        only_same_r_group = st.checkbox("동일 R코드만(P코드2+)", value=False, key="flt_only_same_r_group")
 
     product_query = st.text_input(
         "R코드(5자리) 제품명 검색",
