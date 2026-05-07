@@ -53,17 +53,12 @@ def find_excel_files(base_dir: Path) -> tuple[Path, Path]:
 
 def get_data_updated_at(base_dir: Path) -> str:
     try:
-        inv_path, dem_path = find_excel_files(base_dir)
+        _, dem_path = find_excel_files(base_dir)
     except FileNotFoundError:
         return "-"
 
-    paths = [inv_path, dem_path]
-    ref_path = find_product_name_reference_file(base_dir)
-    if ref_path is not None:
-        paths.append(ref_path)
-
-    latest_path = max(paths, key=lambda p: p.stat().st_mtime)
-    latest_dt = datetime.fromtimestamp(latest_path.stat().st_mtime, tz=DISPLAY_TZ)
+    # 업데이트 시간은 수요정보(전공정) 파일 기준으로 표시한다.
+    latest_dt = datetime.fromtimestamp(dem_path.stat().st_mtime, tz=DISPLAY_TZ)
     return latest_dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
