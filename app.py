@@ -306,12 +306,15 @@ def load_rq_code_maps(base_dir: Path) -> tuple[dict[str, str], dict[str, str], d
     ]
 
     df["코드5"] = df["코드"].str[:5]
-    df = df.drop_duplicates(subset=["코드5"], keep="first")
+    code5_df = df.drop_duplicates(subset=["코드5"], keep="first")
 
-    q_map = df.set_index("코드5")["Q코드"].to_dict()
-    r_map = df.set_index("코드5")["R코드"].to_dict()
+    q_map = code5_df.set_index("코드5")["Q코드"].to_dict()
+    r_map = code5_df.set_index("코드5")["R코드"].to_dict()
     if name_col:
-        r_name_map = df.set_index("코드5")[name_col].to_dict()
+        r_name_df = df[(df[name_col] != "") & (df[name_col].str.lower() != "nan")]
+        r_name_df = r_name_df.drop_duplicates(subset=["R코드", name_col], keep="first")
+        r_name_df = r_name_df.drop_duplicates(subset=["R코드"], keep="first")
+        r_name_map = r_name_df.set_index("R코드")[name_col].to_dict()
     else:
         r_name_map = {}
     return r_map, q_map, r_name_map
@@ -573,7 +576,8 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
     grouped_demand["제품명"] = grouped_demand["제품명"].replace({"": "-", "nan": "-", "None": "-"}).fillna("-")
     grouped_demand["R코드"] = grouped_demand["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "R"))
     grouped_demand["Q코드"] = grouped_demand["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "Q"))
-    grouped_demand["R코드 제품명"] = grouped_demand["코드5"].map(r_name_map)
+    grouped_demand["R코드 제품명"] = grouped_demand["R코드"].map(r_name_map)
+    grouped_demand["R코드 제품명"] = grouped_demand["R코드 제품명"].fillna(grouped_demand["R코드"])
     grouped_demand["R코드 제품명"] = grouped_demand["R코드 제품명"].fillna(grouped_demand["제품명"])
     grouped_demand["R코드 제품명"] = grouped_demand["R코드 제품명"].replace({"": "-", "nan": "-", "None": "-"}).fillna("-")
     grouped_demand["분류별요약"] = grouped_demand["코드5"].map(product_group_map).fillna("기타")
@@ -684,19 +688,11 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
     summary_sum_map = (
         df.groupby("분류별요약", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
     )
-    product_sum_map = (
-        df.groupby("R코드 제품명", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
-    )
 
     sheet_options = ["전체"] + list(sheet_sum_map.keys())
     summary_options = ["전체"] + list(summary_sum_map.keys())
-    product_top_n = 20
-    product_options = ["전체"] + [p for p in list(product_sum_map.keys()) if str(p).strip() not in {"", "-", "nan", "None"}][:product_top_n]
     sheet_count_map = {"전체": float(df["부족수량"].sum()), **sheet_sum_map}
     summary_count_map = {"전체": float(df["부족수량"].sum()), **summary_sum_map}
-    product_count_map = {"전체": float(df["부족수량"].sum())}
-    for product_name in product_options[1:]:
-        product_count_map[product_name] = float(product_sum_map.get(product_name, 0))
 
     selected_sheet_option = st.pills(
         "시트 분류",
@@ -711,13 +707,6 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
         default="전체",
         key="flt_summary_pills",
         format_func=lambda x: format_pill_label(x, summary_count_map),
-    )
-    selected_product_option = st.pills(
-        "R코드 제품명 (상위)",
-        options=product_options,
-        default="전체",
-        key="flt_product_pills",
-        format_func=lambda x: format_pill_label(x, product_count_map),
     )
 
     rq_option_map: dict[str, tuple[str, str]] = {}
@@ -741,26 +730,50 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
     else:
         selected_rq_option = "전체"
 
-    filtered = df.copy()
-    search_cols = [c for c in ["이니셜", "거래처", "품목코드", "제품명", "R코드 제품명", "R코드", "Q코드"] if c in filtered.columns]
-    filtered = filter_with_terms_any(filtered, search_cols, unified_query)
-    filtered = filter_with_terms(filtered, "R코드 제품명", product_query)
+    base_filtered = df.copy()
+    search_cols = [c for c in ["이니셜", "거래처", "품목코드", "제품명", "R코드 제품명", "R코드", "Q코드"] if c in base_filtered.columns]
+    base_filtered = filter_with_terms_any(base_filtered, search_cols, unified_query)
     if exclude_safe_initial:
-        filtered = filtered[~filtered["이니셜"].astype(str).str.contains("안전", na=False)]
+        base_filtered = base_filtered[~base_filtered["이니셜"].astype(str).str.contains("안전", na=False)]
     if selected_sheet_option and selected_sheet_option != "전체":
-        filtered = filtered[filtered["시트분류"] == selected_sheet_option]
+        base_filtered = base_filtered[base_filtered["시트분류"] == selected_sheet_option]
     if selected_summary_option and selected_summary_option != "전체":
-        filtered = filtered[filtered["분류별요약"] == selected_summary_option]
-    if selected_product_option and selected_product_option != "전체":
-        filtered = filtered[filtered["R코드 제품명"] == selected_product_option]
+        base_filtered = base_filtered[base_filtered["분류별요약"] == selected_summary_option]
     if selected_rq_option != "전체" and selected_rq_option in rq_option_map:
         r_code, q_code = rq_option_map[selected_rq_option]
-        filtered = filtered[(filtered["R코드"].astype(str) == r_code) & (filtered["Q코드"].astype(str) == q_code)]
-    if only_same_rq_group and {"R코드", "Q코드", "품목코드"}.issubset(filtered.columns):
-        p_count_per_group = filtered.groupby(["R코드", "Q코드"])["품목코드"].transform("nunique")
-        filtered = filtered[p_count_per_group >= 2]
+        base_filtered = base_filtered[(base_filtered["R코드"].astype(str) == r_code) & (base_filtered["Q코드"].astype(str) == q_code)]
+    if only_same_rq_group and {"R코드", "Q코드", "품목코드"}.issubset(base_filtered.columns):
+        p_count_per_group = base_filtered.groupby(["R코드", "Q코드"])["품목코드"].transform("nunique")
+        base_filtered = base_filtered[p_count_per_group >= 2]
     if only_with_stock:
-        filtered = filtered[filtered["공정재고 합계"] > 0]
+        base_filtered = base_filtered[base_filtered["공정재고 합계"] > 0]
+
+    # Build top product pills from the currently filtered context.
+    product_sum_map = (
+        base_filtered.groupby("R코드 제품명", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
+    )
+    product_top_n = 20
+    product_options = ["전체"] + [
+        p for p in list(product_sum_map.keys()) if str(p).strip() not in {"", "-", "nan", "None"}
+    ][:product_top_n]
+    product_count_map = {"전체": float(base_filtered["부족수량"].sum())}
+    for product_name in product_options[1:]:
+        product_count_map[product_name] = float(product_sum_map.get(product_name, 0))
+
+    selected_product_option = st.pills(
+        "R코드 제품명 (상위)",
+        options=product_options,
+        default="전체",
+        key="flt_product_pills",
+        format_func=lambda x: format_pill_label(x, product_count_map),
+    )
+    if selected_product_option not in product_options:
+        selected_product_option = "전체"
+
+    filtered = base_filtered.copy()
+    filtered = filter_with_terms(filtered, "R코드 제품명", product_query)
+    if selected_product_option != "전체":
+        filtered = filtered[filtered["R코드 제품명"] == selected_product_option]
 
     return filtered
 
