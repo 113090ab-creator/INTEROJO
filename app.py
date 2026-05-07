@@ -507,7 +507,7 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
     inv_path, dem_path = find_excel_files(BASE_DIR)
     product_name_map, product_group_map = load_product_reference_maps(BASE_DIR)
     sheet2_group_map = load_sheet2_group_map(BASE_DIR)
-    r_code_map, q_code_map, r_name_map = load_rq_code_maps(BASE_DIR)
+    _, _, r_name_map = load_rq_code_maps(BASE_DIR)
     process_code_map, warehouse_qty_col_indices, qty_col_indices, total_qty_col_indices = extract_demand_header_info(dem_path)
 
     inv = pd.read_excel(inv_path, sheet_name=0)
@@ -571,11 +571,9 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
     grouped_demand["코드5"] = grouped_demand["품목코드"].str[:5]
     grouped_demand["제품명"] = grouped_demand["코드5"].map(product_name_map).fillna(grouped_demand["제품명"])
     grouped_demand["제품명"] = grouped_demand["제품명"].replace({"": "-", "nan": "-", "None": "-"}).fillna("-")
-    grouped_demand["R코드"] = grouped_demand["코드5"].map(r_code_map)
-    grouped_demand["Q코드"] = grouped_demand["코드5"].map(q_code_map)
+    grouped_demand["R코드"] = grouped_demand["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "R"))
+    grouped_demand["Q코드"] = grouped_demand["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "Q"))
     grouped_demand["R코드 제품명"] = grouped_demand["코드5"].map(r_name_map)
-    grouped_demand["R코드"] = grouped_demand["R코드"].fillna(grouped_demand["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "R")))
-    grouped_demand["Q코드"] = grouped_demand["Q코드"].fillna(grouped_demand["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "Q")))
     grouped_demand["R코드 제품명"] = grouped_demand["R코드 제품명"].fillna(grouped_demand["제품명"])
     grouped_demand["R코드 제품명"] = grouped_demand["R코드 제품명"].replace({"": "-", "nan": "-", "None": "-"}).fillna("-")
     grouped_demand["분류별요약"] = grouped_demand["코드5"].map(product_group_map).fillna("기타")
