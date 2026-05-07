@@ -673,8 +673,8 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
 
     inferred_r = grouped_demand["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "R"))
     inferred_q = grouped_demand["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "Q"))
-    mapped_r_base = grouped_demand["코드5"].map(r_ref_map).fillna(grouped_demand["코드5"].map(leadji_r_map))
-    mapped_q_base = grouped_demand["코드5"].map(q_ref_map).fillna(grouped_demand["코드5"].map(leadji_q_map))
+    mapped_r_base = grouped_demand["코드5"].map(leadji_r_map).fillna(grouped_demand["코드5"].map(r_ref_map))
+    mapped_q_base = grouped_demand["코드5"].map(leadji_q_map).fillna(grouped_demand["코드5"].map(q_ref_map))
 
     grouped_demand["R코드"] = [
         merge_mapped_base_code(inferred, mapped, "R") for inferred, mapped in zip(inferred_r, mapped_r_base)
@@ -742,8 +742,8 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
                 process_code_map.get("누수규격검사 창고", "-"),
             ],
             "재고코드 매핑 규칙": [
-                "분류정보/리드지정보 우선, 없으면 P코드->R코드 유추",
-                "분류정보/리드지정보 우선, 없으면 P코드->Q코드 유추",
+                "리드지정보/분류정보 우선, 없으면 P코드->R코드 유추",
+                "리드지정보/분류정보 우선, 없으면 P코드->Q코드 유추",
                 "P코드 그대로 사용",
                 "P코드 그대로 사용",
             ],
@@ -784,6 +784,7 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
         only_with_stock = st.checkbox("공정재고만", value=False, key="flt_only_stock")
         exclude_safe_initial = st.checkbox("안전 이니셜 제외", value=False, key="flt_exclude_safe_initial")
         only_same_rq_group = st.checkbox("동일 RQ그룹만", value=False, key="flt_only_same_rq_group")
+        only_same_r_group = st.checkbox("동일 R코드만(P코드2+)", value=False, key="flt_only_same_r_group")
 
     product_query = st.text_input(
         "R코드(5자리) 제품명 검색",
@@ -856,6 +857,9 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
     if only_same_rq_group and {"R코드", "Q코드", "품목코드"}.issubset(base_filtered.columns):
         p_count_per_group = base_filtered.groupby(["R코드", "Q코드"])["품목코드"].transform("nunique")
         base_filtered = base_filtered[p_count_per_group >= 2]
+    if only_same_r_group and {"R코드", "품목코드"}.issubset(base_filtered.columns):
+        p_count_per_r = base_filtered.groupby("R코드")["품목코드"].transform("nunique")
+        base_filtered = base_filtered[p_count_per_r >= 2]
     if only_with_stock:
         base_filtered = base_filtered[base_filtered["공정재고 합계"] > 0]
 
