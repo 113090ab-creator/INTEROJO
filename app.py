@@ -1008,21 +1008,21 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
     tab_p, tab_q, tab_rq = st.tabs(["P코드 기준 현황", "Q코드 기준 집계", "RQ코드 그룹 집계"])
 
     with tab_p:
-        st.markdown("**전체 수요 요약 (분류별요약 × 안전 포함 여부)**")
-        st.caption("오더 부족수량 = 안전 미포함, 안전재고 부족수량 = 안전 포함 - 안전 미포함, 총수량 = 오더 부족수량 + 안전재고 부족수량")
-        if full_demand_summary.empty:
-            st.info("전체 수요 요약을 계산할 데이터가 없습니다.")
-        else:
-            total_row = full_demand_summary.iloc[0]
-            s1, s2, s3 = st.columns(3)
-            s1.metric("전체 수요 총수량", f"{float(total_row['총수량']):,.0f}")
-            s2.metric("오더 부족수량", f"{float(total_row['오더 부족수량']):,.0f}")
-            s3.metric("안전재고 부족수량", f"{float(total_row['안전재고 부족수량']):,.0f}")
-            st.dataframe(
-                format_numeric_columns_for_display(full_demand_summary),
-                use_container_width=True,
-                height=320,
-            )
+        with st.expander("전체 수요 요약 (분류별요약 × 안전 포함 여부)", expanded=True):
+            st.caption("오더 부족수량 = 안전 미포함, 안전재고 부족수량 = 안전 포함 - 안전 미포함, 총수량 = 오더 부족수량 + 안전재고 부족수량")
+            if full_demand_summary.empty:
+                st.info("전체 수요 요약을 계산할 데이터가 없습니다.")
+            else:
+                total_row = full_demand_summary.iloc[0]
+                s1, s2, s3 = st.columns(3)
+                s1.metric("전체 수요 총수량", f"{float(total_row['총수량']):,.0f}")
+                s2.metric("오더 부족수량", f"{float(total_row['오더 부족수량']):,.0f}")
+                s3.metric("안전재고 부족수량", f"{float(total_row['안전재고 부족수량']):,.0f}")
+                st.dataframe(
+                    format_numeric_columns_for_display(full_demand_summary),
+                    use_container_width=True,
+                    height=320,
+                )
 
         c1, c2, c3 = st.columns(3)
         c1.metric("현황 행 수", f"{len(filtered):,}")
