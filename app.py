@@ -1024,8 +1024,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
                     height=320,
                 )
 
-        c1, c2, c3 = st.columns(3)
-        c1.metric("현황 행 수", f"{len(filtered):,}")
+        c2, c3 = st.columns(2)
         c2.metric("부족수량 합계", f"{filtered['부족수량'].sum():,.0f}")
         c3.metric("공정재고 합계", f"{filtered['공정재고 합계'].sum():,.0f}")
 
