@@ -988,6 +988,22 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         "누수규격검사 창고",
         "공정재고 합계",
     ]
+    detail_column_config = {
+        "거래처": st.column_config.Column(width="small"),
+        "이니셜": st.column_config.Column(width="small"),
+        "품목코드": st.column_config.Column(width="medium"),
+        "R코드": st.column_config.Column(width="medium"),
+        "Q코드": st.column_config.Column(width="medium"),
+        "제품명": st.column_config.Column(width="large"),
+        "파워": st.column_config.Column(width="small"),
+        "납기일": st.column_config.Column(width="small"),
+        "부족수량": st.column_config.Column(width="small"),
+        "사출창고": st.column_config.Column(width="small"),
+        "분리창고": st.column_config.Column(width="small"),
+        "검사접착창고": st.column_config.Column(width="small"),
+        "누수규격검사 창고": st.column_config.Column(width="small"),
+        "공정재고 합계": st.column_config.Column(width="small"),
+    }
 
     tab_p, tab_q, tab_rq = st.tabs(["P코드 기준 현황", "Q코드 기준 집계", "RQ코드 그룹 집계"])
 
@@ -1020,6 +1036,9 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
             p_table_display,
             use_container_width=True,
             height=700,
+            column_order=detail_columns,
+            column_config=detail_column_config,
+            key="shortage_p_table_v2",
         )
 
     with tab_q:
@@ -1036,6 +1055,9 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
             q_table_display,
             use_container_width=True,
             height=700,
+            column_order=detail_columns,
+            column_config=detail_column_config,
+            key="shortage_q_table_v2",
         )
 
     with tab_rq:
@@ -1058,6 +1080,9 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
                 rq_table_display,
                 use_container_width=True,
                 height=700,
+                column_order=detail_columns,
+                column_config=detail_column_config,
+                key="shortage_rq_table_v2",
             )
 
 
