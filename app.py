@@ -1181,8 +1181,14 @@ def build_leadji_requirement_summary(
                     for w_col in warehouse_columns:
                         summary[w_col] = pd.to_numeric(summary[w_col], errors="coerce").fillna(0)
 
+    active_warehouse_columns: list[str] = []
+    for w_col in warehouse_columns:
+        col_sum = pd.to_numeric(summary[w_col], errors="coerce").fillna(0).sum() if w_col in summary.columns else 0
+        if col_sum > 0:
+            active_warehouse_columns.append(w_col)
+
     summary["최소납기일"] = pd.to_datetime(summary["최소납기일"], errors="coerce").dt.strftime("%Y-%m-%d").fillna("-")
-    return summary[["BS코드", "BS명", "생산필요수량", *warehouse_columns, "최소납기일"]]
+    return summary[["BS코드", "BS명", "생산필요수량", *active_warehouse_columns, "최소납기일"]]
 
 
 def render_leadji_dashboard(
