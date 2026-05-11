@@ -1024,9 +1024,12 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
                     height=320,
                 )
 
-        c2, c3 = st.columns(2)
-        c2.metric("부족수량 합계", f"{filtered['부족수량'].sum():,.0f}")
-        c3.metric("공정재고 합계", f"{filtered['공정재고 합계'].sum():,.0f}")
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("부족수량 합계", f"{filtered['부족수량'].sum():,.0f}")
+        c2.metric("사출창고 합계", f"{filtered['사출창고'].sum():,.0f}")
+        c3.metric("분리창고 합계", f"{filtered['분리창고'].sum():,.0f}")
+        c4.metric("검사접착창고 합계", f"{filtered['검사접착창고'].sum():,.0f}")
+        c5.metric("누수규격검사창고 합계", f"{filtered['누수규격검사 창고'].sum():,.0f}")
 
         p_table = filtered[detail_columns].sort_values(["부족수량", "이니셜", "거래처"], ascending=[False, True, True])
         p_table_display = format_numeric_columns_for_display(p_table)
