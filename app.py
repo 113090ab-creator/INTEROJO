@@ -1091,16 +1091,9 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
 def build_leadji_requirement_summary(
     shortage_df: pd.DataFrame, leadji_info: pd.DataFrame, leadji_stock: pd.DataFrame
 ) -> pd.DataFrame:
-    columns = [
-        "BS코드",
-        "BS명",
-        "생산필요수량",
-        "리드지재고 보유한 창고1",
-        "리드지재고 보유한 창고2",
-        "최소납기일",
-    ]
+    fixed_columns = ["BS코드", "BS명", "생산필요수량", "최소납기일"]
     if shortage_df.empty or "품목코드" not in shortage_df.columns or "부족수량" not in shortage_df.columns:
-        return pd.DataFrame(columns=columns)
+        return pd.DataFrame(columns=fixed_columns)
 
     base = shortage_df.copy()
     base["P코드5"] = base["품목코드"].astype(str).str.strip().str[:5]
@@ -1118,7 +1111,7 @@ def build_leadji_requirement_summary(
     )
 
     if leadji_info.empty:
-        return pd.DataFrame(columns=columns)
+        return pd.DataFrame(columns=fixed_columns)
 
     info_cols = leadji_info.columns.tolist()
     prod_col = pick_first_existing_column(info_cols, ["생산"])
@@ -1133,7 +1126,7 @@ def build_leadji_requirement_summary(
         b1_name_col = info_cols[13]
 
     if prod_col is None or b1_col is None:
-        return pd.DataFrame(columns=columns)
+        return pd.DataFrame(columns=fixed_columns)
 
     selected_cols = [prod_col, b1_col] + ([b1_name_col] if b1_name_col is not None else [])
     mapping = leadji_info[selected_cols].copy()
@@ -1159,9 +1152,7 @@ def build_leadji_requirement_summary(
         .agg({"생산필요수량": "sum", "최소납기일": "min"})
         .sort_values(["생산필요수량", "BS코드"], ascending=[False, True])
     )
-
-    summary["리드지재고 보유한 창고1"] = ""
-    summary["리드지재고 보유한 창고2"] = ""
+    warehouse_columns: list[str] = []
     if not leadji_stock.empty:
         stock_cols = leadji_stock.columns.tolist()
         code_col = pick_first_existing_column(stock_cols, ["품목코드"])
@@ -1175,18 +1166,23 @@ def build_leadji_requirement_summary(
             stock = stock[(stock[code_col] != "") & (stock[warehouse_col] != "") & (stock[qty_col] > 0)]
             if not stock.empty:
                 stock = stock.groupby([code_col, warehouse_col], as_index=False)[qty_col].sum()
-                stock = stock.sort_values([code_col, qty_col], ascending=[True, False])
-                wh_map = stock.groupby(code_col)[warehouse_col].apply(list).to_dict()
-
-                def pick_wh(bs_code: str, idx: int) -> str:
-                    wh_list = wh_map.get(str(bs_code).strip(), [])
-                    return wh_list[idx] if len(wh_list) > idx else ""
-
-                summary["리드지재고 보유한 창고1"] = summary["BS코드"].map(lambda x: pick_wh(x, 0))
-                summary["리드지재고 보유한 창고2"] = summary["BS코드"].map(lambda x: pick_wh(x, 1))
+                pivot = stock.pivot_table(
+                    index=code_col,
+                    columns=warehouse_col,
+                    values=qty_col,
+                    aggfunc="sum",
+                    fill_value=0,
+                )
+                if not pivot.empty:
+                    warehouse_totals = pivot.sum(axis=0).sort_values(ascending=False)
+                    warehouse_columns = [str(c) for c in warehouse_totals.index.tolist()]
+                    pivot = pivot.reindex(columns=warehouse_columns).reset_index().rename(columns={code_col: "BS코드"})
+                    summary = summary.merge(pivot, on="BS코드", how="left")
+                    for w_col in warehouse_columns:
+                        summary[w_col] = pd.to_numeric(summary[w_col], errors="coerce").fillna(0)
 
     summary["최소납기일"] = pd.to_datetime(summary["최소납기일"], errors="coerce").dt.strftime("%Y-%m-%d").fillna("-")
-    return summary[columns]
+    return summary[["BS코드", "BS명", "생산필요수량", *warehouse_columns, "최소납기일"]]
 
 
 def render_leadji_dashboard(
@@ -1202,8 +1198,9 @@ def render_leadji_dashboard(
         if summary_df.empty:
             st.warning("BS 생산 필요 요약을 계산할 데이터가 없습니다.")
         else:
-            st.caption("생산필요수량: 하이드레이션검사 공정 기준의 부족수량 반영")
+            st.caption("생산필요수량: 수요파일 [80]누수/규격검사 생산수량 기준 부족수량 반영")
             st.caption("최소납기일: 누수규격검사 기준 수요 정보의 최소 납기일")
+            st.caption("창고 컬럼: 리드지 재고 시트에서 BS코드별 재고가 존재하는 창고와 수량")
 
             qcol, _ = st.columns([3.0, 1.0])
             with qcol:
@@ -1214,11 +1211,7 @@ def render_leadji_dashboard(
                     placeholder="예: BS0314, 블리스터케이스, 원료창고",
                 ).strip()
 
-            summary_search_cols = [
-                c
-                for c in ["BS코드", "BS명", "리드지재고 보유한 창고1", "리드지재고 보유한 창고2"]
-                if c in summary_df.columns
-            ]
+            summary_search_cols = [c for c in summary_df.columns if c not in ["생산필요수량"]]
             filtered_summary = filter_with_terms_any(summary_df, summary_search_cols, summary_query)
 
             c1, c2, c3 = st.columns(3)
