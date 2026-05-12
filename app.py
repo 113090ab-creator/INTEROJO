@@ -505,6 +505,55 @@ def add_rq_group_columns(df: pd.DataFrame) -> pd.DataFrame:
     return enriched
 
 
+def build_rcode_summary(df: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "R코드",
+        "R코드 제품명",
+        "대표 Q코드",
+        "P코드5 수",
+        "제품명 예시",
+        "생산수량 합계",
+        "사출창고 합계",
+        "분리창고 합계",
+        "공정재고 합계",
+        "사출 부족수량",
+    ]
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+
+    grouped = (
+        df.groupby("R코드5", as_index=False)
+        .agg(
+            {
+                "R코드 제품명": lambda s: summarize_unique(s, head_count=1),
+                "Q코드5": lambda s: summarize_unique(s, head_count=3),
+                "제품명": lambda s: summarize_unique(s, head_count=3),
+                "부족수량": "sum",
+                "사출창고": "sum",
+                "분리창고": "sum",
+                "공정재고 합계": "sum",
+            }
+        )
+        .rename(
+            columns={
+                "R코드5": "R코드",
+                "Q코드5": "대표 Q코드",
+                "제품명": "제품명 예시",
+                "부족수량": "생산수량 합계",
+                "사출창고": "사출창고 합계",
+                "분리창고": "분리창고 합계",
+            }
+        )
+    )
+
+    p_count = df.groupby("R코드5")["P코드5"].nunique().rename("P코드5 수").reset_index()
+    p_count = p_count.rename(columns={"R코드5": "R코드"})
+    grouped = grouped.merge(p_count, on="R코드", how="left")
+    grouped["사출 부족수량"] = grouped["생산수량 합계"] - grouped["사출창고 합계"]
+    grouped = grouped.sort_values(["생산수량 합계", "P코드5 수"], ascending=[False, False])
+    return grouped[columns]
+
+
 def build_rq_group_summary(df: pd.DataFrame) -> pd.DataFrame:
     columns = [
         "R코드",
@@ -513,7 +562,7 @@ def build_rq_group_summary(df: pd.DataFrame) -> pd.DataFrame:
         "P코드5 수",
         "제품명 예시",
         "P코드 예시",
-        "부족수량 합계",
+        "생산수량 합계",
         "사출창고 합계",
         "분리창고 합계",
         "공정재고 합계",
@@ -541,7 +590,7 @@ def build_rq_group_summary(df: pd.DataFrame) -> pd.DataFrame:
                 "Q코드5": "Q코드",
                 "제품명": "제품명 예시",
                 "품목코드": "P코드 예시",
-                "부족수량": "부족수량 합계",
+                "부족수량": "생산수량 합계",
                 "사출창고": "사출창고 합계",
                 "분리창고": "분리창고 합계",
             }
@@ -550,8 +599,8 @@ def build_rq_group_summary(df: pd.DataFrame) -> pd.DataFrame:
     p_count = df.groupby(["R코드5", "Q코드5"])["P코드5"].nunique().rename("P코드5 수").reset_index()
     p_count = p_count.rename(columns={"R코드5": "R코드", "Q코드5": "Q코드"})
     grouped = grouped.merge(p_count, on=["R코드", "Q코드"], how="left")
-    grouped["사출 부족수량"] = grouped["부족수량 합계"] - grouped["사출창고 합계"]
-    grouped = grouped.sort_values(["부족수량 합계", "P코드5 수"], ascending=[False, False])
+    grouped["사출 부족수량"] = grouped["생산수량 합계"] - grouped["사출창고 합계"]
+    grouped = grouped.sort_values(["생산수량 합계", "P코드5 수"], ascending=[False, False])
     return grouped[columns]
 
 
@@ -969,6 +1018,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
     enriched_df = add_rq_group_columns(df)
     full_demand_summary = build_summary_group_totals_with_safe_split(enriched_df)
     filtered = apply_filters(enriched_df, updated_at)
+    r_summary = build_rcode_summary(filtered)
     q_summary = build_qcode_summary(filtered)
     rq_summary = build_rq_group_summary(filtered)
 
@@ -1005,9 +1055,9 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         "공정재고 합계": st.column_config.Column(width="small"),
     }
 
-    tab_p, tab_q, tab_rq = st.tabs(["P코드 기준 현황", "Q코드 기준 집계", "RQ코드 그룹 집계"])
+    tab_r, tab_q, tab_rq = st.tabs(["R코드 기준 현황", "Q코드 기준 집계", "RQ코드 그룹 집계"])
 
-    with tab_p:
+    with tab_r:
         with st.expander("전체 수요 요약 (분류별요약 × 안전 포함 여부)", expanded=True):
             st.caption("오더 부족수량 = 안전 미포함, 안전재고 부족수량 = 안전 포함 - 안전 미포함, 총수량 = 오더 부족수량 + 안전재고 부족수량")
             if full_demand_summary.empty:
@@ -1024,29 +1074,38 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
                     height=320,
                 )
 
-        c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("부족수량 합계", f"{filtered['부족수량'].sum():,.0f}")
-        c2.metric("사출창고 합계", f"{filtered['사출창고'].sum():,.0f}")
-        c3.metric("분리창고 합계", f"{filtered['분리창고'].sum():,.0f}")
-        c4.metric("검사접착창고 합계", f"{filtered['검사접착창고'].sum():,.0f}")
-        c5.metric("누수규격검사창고 합계", f"{filtered['누수규격검사 창고'].sum():,.0f}")
-
-        p_table = filtered[detail_columns].sort_values(["부족수량", "이니셜", "거래처"], ascending=[False, True, True])
-        p_table_display = format_numeric_columns_for_display(p_table)
+        r1, r2, r3, r4, r5 = st.columns(5)
+        r1.metric("R코드 수", f"{len(r_summary):,}")
+        r2.metric("R기준 생산수량 합계", f"{r_summary['생산수량 합계'].sum():,.0f}" if not r_summary.empty else "0")
+        r3.metric("R기준 사출창고 합계", f"{r_summary['사출창고 합계'].sum():,.0f}" if not r_summary.empty else "0")
+        r4.metric("R기준 분리창고 합계", f"{r_summary['분리창고 합계'].sum():,.0f}" if not r_summary.empty else "0")
+        r5.metric("R기준 사출 부족수량 합계", f"{r_summary['사출 부족수량'].sum():,.0f}" if not r_summary.empty else "0")
 
         st.dataframe(
-            p_table_display,
+            format_numeric_columns_for_display(r_summary),
             use_container_width=True,
-            height=700,
-            column_order=detail_columns,
-            column_config=detail_column_config,
-            key="shortage_p_table_v2",
+            height=420,
+            key="shortage_r_table_v2",
         )
+
+        with st.expander("R코드 기준 세부 품목 보기", expanded=False):
+            r_sort_cols = ["R코드5", "부족수량", "Q코드"] if {"R코드5", "부족수량", "Q코드"}.issubset(filtered.columns) else ["R코드", "부족수량"]
+            r_sort_asc = [True, False, True] if len(r_sort_cols) == 3 else [True, False]
+            r_table = filtered.sort_values(r_sort_cols, ascending=r_sort_asc)[detail_columns]
+            r_table_display = format_numeric_columns_for_display(r_table)
+            st.dataframe(
+                r_table_display,
+                use_container_width=True,
+                height=520,
+                column_order=detail_columns,
+                column_config=detail_column_config,
+                key="shortage_r_detail_table_v2",
+            )
 
     with tab_q:
         q1, q2, q3 = st.columns(3)
         q1.metric("Q코드 수", f"{len(q_summary):,}")
-        q2.metric("Q기준 부족수량 합계", f"{q_summary['부족수량 합계'].sum():,.0f}")
+        q2.metric("Q기준 생산수량 합계", f"{q_summary['부족수량 합계'].sum():,.0f}")
         q3.metric("Q기준 공정재고 합계", f"{q_summary['공정재고 합계'].sum():,.0f}")
 
         q_sort_cols = ["Q코드5", "Q코드", "부족수량"] if {"Q코드5", "Q코드", "부족수량"}.issubset(filtered.columns) else ["Q코드", "부족수량"]
@@ -1064,15 +1123,15 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
 
     with tab_rq:
         r1, r2, r3 = st.columns(3)
-        r1.metric("RQ 그룹 수", f"{len(rq_summary):,}")
+        r1.metric("사출조립(RQ) 그룹 수", f"{len(rq_summary):,}")
         if rq_summary.empty:
             r2.metric("동일 RQ 그룹 수(P코드5 2+)", "0")
-            r3.metric("사출 부족수량 합계", "0")
+            r3.metric("RQ 생산수량 합계", "0")
             st.info("표시할 RQ 그룹 데이터가 없습니다.")
         else:
             same_group_count = int((rq_summary["P코드5 수"] >= 2).sum())
             r2.metric("동일 RQ 그룹 수(P코드5 2+)", f"{same_group_count:,}")
-            r3.metric("사출 부족수량 합계", f"{rq_summary['사출 부족수량'].sum():,.0f}")
+            r3.metric("RQ 생산수량 합계", f"{rq_summary['생산수량 합계'].sum():,.0f}")
 
             rq_sort_cols = ["R코드5", "Q코드5", "부족수량"] if {"R코드5", "Q코드5", "부족수량"}.issubset(filtered.columns) else ["R코드", "Q코드", "부족수량"]
             rq_sort_asc = [True, True, False]
