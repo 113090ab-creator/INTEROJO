@@ -509,9 +509,6 @@ def build_rcode_summary(df: pd.DataFrame) -> pd.DataFrame:
     columns = [
         "R코드",
         "R코드 제품명",
-        "대표 Q코드",
-        "P코드5 수",
-        "제품명 예시",
         "생산수량 합계",
         "사출창고 합계",
         "분리창고 합계",
@@ -521,13 +518,15 @@ def build_rcode_summary(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=columns)
 
+    r_df = df.copy()
+    r_df["R코드"] = r_df["R코드"].astype(str).str.strip()
+    r_df = r_df[(r_df["R코드"] != "") & (r_df["R코드"].str.lower() != "nan")]
+
     grouped = (
-        df.groupby("R코드5", as_index=False)
+        r_df.groupby("R코드", as_index=False)
         .agg(
             {
                 "R코드 제품명": lambda s: summarize_unique(s, head_count=1),
-                "Q코드5": lambda s: summarize_unique(s, head_count=3),
-                "제품명": lambda s: summarize_unique(s, head_count=3),
                 "부족수량": "sum",
                 "사출창고": "sum",
                 "분리창고": "sum",
@@ -536,9 +535,6 @@ def build_rcode_summary(df: pd.DataFrame) -> pd.DataFrame:
         )
         .rename(
             columns={
-                "R코드5": "R코드",
-                "Q코드5": "대표 Q코드",
-                "제품명": "제품명 예시",
                 "부족수량": "생산수량 합계",
                 "사출창고": "사출창고 합계",
                 "분리창고": "분리창고 합계",
@@ -546,11 +542,8 @@ def build_rcode_summary(df: pd.DataFrame) -> pd.DataFrame:
         )
     )
 
-    p_count = df.groupby("R코드5")["P코드5"].nunique().rename("P코드5 수").reset_index()
-    p_count = p_count.rename(columns={"R코드5": "R코드"})
-    grouped = grouped.merge(p_count, on="R코드", how="left")
     grouped["사출 부족수량"] = grouped["생산수량 합계"] - grouped["사출창고 합계"]
-    grouped = grouped.sort_values(["생산수량 합계", "P코드5 수"], ascending=[False, False])
+    grouped = grouped.sort_values(["생산수량 합계", "R코드"], ascending=[False, True])
     return grouped[columns]
 
 
@@ -1095,14 +1088,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         )
 
     with tab_r:
-        r_scope = st.radio(
-            "R코드 집계 기준",
-            options=["전체 생산 현황 기준", "현재 필터 기준"],
-            horizontal=True,
-            key="r_summary_scope",
-        )
-        r_source_df = enriched_df if r_scope == "전체 생산 현황 기준" else filtered
-        r_summary = build_rcode_summary(r_source_df)
+        r_summary = build_rcode_summary(filtered)
 
         r1, r2, r3, r4, r5 = st.columns(5)
         r1.metric("R코드 수", f"{len(r_summary):,}")
