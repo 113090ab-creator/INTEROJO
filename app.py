@@ -509,7 +509,7 @@ def build_rcode_summary(df: pd.DataFrame) -> pd.DataFrame:
     columns = [
         "R코드",
         "R코드 제품명",
-        "생산수량 합계",
+        "사출 생산 필요수량 합계",
         "사출창고 합계",
         "분리창고 합계",
         "공정재고 합계",
@@ -535,15 +535,15 @@ def build_rcode_summary(df: pd.DataFrame) -> pd.DataFrame:
         )
         .rename(
             columns={
-                "부족수량": "생산수량 합계",
+                "부족수량": "사출 생산 필요수량 합계",
                 "사출창고": "사출창고 합계",
                 "분리창고": "분리창고 합계",
             }
         )
     )
 
-    grouped["사출 부족수량"] = grouped["생산수량 합계"] - grouped["사출창고 합계"]
-    grouped = grouped.sort_values(["생산수량 합계", "R코드"], ascending=[False, True])
+    grouped["사출 부족수량"] = grouped["사출 생산 필요수량 합계"] - grouped["사출창고 합계"]
+    grouped = grouped.sort_values(["사출 생산 필요수량 합계", "R코드"], ascending=[False, True])
     return grouped[columns]
 
 
@@ -697,18 +697,18 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
 
     dem.columns = [str(c).strip() for c in dem.columns]
 
+    inj_qty_col = pick_first_existing_column(
+        dem.columns.tolist(),
+        ["사출조립 생산수량", "사출조립생산수량", "사출조립 생산 수량"],
+    )
     leak_qty_idx = warehouse_qty_col_indices.get("누수규격검사 창고")
     leak_due_idx = leak_qty_idx + 1 if leak_qty_idx is not None and (leak_qty_idx + 1) < dem.shape[1] else None
-    if leak_qty_idx is not None:
-        shortage_qty = pd.to_numeric(dem.iloc[:, leak_qty_idx], errors="coerce").fillna(0)
-    elif total_qty_col_indices:
-        total_qty_col = dem.columns[total_qty_col_indices[-1]]
-        shortage_qty = pd.to_numeric(dem[total_qty_col], errors="coerce").fillna(0)
+    if inj_qty_col is not None:
+        shortage_qty = pd.to_numeric(dem[inj_qty_col], errors="coerce").fillna(0)
+    elif dem.shape[1] > 5:
+        shortage_qty = pd.to_numeric(dem.iloc[:, 5], errors="coerce").fillna(0)
     else:
-        qty_cols = [dem.columns[i] for i in qty_col_indices]
-        if not qty_cols:
-            raise ValueError("수요 파일에서 '생산 수량' 컬럼을 찾지 못했습니다.")
-        shortage_qty = dem[qty_cols].apply(pd.to_numeric, errors="coerce").fillna(0).sum(axis=1)
+        raise ValueError("수요 파일 F열(사출조립 생산수량)을 찾지 못했습니다.")
 
     if leak_due_idx is not None:
         leak_due_date = pd.to_datetime(dem.iloc[:, leak_due_idx], errors="coerce")
@@ -1092,7 +1092,10 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
 
         r1, r2, r3, r4, r5 = st.columns(5)
         r1.metric("R코드 수", f"{len(r_summary):,}")
-        r2.metric("R기준 생산수량 합계", f"{r_summary['생산수량 합계'].sum():,.0f}" if not r_summary.empty else "0")
+        r2.metric(
+            "R기준 사출 생산 필요수량 합계",
+            f"{r_summary['사출 생산 필요수량 합계'].sum():,.0f}" if not r_summary.empty else "0",
+        )
         r3.metric("R기준 사출창고 합계", f"{r_summary['사출창고 합계'].sum():,.0f}" if not r_summary.empty else "0")
         r4.metric("R기준 분리창고 합계", f"{r_summary['분리창고 합계'].sum():,.0f}" if not r_summary.empty else "0")
         r5.metric("R기준 사출 부족수량 합계", f"{r_summary['사출 부족수량'].sum():,.0f}" if not r_summary.empty else "0")
@@ -1265,7 +1268,7 @@ def render_leadji_dashboard(
         if summary_df.empty:
             st.warning("BS 생산 필요 요약을 계산할 데이터가 없습니다.")
         else:
-            st.caption("생산필요수량: 수요파일 [80]누수/규격검사 생산수량 기준 부족수량 반영")
+            st.caption("생산필요수량: 수요파일 F열(사출조립 생산수량) 기준 부족수량 반영")
             st.caption("최소납기일: 누수규격검사 기준 수요 정보의 최소 납기일")
             st.caption("창고 컬럼: 리드지 재고 시트에서 BS코드별 재고가 존재하는 창고와 수량")
 
@@ -1365,7 +1368,7 @@ def render_leadji_dashboard(
 
 def main() -> None:
     st.title("이니셜/거래처/품목코드 기준 제품 부족수량 현황")
-    st.caption("기준: 누수규격검사 생산수량 = 부족수량, 품목코드는 P코드만 표시")
+    st.caption("기준: 수요파일 F열(사출조립 생산수량) = 부족수량, 품목코드는 P코드만 표시")
 
     try:
         refresh_key = build_data_refresh_key(BASE_DIR)
