@@ -512,7 +512,7 @@ def build_rcode_summary(df: pd.DataFrame) -> pd.DataFrame:
         "대표 Q코드",
         "P코드5 수",
         "제품명 예시",
-        "부족수량 합계",
+        "생산수량 합계",
         "사출창고 합계",
         "분리창고 합계",
         "공정재고 합계",
@@ -539,7 +539,7 @@ def build_rcode_summary(df: pd.DataFrame) -> pd.DataFrame:
                 "R코드5": "R코드",
                 "Q코드5": "대표 Q코드",
                 "제품명": "제품명 예시",
-                "부족수량": "부족수량 합계",
+                "부족수량": "생산수량 합계",
                 "사출창고": "사출창고 합계",
                 "분리창고": "분리창고 합계",
             }
@@ -549,8 +549,8 @@ def build_rcode_summary(df: pd.DataFrame) -> pd.DataFrame:
     p_count = df.groupby("R코드5")["P코드5"].nunique().rename("P코드5 수").reset_index()
     p_count = p_count.rename(columns={"R코드5": "R코드"})
     grouped = grouped.merge(p_count, on="R코드", how="left")
-    grouped["사출 부족수량"] = grouped["부족수량 합계"] - grouped["사출창고 합계"]
-    grouped = grouped.sort_values(["부족수량 합계", "P코드5 수"], ascending=[False, False])
+    grouped["사출 부족수량"] = grouped["생산수량 합계"] - grouped["사출창고 합계"]
+    grouped = grouped.sort_values(["생산수량 합계", "P코드5 수"], ascending=[False, False])
     return grouped[columns]
 
 
@@ -1018,7 +1018,6 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
     enriched_df = add_rq_group_columns(df)
     full_demand_summary = build_summary_group_totals_with_safe_split(enriched_df)
     filtered = apply_filters(enriched_df, updated_at)
-    r_summary = build_rcode_summary(filtered)
     q_summary = build_qcode_summary(filtered)
     rq_summary = build_rq_group_summary(filtered)
 
@@ -1096,9 +1095,18 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         )
 
     with tab_r:
+        r_scope = st.radio(
+            "R코드 집계 기준",
+            options=["전체 생산 현황 기준", "현재 필터 기준"],
+            horizontal=True,
+            key="r_summary_scope",
+        )
+        r_source_df = enriched_df if r_scope == "전체 생산 현황 기준" else filtered
+        r_summary = build_rcode_summary(r_source_df)
+
         r1, r2, r3, r4, r5 = st.columns(5)
         r1.metric("R코드 수", f"{len(r_summary):,}")
-        r2.metric("R기준 부족수량 합계", f"{r_summary['부족수량 합계'].sum():,.0f}" if not r_summary.empty else "0")
+        r2.metric("R기준 생산수량 합계", f"{r_summary['생산수량 합계'].sum():,.0f}" if not r_summary.empty else "0")
         r3.metric("R기준 사출창고 합계", f"{r_summary['사출창고 합계'].sum():,.0f}" if not r_summary.empty else "0")
         r4.metric("R기준 분리창고 합계", f"{r_summary['분리창고 합계'].sum():,.0f}" if not r_summary.empty else "0")
         r5.metric("R기준 사출 부족수량 합계", f"{r_summary['사출 부족수량'].sum():,.0f}" if not r_summary.empty else "0")
