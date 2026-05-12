@@ -1120,20 +1120,49 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         )
 
     with tab_rq:
+        rq_filtered = filtered.copy()
+        if "R코드 제품명" in rq_filtered.columns:
+            rq_product_query = st.text_input(
+                "사출 코드 제품명 검색",
+                value="",
+                key="rq_tab_r_product_query",
+                placeholder="예: 1-Day_58, Bella, Chai Cafe",
+                help="콤마(,)로 여러 키워드를 입력하면 OR 조건으로 검색합니다.",
+            ).strip()
+            rq_filtered = filter_with_terms(rq_filtered, "R코드 제품명", rq_product_query)
+
+            rq_product_sum_map = (
+                rq_filtered.groupby("R코드 제품명", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
+                if not rq_filtered.empty
+                else {}
+            )
+            rq_product_options = ["전체"] + [
+                p for p in list(rq_product_sum_map.keys()) if str(p).strip() not in {"", "-", "nan", "None"}
+            ][:30]
+            rq_selected_product = st.selectbox(
+                "사출 코드 제품명 선택",
+                options=rq_product_options,
+                index=0,
+                key="rq_tab_r_product_select",
+            )
+            if rq_selected_product != "전체":
+                rq_filtered = rq_filtered[rq_filtered["R코드 제품명"] == rq_selected_product]
+
+        rq_summary_tab = build_rq_group_summary(rq_filtered)
         r1, r2, r3 = st.columns(3)
-        r1.metric("RQ 그룹 수", f"{len(rq_summary):,}")
-        if rq_summary.empty:
+        r1.metric("RQ 그룹 수", f"{len(rq_summary_tab):,}")
+        if rq_summary_tab.empty:
             r2.metric("동일 RQ 그룹 수(P코드5 2+)", "0")
             r3.metric("사출 부족수량 합계", "0")
             st.info("표시할 RQ 그룹 데이터가 없습니다.")
         else:
-            same_group_count = int((rq_summary["P코드5 수"] >= 2).sum())
+            same_group_count = int((rq_summary_tab["P코드5 수"] >= 2).sum())
             r2.metric("동일 RQ 그룹 수(P코드5 2+)", f"{same_group_count:,}")
-            r3.metric("사출 부족수량 합계", f"{rq_summary['사출 부족수량'].sum():,.0f}")
+            r3.metric("사출 부족수량 합계", f"{rq_summary_tab['사출 부족수량'].sum():,.0f}")
 
-            rq_sort_cols = ["R코드5", "Q코드5", "부족수량"] if {"R코드5", "Q코드5", "부족수량"}.issubset(filtered.columns) else ["R코드", "Q코드", "부족수량"]
+            rq_sort_cols = ["R코드5", "Q코드5", "부족수량"] if {"R코드5", "Q코드5", "부족수량"}.issubset(rq_filtered.columns) else ["R코드", "Q코드", "부족수량"]
             rq_sort_asc = [True, True, False]
-            rq_table = filtered.sort_values(rq_sort_cols, ascending=rq_sort_asc)[detail_columns]
+            rq_table = rq_filtered.sort_values(rq_sort_cols, ascending=rq_sort_asc)[detail_columns]
             rq_table_display = format_numeric_columns_for_display(rq_table)
             st.dataframe(
                 rq_table_display,
