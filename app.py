@@ -516,7 +516,6 @@ def build_rcode_summary(df: pd.DataFrame) -> pd.DataFrame:
         "사출창고 합계",
         "분리창고 합계",
         "공정재고 합계",
-        "사출 부족수량",
     ]
     if df.empty:
         return pd.DataFrame(columns=columns)
@@ -552,7 +551,6 @@ def build_rcode_summary(df: pd.DataFrame) -> pd.DataFrame:
         )
     )
 
-    grouped["사출 부족수량"] = grouped["사출 생산 필요수량 합계"] - grouped["사출창고 합계"]
     grouped = grouped.sort_values(["사출 생산 필요수량 합계", "R코드"], ascending=[False, True])
     return grouped[columns]
 
@@ -1147,7 +1145,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
     with tab_r:
         r_summary = build_rcode_summary(filtered)
 
-        r1, r2, r3, r4, r5 = st.columns(5)
+        r1, r2, r3, r4 = st.columns(4)
         r1.metric("R코드 수", f"{len(r_summary):,}")
         r2.metric(
             "R기준 사출 생산 필요수량 합계",
@@ -1155,7 +1153,6 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         )
         r3.metric("R기준 사출창고 합계", f"{r_summary['사출창고 합계'].sum():,.0f}" if not r_summary.empty else "0")
         r4.metric("R기준 분리창고 합계", f"{r_summary['분리창고 합계'].sum():,.0f}" if not r_summary.empty else "0")
-        r5.metric("R기준 사출 부족수량 합계", f"{r_summary['사출 부족수량'].sum():,.0f}" if not r_summary.empty else "0")
 
         st.dataframe(
             format_numeric_columns_for_display(r_summary),
@@ -1325,7 +1322,7 @@ def render_leadji_dashboard(
         if summary_df.empty:
             st.warning("BS 생산 필요 요약을 계산할 데이터가 없습니다.")
         else:
-            st.caption("생산필요수량: 수요파일 F열(사출조립 생산수량) 기준 부족수량 반영")
+            st.caption("생산필요수량: 수요파일 [80]누수/규격검사 생산수량 기준 부족수량 반영")
             st.caption("최소납기일: 누수규격검사 기준 수요 정보의 최소 납기일")
             st.caption("창고 컬럼: 리드지 재고 시트에서 BS코드별 재고가 존재하는 창고와 수량")
 
