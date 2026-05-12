@@ -511,6 +511,7 @@ def build_rcode_summary(df: pd.DataFrame) -> pd.DataFrame:
     columns = [
         "R코드",
         "R코드 제품명",
+        "사출 납기일",
         "사출 생산 필요수량 합계",
         "사출창고 합계",
         "분리창고 합계",
@@ -523,13 +524,19 @@ def build_rcode_summary(df: pd.DataFrame) -> pd.DataFrame:
     r_df = df.copy()
     r_df["R코드"] = r_df["R코드"].astype(str).str.strip()
     r_df = r_df[(r_df["R코드"] != "") & (r_df["R코드"].str.lower() != "nan")]
+    if "사출생산필요수량" in r_df.columns:
+        r_df["사출생산필요수량"] = pd.to_numeric(r_df["사출생산필요수량"], errors="coerce").fillna(0)
+        r_df = r_df[r_df["사출생산필요수량"] > 0]
+    if r_df.empty:
+        return pd.DataFrame(columns=columns)
 
     grouped = (
         r_df.groupby("R코드", as_index=False)
         .agg(
             {
                 "R코드 제품명": lambda s: summarize_unique(s, head_count=1),
-                "부족수량": "sum",
+                "사출납기일": "min",
+                "사출생산필요수량": "sum",
                 "사출창고": "sum",
                 "분리창고": "sum",
                 "공정재고 합계": "sum",
@@ -537,7 +544,8 @@ def build_rcode_summary(df: pd.DataFrame) -> pd.DataFrame:
         )
         .rename(
             columns={
-                "부족수량": "사출 생산 필요수량 합계",
+                "사출납기일": "사출 납기일",
+                "사출생산필요수량": "사출 생산 필요수량 합계",
                 "사출창고": "사출창고 합계",
                 "분리창고": "분리창고 합계",
             }
@@ -563,6 +571,14 @@ def build_rq_group_summary(df: pd.DataFrame) -> pd.DataFrame:
         "공정재고 합계",
         "사출 부족수량",
     ]
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+    if "부족수량" not in df.columns:
+        return pd.DataFrame(columns=columns)
+
+    df = df.copy()
+    df["부족수량"] = pd.to_numeric(df["부족수량"], errors="coerce").fillna(0)
+    df = df[df["부족수량"] > 0]
     if df.empty:
         return pd.DataFrame(columns=columns)
 
@@ -613,8 +629,15 @@ def build_qcode_summary(df: pd.DataFrame) -> pd.DataFrame:
     ]
     if df.empty:
         return pd.DataFrame(columns=columns)
+    if "부족수량" not in df.columns:
+        return pd.DataFrame(columns=columns)
 
     q_df = df.copy()
+    q_df["부족수량"] = pd.to_numeric(q_df["부족수량"], errors="coerce").fillna(0)
+    q_df = q_df[q_df["부족수량"] > 0]
+    if q_df.empty:
+        return pd.DataFrame(columns=columns)
+
     q_df["Q코드"] = q_df["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "Q"))
     q_df["파워"] = q_df["Q코드"].map(extract_power_from_code)
 
@@ -699,23 +722,45 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
 
     dem.columns = [str(c).strip() for c in dem.columns]
 
-    inj_qty_col = pick_first_existing_column(
-        dem.columns.tolist(),
-        ["사출조립 생산수량", "사출조립생산수량", "사출조립 생산 수량"],
-    )
+    # 기준1) 생산 현황: 누수/규격검사 생산수량 + 납기일
     leak_qty_idx = warehouse_qty_col_indices.get("누수규격검사 창고")
     leak_due_idx = leak_qty_idx + 1 if leak_qty_idx is not None and (leak_qty_idx + 1) < dem.shape[1] else None
-    if inj_qty_col is not None:
-        shortage_qty = pd.to_numeric(dem[inj_qty_col], errors="coerce").fillna(0)
-    elif dem.shape[1] > 5:
-        shortage_qty = pd.to_numeric(dem.iloc[:, 5], errors="coerce").fillna(0)
+    if leak_qty_idx is not None:
+        shortage_qty = pd.to_numeric(dem.iloc[:, leak_qty_idx], errors="coerce").fillna(0)
+    elif total_qty_col_indices:
+        total_qty_col = dem.columns[total_qty_col_indices[-1]]
+        shortage_qty = pd.to_numeric(dem[total_qty_col], errors="coerce").fillna(0)
     else:
-        raise ValueError("수요 파일 F열(사출조립 생산수량)을 찾지 못했습니다.")
+        qty_cols = [dem.columns[i] for i in qty_col_indices]
+        if not qty_cols:
+            raise ValueError("수요 파일에서 '생산 수량' 컬럼을 찾지 못했습니다.")
+        shortage_qty = dem[qty_cols].apply(pd.to_numeric, errors="coerce").fillna(0).sum(axis=1)
 
     if leak_due_idx is not None:
         leak_due_date = pd.to_datetime(dem.iloc[:, leak_due_idx], errors="coerce")
     else:
         leak_due_date = pd.Series(pd.NaT, index=dem.index, dtype="datetime64[ns]")
+
+    # 기준2) 사출 생산 현황: F열(사출조립 생산수량) + G열 납기일
+    inj_qty_col = pick_first_existing_column(
+        dem.columns.tolist(),
+        ["사출조립 생산수량", "사출조립생산수량", "사출조립 생산 수량"],
+    )
+    selected_qty_idx: int | None = None
+    if inj_qty_col is not None:
+        inj_qty = pd.to_numeric(dem[inj_qty_col], errors="coerce").fillna(0)
+        selected_qty_idx = dem.columns.get_loc(inj_qty_col)
+    elif dem.shape[1] > 5:
+        inj_qty = pd.to_numeric(dem.iloc[:, 5], errors="coerce").fillna(0)
+        selected_qty_idx = 5
+    else:
+        raise ValueError("수요 파일 F열(사출조립 생산수량)을 찾지 못했습니다.")
+
+    inj_due_idx = selected_qty_idx + 1 if selected_qty_idx is not None and (selected_qty_idx + 1) < dem.shape[1] else None
+    if inj_due_idx is not None:
+        inj_due_date = pd.to_datetime(dem.iloc[:, inj_due_idx], errors="coerce")
+    else:
+        inj_due_date = pd.Series(pd.NaT, index=dem.index, dtype="datetime64[ns]")
 
     inv_df = build_inventory_df(inv)
 
@@ -726,7 +771,9 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
             "품목코드": dem.iloc[:, 3].astype(str).str.strip(),
             "제품명": dem.iloc[:, 4].astype(str).str.strip(),
             "납기일": leak_due_date,
+            "사출납기일": inj_due_date,
             "생산수량": shortage_qty,
+            "사출생산필요수량": inj_qty,
         }
     )
 
@@ -738,7 +785,7 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
     dem_df = dem_df[~is_summary]
     dem_df = dem_df[(dem_df["품목코드"] != "") & (dem_df["품목코드"].str.lower() != "nan")]
     dem_df = dem_df[dem_df["품목코드"].astype(str).str.upper().str.startswith(("P", "Q", "R"))]
-    dem_df = dem_df[dem_df["생산수량"] > 0]
+    dem_df = dem_df[(dem_df["생산수량"] > 0) | (dem_df["사출생산필요수량"] > 0)]
     dem_df["제품명"] = dem_df["제품명"].replace({"nan": "", "None": ""})
 
     grouped_demand = (
@@ -746,7 +793,9 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
         .agg(
             {
                 "생산수량": "sum",
+                "사출생산필요수량": "sum",
                 "납기일": "min",
+                "사출납기일": "min",
                 "제품명": lambda s: next((v for v in s if str(v).strip() and str(v).strip().lower() != "nan"), "-"),
             }
         )
@@ -816,6 +865,9 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
     result["파워"] = result["품목코드"].map(extract_power_from_code)
     result["납기일"] = pd.to_datetime(result["납기일"], errors="coerce").dt.strftime("%Y-%m-%d")
     result["납기일"] = result["납기일"].fillna("-")
+    if "사출납기일" in result.columns:
+        result["사출납기일"] = pd.to_datetime(result["사출납기일"], errors="coerce").dt.strftime("%Y-%m-%d")
+        result["사출납기일"] = result["사출납기일"].fillna("-")
 
     process_map_df = pd.DataFrame(
         {
@@ -1077,7 +1129,10 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         c4.metric("검사접착창고 합계", f"{filtered['검사접착창고'].sum():,.0f}")
         c5.metric("누수규격검사창고 합계", f"{filtered['누수규격검사 창고'].sum():,.0f}")
 
-        p_table = filtered[detail_columns].sort_values(["부족수량", "이니셜", "거래처"], ascending=[False, True, True])
+        p_view = filtered.copy()
+        p_view["부족수량"] = pd.to_numeric(p_view["부족수량"], errors="coerce").fillna(0)
+        p_view = p_view[p_view["부족수량"] > 0]
+        p_table = p_view[detail_columns].sort_values(["부족수량", "이니셜", "거래처"], ascending=[False, True, True])
         p_table_display = format_numeric_columns_for_display(p_table)
 
         st.dataframe(
@@ -1370,7 +1425,7 @@ def render_leadji_dashboard(
 
 def main() -> None:
     st.title("이니셜/거래처/품목코드 기준 제품 부족수량 현황")
-    st.caption("기준: 수요파일 F열(사출조립 생산수량) = 부족수량, 품목코드는 P/Q/R 코드 표시")
+    st.caption("기준: 생산 현황은 [80]누수/규격검사 생산수량, 사출 생산 현황은 F열(사출조립 생산수량) 기준")
 
     try:
         refresh_key = build_data_refresh_key(BASE_DIR)
