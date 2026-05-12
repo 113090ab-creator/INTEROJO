@@ -179,6 +179,8 @@ def map_demand_code_to_process_code(demand_code: str, process_prefix: str) -> st
         return f"{process_prefix}{letter_pattern.group(1)}{letter_pattern.group(3)}"
     if code.startswith("P"):
         return f"{process_prefix}{code[1:]}"
+    if code[0] in {"Q", "R"} and len(code) > 1:
+        return f"{process_prefix}{code[1:]}"
     return code
 
 
@@ -735,7 +737,7 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
     )
     dem_df = dem_df[~is_summary]
     dem_df = dem_df[(dem_df["품목코드"] != "") & (dem_df["품목코드"].str.lower() != "nan")]
-    dem_df = dem_df[dem_df["품목코드"].str.startswith("P")]
+    dem_df = dem_df[dem_df["품목코드"].astype(str).str.upper().str.startswith(("P", "Q", "R"))]
     dem_df = dem_df[dem_df["생산수량"] > 0]
     dem_df["제품명"] = dem_df["제품명"].replace({"nan": "", "None": ""})
 
@@ -1368,7 +1370,7 @@ def render_leadji_dashboard(
 
 def main() -> None:
     st.title("이니셜/거래처/품목코드 기준 제품 부족수량 현황")
-    st.caption("기준: 수요파일 F열(사출조립 생산수량) = 부족수량, 품목코드는 P코드만 표시")
+    st.caption("기준: 수요파일 F열(사출조립 생산수량) = 부족수량, 품목코드는 P/Q/R 코드 표시")
 
     try:
         refresh_key = build_data_refresh_key(BASE_DIR)
