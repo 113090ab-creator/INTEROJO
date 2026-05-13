@@ -1377,22 +1377,29 @@ def build_leadji_requirement_summary(
     shortage_df: pd.DataFrame, leadji_info: pd.DataFrame, leadji_stock: pd.DataFrame
 ) -> pd.DataFrame:
     fixed_columns = ["BS코드", "BS명", "생산필요수량", "최소납기일"]
-    if shortage_df.empty or "품목코드" not in shortage_df.columns or "부족수량" not in shortage_df.columns:
+    if shortage_df.empty or "품목코드" not in shortage_df.columns:
         return pd.DataFrame(columns=fixed_columns)
+
+    qty_source_col = "생산필요수량" if "생산필요수량" in shortage_df.columns else "부족수량"
+    if qty_source_col not in shortage_df.columns:
+        return pd.DataFrame(columns=fixed_columns)
+
+    due_source_col = "최소납기일" if "최소납기일" in shortage_df.columns else "납기일"
 
     base = shortage_df.copy()
     base["P코드5"] = base["품목코드"].astype(str).str.strip().str[:5]
     base = base[base["P코드5"].str.startswith("P")]
-    base["부족수량"] = pd.to_numeric(base["부족수량"], errors="coerce").fillna(0)
-    if "납기일" in base.columns:
-        base["납기일_dt"] = pd.to_datetime(base["납기일"], errors="coerce")
+    base["생산필요수량"] = pd.to_numeric(base[qty_source_col], errors="coerce").fillna(0)
+    base = base[base["생산필요수량"] > 0]
+    if due_source_col in base.columns:
+        base["납기일_dt"] = pd.to_datetime(base[due_source_col], errors="coerce")
     else:
         base["납기일_dt"] = pd.NaT
 
     p_shortage = (
         base.groupby("P코드5", as_index=False)
-        .agg({"부족수량": "sum", "납기일_dt": "min"})
-        .rename(columns={"부족수량": "생산필요수량", "납기일_dt": "최소납기일"})
+        .agg({"생산필요수량": "sum", "납기일_dt": "min"})
+        .rename(columns={"납기일_dt": "최소납기일"})
     )
 
     if leadji_info.empty:
@@ -1489,7 +1496,7 @@ def render_leadji_dashboard(
         if summary_df.empty:
             st.warning("BS 생산 필요 요약을 계산할 데이터가 없습니다.")
         else:
-            st.caption("생산필요수량: 수요파일 [80]누수/규격검사 생산수량 기준 부족수량 반영")
+            st.caption("생산필요수량: 수요 데이터의 생산필요수량 컬럼 우선, 없으면 누수규격검사 기준 부족수량 반영")
             st.caption("최소납기일: 누수규격검사 기준 수요 정보의 최소 납기일")
             st.caption("창고 컬럼: 리드지 재고 시트에서 BS코드별 재고가 존재하는 창고와 수량")
 
