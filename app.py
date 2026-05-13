@@ -1268,12 +1268,17 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
 
     with tab_rq:
         st.caption("사출 부족수량 = 수요정보 사출 생산 수량 합계 - 사출창고 합계 (0 미만은 0)")
+        st.caption("표시 기준: 품목코드는 P코드만, 납기일/부족수량은 누수규격검사 기준")
         rq_filtered = filtered.copy()
+        if "품목코드" in rq_filtered.columns:
+            rq_filtered = rq_filtered[rq_filtered["품목코드"].astype(str).str.upper().str.startswith("P")]
+        if "부족수량" in rq_filtered.columns:
+            rq_filtered["부족수량"] = pd.to_numeric(rq_filtered["부족수량"], errors="coerce").fillna(0)
+            rq_filtered = rq_filtered[rq_filtered["부족수량"] > 0]
+
         multi_p_r_codes: set[str] = set()
         if {"R코드5", "P코드5", "부족수량"}.issubset(rq_filtered.columns):
             rq_mapping_scope = rq_filtered.copy()
-            rq_mapping_scope["부족수량"] = pd.to_numeric(rq_mapping_scope["부족수량"], errors="coerce").fillna(0)
-            rq_mapping_scope = rq_mapping_scope[rq_mapping_scope["부족수량"] > 0]
             rq_mapping_scope["R코드5"] = rq_mapping_scope["R코드5"].astype(str).str.strip()
             rq_mapping_scope["P코드5"] = rq_mapping_scope["P코드5"].astype(str).str.strip()
             rq_mapping_scope = rq_mapping_scope[
@@ -1334,12 +1339,22 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
             rq_sort_cols = ["R코드5", "Q코드5", "부족수량"] if {"R코드5", "Q코드5", "부족수량"}.issubset(rq_filtered.columns) else ["R코드", "Q코드", "부족수량"]
             rq_sort_asc = [True, True, False]
             rq_view = rq_filtered.copy()
+            if "납기일" not in rq_view.columns:
+                rq_view["납기일"] = "-"
+            if "부족수량" not in rq_view.columns:
+                rq_view["부족수량"] = 0
             if "사출생산필요수량" in rq_view.columns:
                 rq_view["사출부족수량"] = pd.to_numeric(rq_view["사출생산필요수량"], errors="coerce").fillna(0)
             else:
                 rq_view["사출부족수량"] = 0
 
-            rq_detail_columns = detail_columns.copy()
+            rq_detail_columns = [c for c in detail_columns if c in rq_view.columns]
+            if "납기일" not in rq_detail_columns:
+                insert_idx = rq_detail_columns.index("파워") + 1 if "파워" in rq_detail_columns else len(rq_detail_columns)
+                rq_detail_columns.insert(insert_idx, "납기일")
+            if "부족수량" not in rq_detail_columns:
+                insert_idx = rq_detail_columns.index("납기일") + 1 if "납기일" in rq_detail_columns else len(rq_detail_columns)
+                rq_detail_columns.insert(insert_idx, "부족수량")
             if "사출부족수량" not in rq_detail_columns:
                 insert_idx = rq_detail_columns.index("부족수량") + 1 if "부족수량" in rq_detail_columns else len(rq_detail_columns)
                 rq_detail_columns.insert(insert_idx, "사출부족수량")
