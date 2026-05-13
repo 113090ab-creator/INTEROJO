@@ -434,6 +434,16 @@ def lookup_stock_qty(stock_map: dict[str, float], process_code: str) -> float:
     return 0.0
 
 
+def resolve_process_code_for_stock(stock_map: dict[str, float], process_code: str) -> str:
+    code = str(process_code).strip()
+    if not code or code.lower() == "nan":
+        return code
+    for candidate in iter_inventory_code_candidates(code):
+        if candidate in stock_map:
+            return candidate
+    return code
+
+
 def build_data_refresh_key(base_dir: Path) -> str:
     inv_path, dem_path = find_excel_files(base_dir)
     ref_path = find_product_name_reference_file(base_dir)
@@ -865,8 +875,27 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
 
     code_stock = pd.DataFrame({"품목코드": grouped_demand["품목코드"].drop_duplicates()})
     rq_by_p = grouped_demand.drop_duplicates(subset=["품목코드"], keep="first").set_index("품목코드")[["R코드", "Q코드"]]
-    r_by_p = rq_by_p["R코드"].to_dict()
-    q_by_p = rq_by_p["Q코드"].to_dict()
+    r_by_p = {
+        item_code: resolve_process_code_for_stock(stock_lookup["사출창고"], process_code)
+        for item_code, process_code in rq_by_p["R코드"].to_dict().items()
+    }
+    q_by_p = {
+        item_code: resolve_process_code_for_stock(stock_lookup["분리창고"], process_code)
+        for item_code, process_code in rq_by_p["Q코드"].to_dict().items()
+    }
+
+    grouped_demand["R코드"] = grouped_demand["품목코드"].map(
+        lambda x: r_by_p.get(x, map_demand_code_to_process_code(x, "R"))
+    )
+    grouped_demand["Q코드"] = grouped_demand["품목코드"].map(
+        lambda x: q_by_p.get(x, map_demand_code_to_process_code(x, "Q"))
+    )
+    grouped_demand["R코드5"] = grouped_demand["R코드"].astype(str).str[:5]
+    grouped_demand["R코드 제품명"] = grouped_demand["R코드5"].map(r_name_map)
+    grouped_demand["R코드 제품명"] = grouped_demand["R코드 제품명"].fillna(grouped_demand["제품명"])
+    grouped_demand["R코드 제품명"] = grouped_demand["R코드 제품명"].fillna(grouped_demand["R코드5"])
+    grouped_demand["R코드 제품명"] = grouped_demand["R코드 제품명"].replace({"": "-", "nan": "-", "None": "-"}).fillna("-")
+
     code_stock["사출창고"] = code_stock["품목코드"].map(
         lambda x: lookup_stock_qty(stock_lookup["사출창고"], r_by_p.get(x, map_demand_code_to_process_code(x, "R")))
     )
@@ -906,8 +935,8 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
                 process_code_map.get("누수규격검사 창고", "-"),
             ],
             "재고코드 매핑 규칙": [
-                "리드지정보/분류정보 우선, 없으면 P코드->R코드 유추",
-                "리드지정보/분류정보 우선, 없으면 P코드->Q코드 유추",
+                "리드지정보 우선, 없으면 분류정보, 그래도 없으면 P코드->R코드 유추 (BUL1/BUL2는 BUL로 보정)",
+                "리드지정보 우선, 없으면 분류정보, 그래도 없으면 P코드->Q코드 유추 (BUL1/BUL2는 BUL로 보정)",
                 "P코드 그대로 사용",
                 "P코드 그대로 사용",
             ],
