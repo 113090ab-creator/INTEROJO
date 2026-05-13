@@ -1121,29 +1121,32 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
 
     with tab_rq:
         rq_filtered = filtered.copy()
-        if "R코드 제품명" in rq_filtered.columns:
-            rq_product_query = st.text_input(
-                "사출 코드 제품명 검색",
-                value="",
-                key="rq_tab_r_product_query",
-                placeholder="예: 1-Day_58, Bella, Chai Cafe",
-                help="콤마(,)로 여러 키워드를 입력하면 OR 조건으로 검색합니다.",
-            ).strip()
-            rq_filtered = filter_with_terms(rq_filtered, "R코드 제품명", rq_product_query)
+        if {"R코드5", "Q코드5", "P코드5"}.issubset(rq_filtered.columns):
+            rq_group_p_count = rq_filtered.groupby(["R코드5", "Q코드5"])["P코드5"].transform("nunique")
+            rq_filtered = rq_filtered[rq_group_p_count >= 2]
 
+        if "R코드 제품명" in rq_filtered.columns:
+            rq_product_scope = rq_filtered.copy()
+            rq_product_scope["부족수량"] = pd.to_numeric(rq_product_scope["부족수량"], errors="coerce").fillna(0)
+            rq_product_scope = rq_product_scope[rq_product_scope["부족수량"] > 0]
             rq_product_sum_map = (
-                rq_filtered.groupby("R코드 제품명", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
-                if not rq_filtered.empty
+                rq_product_scope.groupby("R코드 제품명", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
+                if not rq_product_scope.empty
                 else {}
             )
             rq_product_options = ["전체"] + [
                 p for p in list(rq_product_sum_map.keys()) if str(p).strip() not in {"", "-", "nan", "None"}
-            ][:30]
-            rq_selected_product = st.selectbox(
-                "사출 코드 제품명 선택",
+            ]
+            rq_product_count_map = {
+                "전체": float(rq_product_scope["부족수량"].sum()) if not rq_product_scope.empty else 0.0,
+                **rq_product_sum_map,
+            }
+            rq_selected_product = st.pills(
+                "사출 제품명 (공용, P코드5 2+)",
                 options=rq_product_options,
-                index=0,
-                key="rq_tab_r_product_select",
+                default="전체",
+                key="rq_tab_r_product_pills",
+                format_func=lambda x: format_pill_label(x, rq_product_count_map),
             )
             if rq_selected_product != "전체":
                 rq_filtered = rq_filtered[rq_filtered["R코드 제품명"] == rq_selected_product]
