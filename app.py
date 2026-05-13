@@ -1117,12 +1117,18 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
                     height=320,
                 )
 
-        c1, c2, c3, c4, c5 = st.columns(5)
+        inj_shortage_total = (
+            pd.to_numeric(filtered["사출생산필요수량"], errors="coerce").fillna(0).sum()
+            if "사출생산필요수량" in filtered.columns
+            else 0
+        )
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
         c1.metric("부족수량 합계", f"{filtered['부족수량'].sum():,.0f}")
-        c2.metric("사출창고 합계", f"{filtered['사출창고'].sum():,.0f}")
-        c3.metric("분리창고 합계", f"{filtered['분리창고'].sum():,.0f}")
-        c4.metric("검사접착창고 합계", f"{filtered['검사접착창고'].sum():,.0f}")
-        c5.metric("누수규격검사창고 합계", f"{filtered['누수규격검사 창고'].sum():,.0f}")
+        c2.metric("사출부족수량 합계", f"{inj_shortage_total:,.0f}")
+        c3.metric("사출창고 합계", f"{filtered['사출창고'].sum():,.0f}")
+        c4.metric("분리창고 합계", f"{filtered['분리창고'].sum():,.0f}")
+        c5.metric("검사접착창고 합계", f"{filtered['검사접착창고'].sum():,.0f}")
+        c6.metric("누수규격검사창고 합계", f"{filtered['누수규격검사 창고'].sum():,.0f}")
 
         p_view = filtered.copy()
         p_view["부족수량"] = pd.to_numeric(p_view["부족수량"], errors="coerce").fillna(0)
