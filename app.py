@@ -1493,11 +1493,11 @@ def render_leadji_dashboard(
     st.caption(f"업데이트: {updated_at}")
 
     summary_df = build_leadji_requirement_summary(shortage_df, leadji_info, leadji_stock)
-    summary_tab, info_tab = st.tabs(["BS 생산 필요 요약", "리드지 정보"])
+    summary_tab, info_tab = st.tabs(["리드지재고현황", "리드지 정보"])
 
     with summary_tab:
         if summary_df.empty:
-            st.warning("BS 생산 필요 요약을 계산할 데이터가 없습니다.")
+            st.warning("리드지재고현황을 계산할 데이터가 없습니다.")
         else:
             st.caption("생산필요수량: 수요 데이터의 생산필요수량 컬럼 우선, 없으면 누수규격검사 기준 부족수량 반영")
             st.caption("최소납기일: 누수규격검사 기준 수요 정보의 최소 납기일")
