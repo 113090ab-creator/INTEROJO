@@ -1127,17 +1127,17 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         p_view = filtered.copy()
         p_view["부족수량"] = pd.to_numeric(p_view["부족수량"], errors="coerce").fillna(0)
         if "사출생산필요수량" in p_view.columns:
-            p_view["사출 수량"] = pd.to_numeric(p_view["사출생산필요수량"], errors="coerce").fillna(0)
+            p_view["사출 부족수량"] = pd.to_numeric(p_view["사출생산필요수량"], errors="coerce").fillna(0)
         else:
-            p_view["사출 수량"] = 0
+            p_view["사출 부족수량"] = 0
         p_view = p_view[p_view["부족수량"] > 0]
 
         p_detail_columns = detail_columns.copy()
-        if "사출 수량" not in p_detail_columns:
+        if "사출 부족수량" not in p_detail_columns:
             insert_idx = p_detail_columns.index("부족수량") + 1 if "부족수량" in p_detail_columns else len(p_detail_columns)
-            p_detail_columns.insert(insert_idx, "사출 수량")
+            p_detail_columns.insert(insert_idx, "사출 부족수량")
         p_detail_column_config = detail_column_config.copy()
-        p_detail_column_config["사출 수량"] = st.column_config.Column(width="small")
+        p_detail_column_config["사출 부족수량"] = st.column_config.Column(width="small")
 
         p_table = p_view[p_detail_columns].sort_values(["부족수량", "이니셜", "거래처"], ascending=[False, True, True])
         p_table_display = format_numeric_columns_for_display(p_table)
