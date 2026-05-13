@@ -564,6 +564,7 @@ def build_rq_group_summary(df: pd.DataFrame) -> pd.DataFrame:
         "제품명 예시",
         "P코드 예시",
         "부족수량 합계",
+        "사출 생산 필요수량 합계",
         "사출창고 합계",
         "분리창고 합계",
         "공정재고 합계",
@@ -576,7 +577,11 @@ def build_rq_group_summary(df: pd.DataFrame) -> pd.DataFrame:
 
     df = df.copy()
     df["부족수량"] = pd.to_numeric(df["부족수량"], errors="coerce").fillna(0)
-    df = df[df["부족수량"] > 0]
+    if "사출생산필요수량" in df.columns:
+        df["사출생산필요수량"] = pd.to_numeric(df["사출생산필요수량"], errors="coerce").fillna(0)
+    else:
+        df["사출생산필요수량"] = 0
+    df = df[(df["부족수량"] > 0) | (df["사출생산필요수량"] > 0)]
     if df.empty:
         return pd.DataFrame(columns=columns)
 
@@ -588,6 +593,7 @@ def build_rq_group_summary(df: pd.DataFrame) -> pd.DataFrame:
                 "제품명": lambda s: summarize_unique(s, head_count=3),
                 "품목코드": lambda s: summarize_unique(s, head_count=5),
                 "부족수량": "sum",
+                "사출생산필요수량": "sum",
                 "사출창고": "sum",
                 "분리창고": "sum",
                 "공정재고 합계": "sum",
@@ -600,6 +606,7 @@ def build_rq_group_summary(df: pd.DataFrame) -> pd.DataFrame:
                 "제품명": "제품명 예시",
                 "품목코드": "P코드 예시",
                 "부족수량": "부족수량 합계",
+                "사출생산필요수량": "사출 생산 필요수량 합계",
                 "사출창고": "사출창고 합계",
                 "분리창고": "분리창고 합계",
             }
@@ -608,7 +615,7 @@ def build_rq_group_summary(df: pd.DataFrame) -> pd.DataFrame:
     p_count = df.groupby(["R코드5", "Q코드5"])["P코드5"].nunique().rename("P코드5 수").reset_index()
     p_count = p_count.rename(columns={"R코드5": "R코드", "Q코드5": "Q코드"})
     grouped = grouped.merge(p_count, on=["R코드", "Q코드"], how="left")
-    grouped["사출 부족수량"] = grouped["부족수량 합계"] - grouped["사출창고 합계"]
+    grouped["사출 부족수량"] = (grouped["사출 생산 필요수량 합계"] - grouped["사출창고 합계"]).clip(lower=0)
     grouped = grouped.sort_values(["부족수량 합계", "P코드5 수"], ascending=[False, False])
     return grouped[columns]
 
@@ -1120,6 +1127,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         )
 
     with tab_rq:
+        st.caption("사출 부족수량 = 수요정보 사출 생산 수량 합계 - 사출창고 합계 (0 미만은 0)")
         rq_filtered = filtered.copy()
         multi_p_r_codes: set[str] = set()
         if {"R코드5", "P코드5", "부족수량"}.issubset(rq_filtered.columns):
