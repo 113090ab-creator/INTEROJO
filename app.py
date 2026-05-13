@@ -1314,27 +1314,46 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
                 rq_filtered = rq_filtered[rq_filtered["R코드 제품명"] == rq_selected_product]
 
         rq_summary_tab = build_rq_group_summary(rq_filtered)
-        r1, r2, r3 = st.columns(3)
-        r1.metric("RQ 그룹 수", f"{len(rq_summary_tab):,}")
+        rq_shortage_total = (
+            pd.to_numeric(rq_filtered["부족수량"], errors="coerce").fillna(0).sum()
+            if "부족수량" in rq_filtered.columns
+            else 0
+        )
+        rq_inj_shortage_total = (
+            pd.to_numeric(rq_summary_tab["사출 부족수량"], errors="coerce").fillna(0).sum()
+            if not rq_summary_tab.empty and "사출 부족수량" in rq_summary_tab.columns
+            else 0
+        )
+        r1, r2 = st.columns(2)
+        r1.metric("사출 부족수량 합계", f"{rq_inj_shortage_total:,.0f}")
+        r2.metric("부족수량 합계", f"{rq_shortage_total:,.0f}")
+
         if rq_summary_tab.empty:
-            r2.metric("R코드 수(P코드5 2+)", "0")
-            r3.metric("사출 부족수량 합계", "0")
             st.info("표시할 RQ 그룹 데이터가 없습니다.")
         else:
-            same_group_count = len(multi_p_r_codes) if multi_p_r_codes else int(rq_filtered["R코드5"].nunique())
-            r2.metric("R코드 수(P코드5 2+)", f"{same_group_count:,}")
-            r3.metric("사출 부족수량 합계", f"{rq_summary_tab['사출 부족수량'].sum():,.0f}")
-
             rq_sort_cols = ["R코드5", "Q코드5", "부족수량"] if {"R코드5", "Q코드5", "부족수량"}.issubset(rq_filtered.columns) else ["R코드", "Q코드", "부족수량"]
             rq_sort_asc = [True, True, False]
-            rq_table = rq_filtered.sort_values(rq_sort_cols, ascending=rq_sort_asc)[detail_columns]
+            rq_view = rq_filtered.copy()
+            if "사출생산필요수량" in rq_view.columns:
+                rq_view["사출부족수량"] = pd.to_numeric(rq_view["사출생산필요수량"], errors="coerce").fillna(0)
+            else:
+                rq_view["사출부족수량"] = 0
+
+            rq_detail_columns = detail_columns.copy()
+            if "사출부족수량" not in rq_detail_columns:
+                insert_idx = rq_detail_columns.index("부족수량") + 1 if "부족수량" in rq_detail_columns else len(rq_detail_columns)
+                rq_detail_columns.insert(insert_idx, "사출부족수량")
+            rq_detail_column_config = detail_column_config.copy()
+            rq_detail_column_config["사출부족수량"] = st.column_config.Column(width="small")
+
+            rq_table = rq_view.sort_values(rq_sort_cols, ascending=rq_sort_asc)[rq_detail_columns]
             rq_table_display = format_numeric_columns_for_display(rq_table)
             st.dataframe(
                 rq_table_display,
                 use_container_width=True,
                 height=700,
-                column_order=detail_columns,
-                column_config=detail_column_config,
+                column_order=rq_detail_columns,
+                column_config=rq_detail_column_config,
                 key="shortage_rq_table_v2",
             )
 
