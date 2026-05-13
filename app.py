@@ -759,6 +759,53 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
 
     dem.columns = [str(c).strip() for c in dem.columns]
 
+    site_col = pick_first_existing_column(
+        dem.columns.tolist(),
+        ["설비 사이트 코드", "설비사이트코드", "사이트코드"],
+    )
+    customer_col = pick_first_existing_column(
+        dem.columns.tolist(),
+        ["고객 이름", "고객이름", "거래처"],
+    )
+    initial_col = pick_first_existing_column(
+        dem.columns.tolist(),
+        ["이니셜"],
+    )
+    demand_item_col = pick_first_existing_column(
+        dem.columns.tolist(),
+        ["제품 코드", "제품코드", "품목코드", "ITEM_ID"],
+    )
+    demand_name_col = pick_first_existing_column(
+        dem.columns.tolist(),
+        ["수요 제품 이름", "수요제품이름", "제품명"],
+    )
+
+    site_series = (
+        dem[site_col].astype(str).str.strip()
+        if site_col is not None
+        else (dem.iloc[:, 0].astype(str).str.strip() if dem.shape[1] > 0 else pd.Series("", index=dem.index))
+    )
+    customer_series = (
+        dem[customer_col].astype(str).str.strip()
+        if customer_col is not None
+        else (dem.iloc[:, 1].astype(str).str.strip() if dem.shape[1] > 1 else pd.Series("", index=dem.index))
+    )
+    initial_series = (
+        dem[initial_col].astype(str).str.strip()
+        if initial_col is not None
+        else (dem.iloc[:, 2].astype(str).str.strip() if dem.shape[1] > 2 else pd.Series("", index=dem.index))
+    )
+    item_series = (
+        dem[demand_item_col].astype(str).str.strip()
+        if demand_item_col is not None
+        else (dem.iloc[:, 3].astype(str).str.strip() if dem.shape[1] > 3 else pd.Series("", index=dem.index))
+    )
+    name_series = (
+        dem[demand_name_col].astype(str).str.strip()
+        if demand_name_col is not None
+        else (dem.iloc[:, 4].astype(str).str.strip() if dem.shape[1] > 4 else pd.Series("", index=dem.index))
+    )
+
     # 기준1) 생산 현황: 누수/규격검사 생산수량 + 납기일
     leak_qty_idx = warehouse_qty_col_indices.get("누수규격검사 창고")
     leak_due_idx = leak_qty_idx + 1 if leak_qty_idx is not None and (leak_qty_idx + 1) < dem.shape[1] else None
@@ -803,10 +850,11 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
 
     dem_df = pd.DataFrame(
         {
-            "거래처": dem.iloc[:, 1].astype(str).str.strip(),
-            "이니셜": dem.iloc[:, 2].astype(str).str.strip(),
-            "품목코드": dem.iloc[:, 3].astype(str).str.strip(),
-            "제품명": dem.iloc[:, 4].astype(str).str.strip(),
+            "사이트코드": site_series,
+            "거래처": customer_series,
+            "이니셜": initial_series,
+            "품목코드": item_series,
+            "제품명": name_series,
             "납기일": leak_due_date,
             "사출납기일": inj_due_date,
             "생산수량": shortage_qty,
@@ -815,18 +863,20 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
     )
 
     is_summary = (
-        (dem_df["거래처"] == "총합계")
+        (dem_df["사이트코드"] == "총합계")
+        | (dem_df["거래처"] == "총합계")
         | (dem_df["이니셜"] == "총합계")
         | (dem_df["품목코드"] == "총합계")
     )
     dem_df = dem_df[~is_summary]
+    dem_df = dem_df[(dem_df["사이트코드"] != "") & (dem_df["사이트코드"].str.lower() != "nan")]
     dem_df = dem_df[(dem_df["품목코드"] != "") & (dem_df["품목코드"].str.lower() != "nan")]
     dem_df = dem_df[dem_df["품목코드"].astype(str).str.upper().str.startswith(("P", "Q", "R"))]
     dem_df = dem_df[(dem_df["생산수량"] > 0) | (dem_df["사출생산필요수량"] > 0)]
     dem_df["제품명"] = dem_df["제품명"].replace({"nan": "", "None": ""})
 
     grouped_demand = (
-        dem_df.groupby(["이니셜", "거래처", "품목코드"], as_index=False)
+        dem_df.groupby(["사이트코드", "이니셜", "거래처", "품목코드"], as_index=False)
         .agg(
             {
                 "생산수량": "sum",
@@ -966,11 +1016,30 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
     st.caption("기본 적용: 전체 수요")
 
     scope_df = df.copy()
+    if "사이트코드" not in scope_df.columns:
+        scope_df["사이트코드"] = "(미지정)"
+    site_label = scope_df["사이트코드"].astype(str).str.strip()
+    scope_df["사이트코드"] = site_label.replace({"": "(미지정)", "nan": "(미지정)", "None": "(미지정)"})
+
+    site_sum_map = (
+        scope_df.groupby("사이트코드", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
+    )
+    site_options = ["전체"] + list(site_sum_map.keys())
+    site_count_map = {"전체": float(scope_df["부족수량"].sum()), **site_sum_map}
+    selected_site_option = st.pills(
+        "사이트코드",
+        options=site_options,
+        default="전체",
+        key="flt_site_pills",
+        format_func=lambda x: format_pill_label(x, site_count_map),
+    )
+    if selected_site_option and selected_site_option != "전체":
+        scope_df = scope_df[scope_df["사이트코드"] == selected_site_option]
 
     r1c1, r1c2 = st.columns([3.0, 1.2])
     with r1c1:
         unified_query = st.text_input(
-            "통합 검색 (이니셜/거래처/품목코드/제품명/R코드/Q코드)",
+            "통합 검색 (사이트코드/이니셜/거래처/품목코드/제품명/R코드/Q코드)",
             value="",
             key="flt_unified_query",
             placeholder="예: PIA, 국내, P1234",
@@ -1009,7 +1078,7 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
     )
 
     base_filtered = scope_df.copy()
-    search_cols = [c for c in ["이니셜", "거래처", "품목코드", "제품명", "R코드 제품명", "R코드", "Q코드"] if c in base_filtered.columns]
+    search_cols = [c for c in ["사이트코드", "이니셜", "거래처", "품목코드", "제품명", "R코드 제품명", "R코드", "Q코드"] if c in base_filtered.columns]
     base_filtered = filter_with_terms_any(base_filtered, search_cols, unified_query)
     if exclude_safe_initial:
         base_filtered = base_filtered[~base_filtered["이니셜"].astype(str).str.contains("안전", na=False)]
@@ -1058,12 +1127,13 @@ def load_leadji_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
     enriched_df = add_rq_group_columns(df)
-    full_demand_summary = build_summary_group_totals_with_safe_split(enriched_df)
     filtered = apply_filters(enriched_df, updated_at)
+    full_demand_summary = build_summary_group_totals_with_safe_split(filtered)
     q_summary = build_qcode_summary(filtered)
     rq_summary = build_rq_group_summary(filtered)
 
     detail_columns = [
+        "사이트코드",
         "거래처",
         "이니셜",
         "품목코드",
@@ -1080,6 +1150,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         "공정재고 합계",
     ]
     detail_column_config = {
+        "사이트코드": st.column_config.Column(width="small"),
         "거래처": st.column_config.Column(width="small"),
         "이니셜": st.column_config.Column(width="small"),
         "품목코드": st.column_config.Column(width="medium"),
