@@ -825,20 +825,24 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
     else:
         leak_due_date = pd.Series(pd.NaT, index=dem.index, dtype="datetime64[ns]")
 
-    # 기준2) 사출 생산 현황: F열(사출조립 생산수량) + G열 납기일
-    inj_qty_col = pick_first_existing_column(
-        dem.columns.tolist(),
-        ["사출조립 생산수량", "사출조립생산수량", "사출조립 생산 수량"],
-    )
-    selected_qty_idx: int | None = None
-    if inj_qty_col is not None:
-        inj_qty = pd.to_numeric(dem[inj_qty_col], errors="coerce").fillna(0)
-        selected_qty_idx = dem.columns.get_loc(inj_qty_col)
-    elif dem.shape[1] > 5:
-        inj_qty = pd.to_numeric(dem.iloc[:, 5], errors="coerce").fillna(0)
-        selected_qty_idx = 5
+    # 기준2) 사출 생산 현황: [10]사출조립 생산수량 + 해당 납기일
+    # 파일 구조가 바뀌어도 공정 헤더 기준으로 우선 선택한다.
+    selected_qty_idx: int | None = warehouse_qty_col_indices.get("사출창고")
+    if selected_qty_idx is not None and 0 <= selected_qty_idx < dem.shape[1]:
+        inj_qty = pd.to_numeric(dem.iloc[:, selected_qty_idx], errors="coerce").fillna(0)
     else:
-        raise ValueError("수요 파일 F열(사출조립 생산수량)을 찾지 못했습니다.")
+        inj_qty_col = pick_first_existing_column(
+            dem.columns.tolist(),
+            ["사출조립 생산수량", "사출조립생산수량", "사출조립 생산 수량"],
+        )
+        if inj_qty_col is not None:
+            inj_qty = pd.to_numeric(dem[inj_qty_col], errors="coerce").fillna(0)
+            selected_qty_idx = dem.columns.get_loc(inj_qty_col)
+        elif dem.shape[1] > 5:
+            inj_qty = pd.to_numeric(dem.iloc[:, 5], errors="coerce").fillna(0)
+            selected_qty_idx = 5
+        else:
+            raise ValueError("수요 파일 사출조립 생산수량 컬럼을 찾지 못했습니다.")
 
     inj_due_idx = selected_qty_idx + 1 if selected_qty_idx is not None and (selected_qty_idx + 1) < dem.shape[1] else None
     if inj_due_idx is not None:
@@ -968,6 +972,58 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
     result = grouped_demand.merge(code_stock, on="품목코드", how="left")
     for col in ["사출창고", "분리창고", "검사접착창고", "누수규격검사 창고", "공정재고 합계"]:
         result[col] = result[col].fillna(0)
+
+    # 분류 필터 정합성 보정:
+    # P코드는 코드5(Pxxxx) 기준 매핑을 그대로 사용하고,
+    # R/Q/U 등 비-P코드는 같은 R코드5를 공유하는 P코드의 분류를 이어받는다.
+    result["코드5"] = result["품목코드"].astype(str).str[:5]
+    result["분류별요약"] = result["코드5"].map(product_group_map)
+    result["시트분류"] = result["코드5"].map(sheet2_group_map)
+    result["R코드5"] = result["R코드"].astype(str).str[:5]
+
+    item_prefix = result["품목코드"].astype(str).str.upper().str[:1]
+    p_scope = result[(item_prefix == "P") & result["R코드5"].str.startswith("R", na=False)].copy()
+    if not p_scope.empty:
+        p_scope["부족수량_num"] = pd.to_numeric(p_scope["부족수량"], errors="coerce").fillna(0)
+        p_scope = p_scope.sort_values(["부족수량_num", "품목코드"], ascending=[False, True])
+
+        p_sheet_scope = p_scope[p_scope["시트분류"].notna()].copy()
+        p_sheet_scope["시트분류"] = p_sheet_scope["시트분류"].astype(str).str.strip()
+        p_sheet_scope = p_sheet_scope[
+            (p_sheet_scope["시트분류"] != "")
+            & (p_sheet_scope["시트분류"].str.lower() != "nan")
+            & (p_sheet_scope["시트분류"].str.lower() != "none")
+        ]
+        r_to_sheet = p_sheet_scope.drop_duplicates(subset=["R코드5"], keep="first").set_index("R코드5")["시트분류"].to_dict()
+
+        p_group_scope = p_scope[p_scope["분류별요약"].notna()].copy()
+        p_group_scope["분류별요약"] = p_group_scope["분류별요약"].astype(str).str.strip()
+        p_group_scope = p_group_scope[
+            (p_group_scope["분류별요약"] != "")
+            & (p_group_scope["분류별요약"].str.lower() != "nan")
+            & (p_group_scope["분류별요약"].str.lower() != "none")
+        ]
+        r_to_group = (
+            p_group_scope.drop_duplicates(subset=["R코드5"], keep="first").set_index("R코드5")["분류별요약"].to_dict()
+        )
+    else:
+        r_to_sheet = {}
+        r_to_group = {}
+
+    non_p_mask = item_prefix != "P"
+    result.loc[non_p_mask, "시트분류"] = result.loc[non_p_mask, "시트분류"].fillna(
+        result.loc[non_p_mask, "R코드5"].map(r_to_sheet)
+    )
+    result.loc[non_p_mask, "분류별요약"] = result.loc[non_p_mask, "분류별요약"].fillna(
+        result.loc[non_p_mask, "R코드5"].map(r_to_group)
+    )
+
+    result["시트분류"] = result["시트분류"].astype(str).str.strip()
+    result["분류별요약"] = result["분류별요약"].astype(str).str.strip()
+    result.loc[result["시트분류"].str.lower().isin({"", "nan", "none"}), "시트분류"] = "기타 해외"
+    result.loc[result["분류별요약"].str.lower().isin({"", "nan", "none"}), "분류별요약"] = "기타"
+    result = result.drop(columns=["코드5"], errors="ignore")
+
     result["파워"] = result["품목코드"].map(extract_power_from_code)
     result["납기일"] = pd.to_datetime(result["납기일"], errors="coerce").dt.strftime("%Y-%m-%d")
     result["납기일"] = result["납기일"].fillna("-")
