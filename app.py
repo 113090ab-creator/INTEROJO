@@ -412,6 +412,28 @@ def merge_mapped_base_code(inferred_code: str, mapped_base_code: str, prefix: st
     return mapped
 
 
+def iter_inventory_code_candidates(process_code: str) -> list[str]:
+    code = str(process_code).strip()
+    if not code or code.lower() == "nan":
+        return []
+
+    candidates = [code]
+    bul_match = re.match(r"^(.*BUL)\d+$", code, flags=re.IGNORECASE)
+    if bul_match:
+        candidates.append(bul_match.group(1))
+
+    # 순서를 유지한 unique
+    return list(dict.fromkeys(candidates))
+
+
+def lookup_stock_qty(stock_map: dict[str, float], process_code: str) -> float:
+    for candidate in iter_inventory_code_candidates(process_code):
+        qty = stock_map.get(candidate)
+        if qty is not None:
+            return float(qty)
+    return 0.0
+
+
 def build_data_refresh_key(base_dir: Path) -> str:
     inv_path, dem_path = find_excel_files(base_dir)
     ref_path = find_product_name_reference_file(base_dir)
@@ -846,10 +868,10 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
     r_by_p = rq_by_p["R코드"].to_dict()
     q_by_p = rq_by_p["Q코드"].to_dict()
     code_stock["사출창고"] = code_stock["품목코드"].map(
-        lambda x: stock_lookup["사출창고"].get(r_by_p.get(x, map_demand_code_to_process_code(x, "R")), 0)
+        lambda x: lookup_stock_qty(stock_lookup["사출창고"], r_by_p.get(x, map_demand_code_to_process_code(x, "R")))
     )
     code_stock["분리창고"] = code_stock["품목코드"].map(
-        lambda x: stock_lookup["분리창고"].get(q_by_p.get(x, map_demand_code_to_process_code(x, "Q")), 0)
+        lambda x: lookup_stock_qty(stock_lookup["분리창고"], q_by_p.get(x, map_demand_code_to_process_code(x, "Q")))
     )
     code_stock["검사접착창고"] = code_stock["품목코드"].map(
         lambda x: stock_lookup["검사접착창고"].get(x, 0)
