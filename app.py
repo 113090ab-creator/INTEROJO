@@ -1121,9 +1121,23 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
 
     with tab_rq:
         rq_filtered = filtered.copy()
-        if {"R코드5", "Q코드5", "P코드5"}.issubset(rq_filtered.columns):
-            rq_group_p_count = rq_filtered.groupby(["R코드5", "Q코드5"])["P코드5"].transform("nunique")
-            rq_filtered = rq_filtered[rq_group_p_count >= 2]
+        multi_p_r_codes: set[str] = set()
+        if {"R코드5", "P코드5", "부족수량"}.issubset(rq_filtered.columns):
+            rq_mapping_scope = rq_filtered.copy()
+            rq_mapping_scope["부족수량"] = pd.to_numeric(rq_mapping_scope["부족수량"], errors="coerce").fillna(0)
+            rq_mapping_scope = rq_mapping_scope[rq_mapping_scope["부족수량"] > 0]
+            rq_mapping_scope["R코드5"] = rq_mapping_scope["R코드5"].astype(str).str.strip()
+            rq_mapping_scope["P코드5"] = rq_mapping_scope["P코드5"].astype(str).str.strip()
+            rq_mapping_scope = rq_mapping_scope[
+                rq_mapping_scope["R코드5"].str.startswith("R") & rq_mapping_scope["P코드5"].str.startswith("P")
+            ]
+
+            r_to_p_count = rq_mapping_scope.groupby("R코드5")["P코드5"].nunique()
+            multi_p_r_codes = set(r_to_p_count[r_to_p_count >= 2].index.tolist())
+            if multi_p_r_codes:
+                rq_filtered = rq_filtered[rq_filtered["R코드5"].isin(multi_p_r_codes)]
+            else:
+                rq_filtered = rq_filtered.iloc[0:0]
 
         if "R코드 제품명" in rq_filtered.columns:
             rq_product_scope = rq_filtered.copy()
@@ -1142,7 +1156,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
                 **rq_product_sum_map,
             }
             rq_selected_product = st.pills(
-                "사출 제품명 (공용, P코드5 2+)",
+                "사출 제품명 (R코드5 1개당 P코드5 2+)",
                 options=rq_product_options,
                 default="전체",
                 key="rq_tab_r_product_pills",
@@ -1155,12 +1169,12 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         r1, r2, r3 = st.columns(3)
         r1.metric("RQ 그룹 수", f"{len(rq_summary_tab):,}")
         if rq_summary_tab.empty:
-            r2.metric("동일 RQ 그룹 수(P코드5 2+)", "0")
+            r2.metric("R코드 수(P코드5 2+)", "0")
             r3.metric("사출 부족수량 합계", "0")
             st.info("표시할 RQ 그룹 데이터가 없습니다.")
         else:
-            same_group_count = int((rq_summary_tab["P코드5 수"] >= 2).sum())
-            r2.metric("동일 RQ 그룹 수(P코드5 2+)", f"{same_group_count:,}")
+            same_group_count = len(multi_p_r_codes) if multi_p_r_codes else int(rq_filtered["R코드5"].nunique())
+            r2.metric("R코드 수(P코드5 2+)", f"{same_group_count:,}")
             r3.metric("사출 부족수량 합계", f"{rq_summary_tab['사출 부족수량'].sum():,.0f}")
 
             rq_sort_cols = ["R코드5", "Q코드5", "부족수량"] if {"R코드5", "Q코드5", "부족수량"}.issubset(rq_filtered.columns) else ["R코드", "Q코드", "부족수량"]
