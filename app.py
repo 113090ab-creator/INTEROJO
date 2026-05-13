@@ -1493,107 +1493,36 @@ def render_leadji_dashboard(
     st.caption(f"업데이트: {updated_at}")
 
     summary_df = build_leadji_requirement_summary(shortage_df, leadji_info, leadji_stock)
-    summary_tab, info_tab = st.tabs(["리드지재고현황", "리드지 정보"])
+    if summary_df.empty:
+        st.warning("리드지재고현황을 계산할 데이터가 없습니다.")
+    else:
+        st.caption("생산필요수량: 수요 데이터의 생산필요수량 컬럼 우선, 없으면 누수규격검사 기준 부족수량 반영")
+        st.caption("최소납기일: 누수규격검사 기준 수요 정보의 최소 납기일")
+        st.caption("창고 컬럼: 리드지 재고 시트에서 리드지코드별 재고가 존재하는 창고와 수량")
 
-    with summary_tab:
-        if summary_df.empty:
-            st.warning("리드지재고현황을 계산할 데이터가 없습니다.")
-        else:
-            st.caption("생산필요수량: 수요 데이터의 생산필요수량 컬럼 우선, 없으면 누수규격검사 기준 부족수량 반영")
-            st.caption("최소납기일: 누수규격검사 기준 수요 정보의 최소 납기일")
-            st.caption("창고 컬럼: 리드지 재고 시트에서 리드지코드별 재고가 존재하는 창고와 수량")
+        qcol, _ = st.columns([3.0, 1.0])
+        with qcol:
+            summary_query = st.text_input(
+                "통합 검색 (리드지코드/리드지명/창고)",
+                value="",
+                key="leadji_summary_query",
+                placeholder="예: BS0314, 블리스터케이스, 원료창고",
+            ).strip()
 
-            qcol, _ = st.columns([3.0, 1.0])
-            with qcol:
-                summary_query = st.text_input(
-                    "통합 검색 (리드지코드/리드지명/창고)",
-                    value="",
-                    key="leadji_summary_query",
-                    placeholder="예: BS0314, 블리스터케이스, 원료창고",
-                ).strip()
+        summary_search_cols = [c for c in summary_df.columns if c not in ["생산필요수량"]]
+        filtered_summary = filter_with_terms_any(summary_df, summary_search_cols, summary_query)
 
-            summary_search_cols = [c for c in summary_df.columns if c not in ["생산필요수량"]]
-            filtered_summary = filter_with_terms_any(summary_df, summary_search_cols, summary_query)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("리드지코드 수", f"{filtered_summary['리드지코드'].astype(str).nunique():,}")
+        c2.metric("생산필요수량 합계", f"{filtered_summary['생산필요수량'].sum():,.0f}")
+        min_due_dt = pd.to_datetime(filtered_summary["최소납기일"], errors="coerce").min()
+        c3.metric("최소납기일", "-" if pd.isna(min_due_dt) else min_due_dt.strftime("%Y-%m-%d"))
 
-            c1, c2, c3 = st.columns(3)
-            c1.metric("리드지코드 수", f"{filtered_summary['리드지코드'].astype(str).nunique():,}")
-            c2.metric("생산필요수량 합계", f"{filtered_summary['생산필요수량'].sum():,.0f}")
-            min_due_dt = pd.to_datetime(filtered_summary["최소납기일"], errors="coerce").min()
-            c3.metric("최소납기일", "-" if pd.isna(min_due_dt) else min_due_dt.strftime("%Y-%m-%d"))
-
-            st.dataframe(
-                format_numeric_columns_for_display(filtered_summary),
-                use_container_width=True,
-                height=700,
-            )
-
-    with info_tab:
-        if leadji_info.empty:
-            st.warning("리드지정보 시트를 찾지 못했습니다.")
-        else:
-            qcol, _ = st.columns([3.0, 1.0])
-            with qcol:
-                info_query = st.text_input(
-                    "통합 검색 (판매/생산/분리/B코드)",
-                    value="",
-                    key="leadji_info_query",
-                    placeholder="예: T4061, P1089, BS0054",
-                ).strip()
-
-            filtered_info = leadji_info.copy()
-            info_search_cols = [
-                c
-                for c in ["판매", "판매명", "생산", "생산명", "분리", "분리명", "B1코드", "B1코드명", "B2코드", "B2코드명", "B3코드", "B3코드명"]
-                if c in filtered_info.columns
-            ]
-            if info_search_cols:
-                filtered_info = filter_with_terms_any(filtered_info, info_search_cols, info_query)
-
-            m1, m2, m3 = st.columns(3)
-            for metric_col, metric_box, metric_name in [
-                ("판매", m1, "판매 코드 수"),
-                ("생산", m2, "생산 코드 수"),
-                ("분리", m3, "분리 코드 수"),
-            ]:
-                if metric_col in filtered_info.columns:
-                    valid = (
-                        filtered_info[metric_col]
-                        .astype(str)
-                        .str.strip()
-                        .replace({"nan": "", "None": ""})
-                    )
-                    metric_box.metric(metric_name, f"{(valid != '').sum():,}")
-                else:
-                    metric_box.metric(metric_name, "-")
-
-            info_cols = [
-                c
-                for c in [
-                    "신규분류요약",
-                    "판매",
-                    "판매명",
-                    "생산",
-                    "생산명",
-                    "분리",
-                    "분리명",
-                    "B1코드",
-                    "B1코드명",
-                    "B1소요량",
-                    "B2코드",
-                    "B2코드명",
-                    "B2소요량",
-                    "B3코드",
-                    "B3코드명",
-                    "B3소요량",
-                ]
-                if c in filtered_info.columns
-            ]
-            info_table = filtered_info[info_cols] if info_cols else filtered_info
-            st.dataframe(
-                format_numeric_columns_for_display(info_table),
-                use_container_width=True,
-                height=700,
-            )
+        st.dataframe(
+            format_numeric_columns_for_display(filtered_summary),
+            use_container_width=True,
+            height=700,
+        )
 
 
 
