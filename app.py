@@ -1,5 +1,6 @@
 import re
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -704,6 +705,19 @@ def build_auto_column_config(df: pd.DataFrame, columns: list[str]) -> dict[str, 
         max_len = max(len(str(col)), max_value_len)
         config[col] = st.column_config.Column(width=pick_auto_column_width(max_len))
     return config
+
+
+def dataframe_to_excel_bytes(df: pd.DataFrame, sheet_name: str = "data") -> bytes:
+    safe_sheet = re.sub(r"[:\\\\/?*\\[\\]]", "_", str(sheet_name)).strip()
+    if not safe_sheet:
+        safe_sheet = "data"
+    safe_sheet = safe_sheet[:31]
+
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name=safe_sheet)
+    output.seek(0)
+    return output.getvalue()
 
 
 def split_query_terms(query: str) -> list[str]:
@@ -1437,6 +1451,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
     full_demand_summary = build_summary_group_totals_with_safe_split(filtered)
     q_summary = build_qcode_summary(filtered)
     rq_summary = build_rq_group_summary(filtered)
+    download_stamp = datetime.now(DISPLAY_TZ).strftime("%Y%m%d_%H%M%S")
 
     detail_columns = [
         "거래처",
@@ -1505,6 +1520,14 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         p_table = p_view[p_detail_columns].sort_values(["부족수량", "이니셜", "거래처"], ascending=[False, True, True])
         p_table_display = format_numeric_columns_for_display(p_table)
         p_detail_column_config = build_auto_column_config(p_table_display, p_detail_columns)
+        st.download_button(
+            "엑셀 다운로드",
+            data=dataframe_to_excel_bytes(p_table, sheet_name="생산현황"),
+            file_name=f"shortage_production_{download_stamp}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_shortage_tab_p",
+            use_container_width=False,
+        )
 
         st.dataframe(
             p_table_display,
@@ -1526,9 +1549,18 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         )
         r3.metric("R기준 사출창고 합계", f"{r_summary['사출창고 합계'].sum():,.0f}" if not r_summary.empty else "0")
         r4.metric("R기준 분리창고 합계", f"{r_summary['분리창고 합계'].sum():,.0f}" if not r_summary.empty else "0")
+        r_summary_display = format_numeric_columns_for_display(r_summary)
+        st.download_button(
+            "엑셀 다운로드",
+            data=dataframe_to_excel_bytes(r_summary, sheet_name="사출생산현황"),
+            file_name=f"shortage_injection_summary_{download_stamp}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_shortage_tab_r",
+            use_container_width=False,
+        )
 
         st.dataframe(
-            format_numeric_columns_for_display(r_summary),
+            r_summary_display,
             use_container_width=True,
             height=700,
             key="shortage_r_table_v2",
@@ -1545,6 +1577,14 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         q_table = filtered.sort_values(q_sort_cols, ascending=q_sort_asc)[detail_columns]
         q_table_display = format_numeric_columns_for_display(q_table)
         q_detail_column_config = build_auto_column_config(q_table_display, detail_columns)
+        st.download_button(
+            "엑셀 다운로드",
+            data=dataframe_to_excel_bytes(q_table, sheet_name="분리생산현황"),
+            file_name=f"shortage_separation_{download_stamp}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_shortage_tab_q",
+            use_container_width=False,
+        )
         st.dataframe(
             q_table_display,
             use_container_width=True,
@@ -1623,6 +1663,14 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
 
         if rq_summary_tab.empty:
             st.info("표시할 RQ 그룹 데이터가 없습니다.")
+            st.download_button(
+                "엑셀 다운로드",
+                data=dataframe_to_excel_bytes(pd.DataFrame(columns=detail_columns), sheet_name="사출분리공용"),
+                file_name=f"shortage_shared_rq_{download_stamp}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_shortage_tab_rq_empty",
+                use_container_width=False,
+            )
         else:
             rq_sort_cols = ["R코드5", "Q코드5", "부족수량"] if {"R코드5", "Q코드5", "부족수량"}.issubset(rq_filtered.columns) else ["R코드", "Q코드", "부족수량"]
             rq_sort_asc = [True, True, False]
@@ -1650,6 +1698,14 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
             rq_table = rq_view.sort_values(rq_sort_cols, ascending=rq_sort_asc)[rq_detail_columns]
             rq_table_display = format_numeric_columns_for_display(rq_table)
             rq_detail_column_config = build_auto_column_config(rq_table_display, rq_detail_columns)
+            st.download_button(
+                "엑셀 다운로드",
+                data=dataframe_to_excel_bytes(rq_table, sheet_name="사출분리공용"),
+                file_name=f"shortage_shared_rq_{download_stamp}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_shortage_tab_rq",
+                use_container_width=False,
+            )
             st.dataframe(
                 rq_table_display,
                 use_container_width=True,
