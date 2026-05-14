@@ -51,11 +51,38 @@ def find_excel_files(base_dir: Path) -> tuple[Path, Path]:
     return inv_path, dem_path
 
 
+def find_demand_update_file(base_dir: Path) -> Path | None:
+    xlsx_files = [p for p in base_dir.glob("*.xlsx") if not p.name.startswith("~$")]
+    if not xlsx_files:
+        return None
+
+    exact = [p for p in xlsx_files if p.name == "수요정보(전공정).xlsx"]
+    if exact:
+        return max(exact, key=lambda p: p.stat().st_mtime)
+
+    normalized = lambda s: str(s).replace(" ", "")
+    full_process = [p for p in xlsx_files if "수요정보(전공정)" in normalized(p.stem)]
+    if full_process:
+        return max(full_process, key=lambda p: p.stat().st_mtime)
+
+    demand_info = [p for p in xlsx_files if "수요정보" in normalized(p.stem)]
+    if demand_info:
+        return max(demand_info, key=lambda p: p.stat().st_mtime)
+
+    demand_like = [p for p in xlsx_files if "수요" in normalized(p.stem)]
+    if demand_like:
+        return max(demand_like, key=lambda p: p.stat().st_mtime)
+
+    return None
+
+
 def get_data_updated_at(base_dir: Path) -> str:
-    try:
-        _, dem_path = find_excel_files(base_dir)
-    except FileNotFoundError:
-        return "-"
+    dem_path = find_demand_update_file(base_dir)
+    if dem_path is None:
+        try:
+            _, dem_path = find_excel_files(base_dir)
+        except FileNotFoundError:
+            return "-"
 
     # 업데이트 시간은 수요정보(전공정) 파일 기준으로 표시한다.
     latest_dt = datetime.fromtimestamp(dem_path.stat().st_mtime, tz=DISPLAY_TZ)
