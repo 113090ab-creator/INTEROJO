@@ -69,6 +69,26 @@ def pick_first_existing_column(columns: list[str], candidates: list[str]) -> str
     return None
 
 
+def parse_mixed_excel_date(series: pd.Series) -> pd.Series:
+    """Parse mixed date inputs safely, including Excel serial dates."""
+    text = series.astype(str).str.strip()
+    invalid_tokens = {"", "nan", "none", "nat"}
+    cleaned = series.where(~text.str.lower().isin(invalid_tokens), pd.NA)
+
+    # First pass: strings/datetime objects.
+    parsed = pd.to_datetime(cleaned, errors="coerce")
+
+    # Second pass: Excel serial numbers (days since 1899-12-30).
+    numeric = pd.to_numeric(cleaned, errors="coerce")
+    numeric_mask = numeric.notna() & (numeric > 0)
+    if numeric_mask.any():
+        parsed.loc[numeric_mask] = pd.to_datetime(
+            numeric.loc[numeric_mask], unit="D", origin="1899-12-30", errors="coerce"
+        )
+
+    return parsed
+
+
 def canonicalize_warehouse_label(raw_label: str) -> str:
     label = str(raw_label).strip()
     if not label or label.lower() == "nan":
@@ -821,7 +841,7 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
         shortage_qty = dem[qty_cols].apply(pd.to_numeric, errors="coerce").fillna(0).sum(axis=1)
 
     if leak_due_idx is not None:
-        leak_due_date = pd.to_datetime(dem.iloc[:, leak_due_idx], errors="coerce")
+        leak_due_date = parse_mixed_excel_date(dem.iloc[:, leak_due_idx])
     else:
         leak_due_date = pd.Series(pd.NaT, index=dem.index, dtype="datetime64[ns]")
 
@@ -846,7 +866,7 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
 
     inj_due_idx = selected_qty_idx + 1 if selected_qty_idx is not None and (selected_qty_idx + 1) < dem.shape[1] else None
     if inj_due_idx is not None:
-        inj_due_date = pd.to_datetime(dem.iloc[:, inj_due_idx], errors="coerce")
+        inj_due_date = parse_mixed_excel_date(dem.iloc[:, inj_due_idx])
     else:
         inj_due_date = pd.Series(pd.NaT, index=dem.index, dtype="datetime64[ns]")
 
