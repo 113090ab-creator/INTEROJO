@@ -270,6 +270,82 @@ def load_product_reference_maps(base_dir: Path) -> tuple[dict[str, str], dict[st
     return name_map, group_map
 
 
+def find_reference_sheet_with_columns(
+    ref_path: Path, sheet_names: list[str], required_columns: set[str], preferred_name: str | None = None
+) -> str | None:
+    if preferred_name:
+        normalized = preferred_name.replace(" ", "")
+        by_name = next((s for s in sheet_names if str(s).replace(" ", "") == normalized), None)
+        if by_name is not None:
+            return by_name
+
+    for sheet_name in sheet_names:
+        try:
+            preview = pd.read_excel(ref_path, sheet_name=sheet_name, nrows=0)
+        except Exception:
+            continue
+        cols = {str(c).strip() for c in preview.columns}
+        if required_columns.issubset(cols):
+            return sheet_name
+    return None
+
+
+def load_bom_base_code_maps(base_dir: Path) -> tuple[dict[str, str], dict[str, str]]:
+    ref_path = find_product_name_reference_file(base_dir)
+    if ref_path is None:
+        return {}, {}
+
+    sheet_names = pd.ExcelFile(ref_path).sheet_names
+    bom_sheet = find_reference_sheet_with_columns(
+        ref_path, sheet_names, {"SALES_ITEM_CD", "FROM_ITEM_ID"}, preferred_name="BOM정보"
+    )
+    if bom_sheet is None:
+        return {}, {}
+
+    use_cols = ["SALES_ITEM_CD", "FROM_ITEM_ID", "SEQ"]
+    bom = pd.read_excel(ref_path, sheet_name=bom_sheet, usecols=lambda c: str(c).strip() in set(use_cols))
+    bom.columns = [str(c).strip() for c in bom.columns]
+    if not {"SALES_ITEM_CD", "FROM_ITEM_ID"}.issubset(bom.columns):
+        return {}, {}
+
+    bom["SALES_ITEM_CD"] = bom["SALES_ITEM_CD"].astype(str).str.strip()
+    bom["FROM_ITEM_ID"] = bom["FROM_ITEM_ID"].astype(str).str.strip()
+    if "SEQ" in bom.columns:
+        bom["SEQ"] = pd.to_numeric(bom["SEQ"], errors="coerce").fillna(9999)
+    else:
+        bom["SEQ"] = 9999
+
+    bom = bom[
+        (bom["SALES_ITEM_CD"] != "")
+        & (bom["SALES_ITEM_CD"].str.lower() != "nan")
+        & (bom["FROM_ITEM_ID"] != "")
+        & (bom["FROM_ITEM_ID"].str.lower() != "nan")
+    ].copy()
+    if bom.empty:
+        return {}, {}
+
+    bom["SALES_CODE5"] = bom["SALES_ITEM_CD"].str[:5]
+    bom["FROM_CODE5"] = bom["FROM_ITEM_ID"].str[:5]
+    bom = bom[bom["SALES_CODE5"].str.match(r"^[PQRSTU]\d{4}$", na=False)]
+    bom = bom[bom["FROM_CODE5"].str.match(r"^[PQRSTU]\d{4}$", na=False)]
+    if bom.empty:
+        return {}, {}
+
+    bom = bom.sort_values(["SALES_CODE5", "SEQ"], ascending=[True, True])
+
+    q_df = bom[bom["FROM_CODE5"].str.startswith("Q")].drop_duplicates(subset=["SALES_CODE5"], keep="first")
+    r_df = bom[bom["FROM_CODE5"].str.startswith("R")].drop_duplicates(subset=["SALES_CODE5"], keep="first")
+    q_base_map = q_df.set_index("SALES_CODE5")["FROM_CODE5"].to_dict()
+    r_base_map = r_df.set_index("SALES_CODE5")["FROM_CODE5"].to_dict()
+
+    # If BOM has only Q mapping for a sales code, derive R base from the same numeric part.
+    for sales_code5, q_code5 in q_base_map.items():
+        if sales_code5 not in r_base_map and str(q_code5).startswith("Q") and len(str(q_code5)) >= 5:
+            r_base_map[sales_code5] = "R" + str(q_code5)[1:5]
+
+    return r_base_map, q_base_map
+
+
 def load_sheet2_group_map(base_dir: Path) -> dict[str, str]:
     ref_path = find_product_name_reference_file(base_dir)
     if ref_path is None:
@@ -279,7 +355,13 @@ def load_sheet2_group_map(base_dir: Path) -> dict[str, str]:
     if len(sheet_names) < 2:
         return {}
 
-    sheet2 = pd.read_excel(ref_path, sheet_name=sheet_names[1])
+    sheet_name = find_reference_sheet_with_columns(
+        ref_path, sheet_names, {"코드", "시트이름"}, preferred_name="분류정보"
+    )
+    if sheet_name is None:
+        return {}
+
+    sheet2 = pd.read_excel(ref_path, sheet_name=sheet_name)
     sheet2.columns = [str(c).strip() for c in sheet2.columns]
     if "코드" not in sheet2.columns or "시트이름" not in sheet2.columns:
         return {}
@@ -307,7 +389,13 @@ def load_rq_code_maps(base_dir: Path) -> tuple[dict[str, str], dict[str, str], d
     if len(sheet_names) < 2:
         return {}, {}, {}
 
-    sheet2 = pd.read_excel(ref_path, sheet_name=sheet_names[1])
+    sheet_name = find_reference_sheet_with_columns(
+        ref_path, sheet_names, {"코드", "Q코드", "R코드"}, preferred_name="분류정보"
+    )
+    if sheet_name is None:
+        return {}, {}, {}
+
+    sheet2 = pd.read_excel(ref_path, sheet_name=sheet_name)
     sheet2.columns = [str(c).strip() for c in sheet2.columns]
     required = {"코드", "Q코드", "R코드"}
     if not required.issubset(sheet2.columns):
@@ -779,6 +867,7 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
     product_name_map, product_group_map = load_product_reference_maps(BASE_DIR)
     sheet2_group_map = load_sheet2_group_map(BASE_DIR)
     r_ref_map, q_ref_map, r_name_map = load_rq_code_maps(BASE_DIR)
+    bom_r_base_map, bom_q_base_map = load_bom_base_code_maps(BASE_DIR)
     leadji_r_map, leadji_q_map = load_leadji_process_maps(BASE_DIR)
     process_code_map, warehouse_qty_col_indices, qty_col_indices, total_qty_col_indices = extract_demand_header_info(dem_path)
 
@@ -947,6 +1036,28 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
     grouped_demand["Q코드"] = inferred_q
     grouped_demand.loc[use_mapped_mask, "R코드"] = merged_r.loc[use_mapped_mask]
     grouped_demand.loc[use_mapped_mask, "Q코드"] = merged_q.loc[use_mapped_mask]
+
+    # BOM fallback: only for rows still not mappable as valid R/Q codes.
+    if bom_r_base_map or bom_q_base_map:
+        bom_r_base = grouped_demand["코드5"].map(bom_r_base_map)
+        bom_q_base = grouped_demand["코드5"].map(bom_q_base_map)
+
+        bom_merged_r = pd.Series(
+            [merge_mapped_base_code(inferred, mapped, "R") for inferred, mapped in zip(inferred_r, bom_r_base)],
+            index=grouped_demand.index,
+        )
+        bom_merged_q = pd.Series(
+            [merge_mapped_base_code(inferred, mapped, "Q") for inferred, mapped in zip(inferred_q, bom_q_base)],
+            index=grouped_demand.index,
+        )
+
+        r_norm = grouped_demand["R코드"].astype(str).str.strip()
+        q_norm = grouped_demand["Q코드"].astype(str).str.strip()
+        invalid_r_mask = (r_norm == "") | (r_norm.str.lower() == "nan") | (~r_norm.str.startswith("R"))
+        invalid_q_mask = (q_norm == "") | (q_norm.str.lower() == "nan") | (~q_norm.str.startswith("Q"))
+
+        grouped_demand.loc[invalid_r_mask, "R코드"] = bom_merged_r.loc[invalid_r_mask]
+        grouped_demand.loc[invalid_q_mask, "Q코드"] = bom_merged_q.loc[invalid_q_mask]
 
     grouped_demand["R코드5"] = grouped_demand["R코드"].astype(str).str[:5]
     grouped_demand["R코드 제품명"] = grouped_demand["R코드5"].map(r_name_map)
