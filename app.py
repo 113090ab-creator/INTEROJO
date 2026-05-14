@@ -290,23 +290,23 @@ def find_reference_sheet_with_columns(
     return None
 
 
-def load_bom_base_code_maps(base_dir: Path) -> tuple[dict[str, str], dict[str, str]]:
+def load_bom_base_code_maps(base_dir: Path) -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, str]]:
     ref_path = find_product_name_reference_file(base_dir)
     if ref_path is None:
-        return {}, {}
+        return {}, {}, {}, {}
 
     sheet_names = pd.ExcelFile(ref_path).sheet_names
     bom_sheet = find_reference_sheet_with_columns(
         ref_path, sheet_names, {"SALES_ITEM_CD", "FROM_ITEM_ID"}, preferred_name="BOM정보"
     )
     if bom_sheet is None:
-        return {}, {}
+        return {}, {}, {}, {}
 
-    use_cols = ["SALES_ITEM_CD", "FROM_ITEM_ID", "SEQ"]
+    use_cols = ["SALES_ITEM_CD", "TO_ITEM_ID", "FROM_ITEM_ID", "SEQ"]
     bom = pd.read_excel(ref_path, sheet_name=bom_sheet, usecols=lambda c: str(c).strip() in set(use_cols))
     bom.columns = [str(c).strip() for c in bom.columns]
     if not {"SALES_ITEM_CD", "FROM_ITEM_ID"}.issubset(bom.columns):
-        return {}, {}
+        return {}, {}, {}, {}
 
     bom["SALES_ITEM_CD"] = bom["SALES_ITEM_CD"].astype(str).str.strip()
     bom["FROM_ITEM_ID"] = bom["FROM_ITEM_ID"].astype(str).str.strip()
@@ -322,14 +322,42 @@ def load_bom_base_code_maps(base_dir: Path) -> tuple[dict[str, str], dict[str, s
         & (bom["FROM_ITEM_ID"].str.lower() != "nan")
     ].copy()
     if bom.empty:
-        return {}, {}
+        return {}, {}, {}, {}
+
+    # Exact TO_ITEM_ID mapping (authoritative when available).
+    if "TO_ITEM_ID" in bom.columns:
+        bom["TO_ITEM_ID"] = bom["TO_ITEM_ID"].astype(str).str.strip()
+        exact = bom[
+            (bom["TO_ITEM_ID"] != "")
+            & (bom["TO_ITEM_ID"].str.lower() != "nan")
+            & bom["FROM_ITEM_ID"].str.match(r"^[QR].+", na=False)
+        ].copy()
+        exact = exact.sort_values(["TO_ITEM_ID", "SEQ"], ascending=[True, True]).drop_duplicates(
+            subset=["TO_ITEM_ID"], keep="first"
+        )
+    else:
+        exact = pd.DataFrame(columns=["TO_ITEM_ID", "FROM_ITEM_ID"])
+
+    q_exact_map: dict[str, str] = {}
+    r_exact_map: dict[str, str] = {}
+    if not exact.empty:
+        for to_code, from_code in exact[["TO_ITEM_ID", "FROM_ITEM_ID"]].itertuples(index=False):
+            from_code = str(from_code).strip()
+            if from_code.startswith("Q"):
+                q_exact_map[to_code] = from_code
+                if len(from_code) > 1:
+                    r_exact_map[to_code] = "R" + from_code[1:]
+            elif from_code.startswith("R"):
+                r_exact_map[to_code] = from_code
+                if len(from_code) > 1:
+                    q_exact_map[to_code] = "Q" + from_code[1:]
 
     bom["SALES_CODE5"] = bom["SALES_ITEM_CD"].str[:5]
     bom["FROM_CODE5"] = bom["FROM_ITEM_ID"].str[:5]
     bom = bom[bom["SALES_CODE5"].str.match(r"^[PQRSTU]\d{4}$", na=False)]
     bom = bom[bom["FROM_CODE5"].str.match(r"^[PQRSTU]\d{4}$", na=False)]
     if bom.empty:
-        return {}, {}
+        return {}, {}, r_exact_map, q_exact_map
 
     bom = bom.sort_values(["SALES_CODE5", "SEQ"], ascending=[True, True])
 
@@ -343,7 +371,7 @@ def load_bom_base_code_maps(base_dir: Path) -> tuple[dict[str, str], dict[str, s
         if sales_code5 not in r_base_map and str(q_code5).startswith("Q") and len(str(q_code5)) >= 5:
             r_base_map[sales_code5] = "R" + str(q_code5)[1:5]
 
-    return r_base_map, q_base_map
+    return r_base_map, q_base_map, r_exact_map, q_exact_map
 
 
 def load_sheet2_group_map(base_dir: Path) -> dict[str, str]:
@@ -867,7 +895,7 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
     product_name_map, product_group_map = load_product_reference_maps(BASE_DIR)
     sheet2_group_map = load_sheet2_group_map(BASE_DIR)
     r_ref_map, q_ref_map, r_name_map = load_rq_code_maps(BASE_DIR)
-    bom_r_base_map, bom_q_base_map = load_bom_base_code_maps(BASE_DIR)
+    bom_r_base_map, bom_q_base_map, bom_r_exact_map, bom_q_exact_map = load_bom_base_code_maps(BASE_DIR)
     leadji_r_map, leadji_q_map = load_leadji_process_maps(BASE_DIR)
     process_code_map, warehouse_qty_col_indices, qty_col_indices, total_qty_col_indices = extract_demand_header_info(dem_path)
 
@@ -1036,6 +1064,15 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
     grouped_demand["Q코드"] = inferred_q
     grouped_demand.loc[use_mapped_mask, "R코드"] = merged_r.loc[use_mapped_mask]
     grouped_demand.loc[use_mapped_mask, "Q코드"] = merged_q.loc[use_mapped_mask]
+
+    # BOM exact mapping has the highest priority when TO_ITEM_ID matches the demand item code.
+    if bom_r_exact_map or bom_q_exact_map:
+        bom_exact_r = grouped_demand["품목코드"].map(bom_r_exact_map)
+        bom_exact_q = grouped_demand["품목코드"].map(bom_q_exact_map)
+        exact_r_mask = bom_exact_r.notna() & (bom_exact_r.astype(str).str.strip() != "")
+        exact_q_mask = bom_exact_q.notna() & (bom_exact_q.astype(str).str.strip() != "")
+        grouped_demand.loc[exact_r_mask, "R코드"] = bom_exact_r.loc[exact_r_mask]
+        grouped_demand.loc[exact_q_mask, "Q코드"] = bom_exact_q.loc[exact_q_mask]
 
     # BOM fallback: only for rows still not mappable as valid R/Q codes.
     if bom_r_base_map or bom_q_base_map:
