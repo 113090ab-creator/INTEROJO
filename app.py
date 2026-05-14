@@ -79,7 +79,15 @@ def parse_mixed_excel_date(series: pd.Series) -> pd.Series:
     parsed = pd.to_datetime(cleaned, errors="coerce")
 
     # Second pass: Excel serial numbers (days since 1899-12-30).
-    numeric = pd.to_numeric(cleaned, errors="coerce")
+    # IMPORTANT: only treat true numeric-like cells as serials.
+    # Datetime64 values can be converted to large integers (ns) by to_numeric,
+    # which would overwrite valid dates with NaT if we don't filter first.
+    obj = cleaned.astype("object")
+    numeric_like = obj.map(lambda v: isinstance(v, (int, float)) and not isinstance(v, bool))
+    numeric_text = text.str.fullmatch(r"[+-]?\d+(?:\.\d+)?").fillna(False)
+    numeric_mask_source = numeric_like | numeric_text
+
+    numeric = pd.to_numeric(obj.where(numeric_mask_source), errors="coerce")
     numeric_mask = numeric.notna() & (numeric > 0)
     if numeric_mask.any():
         parsed.loc[numeric_mask] = pd.to_datetime(
