@@ -686,6 +686,26 @@ def format_numeric_columns_for_display(df: pd.DataFrame) -> pd.DataFrame:
     return display_df
 
 
+def pick_auto_column_width(max_length: int) -> str:
+    if max_length <= 10:
+        return "small"
+    if max_length <= 24:
+        return "medium"
+    return "large"
+
+
+def build_auto_column_config(df: pd.DataFrame, columns: list[str]) -> dict[str, st.column_config.Column]:
+    config: dict[str, st.column_config.Column] = {}
+    for col in columns:
+        if col not in df.columns:
+            continue
+        col_series = df[col].astype(str)
+        max_value_len = int(col_series.map(len).max()) if not col_series.empty else 0
+        max_len = max(len(str(col)), max_value_len)
+        config[col] = st.column_config.Column(width=pick_auto_column_width(max_len))
+    return config
+
+
 def split_query_terms(query: str) -> list[str]:
     return [term.strip() for term in str(query).split(",") if term.strip()]
 
@@ -1434,22 +1454,6 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         "누수규격검사 창고",
         "공정재고 합계",
     ]
-    detail_column_config = {
-        "거래처": st.column_config.Column(width="small"),
-        "이니셜": st.column_config.Column(width="small"),
-        "품목코드": st.column_config.Column(width="medium"),
-        "R코드": st.column_config.Column(width="medium"),
-        "Q코드": st.column_config.Column(width="medium"),
-        "제품명": st.column_config.Column(width="large"),
-        "파워": st.column_config.Column(width="small"),
-        "납기일": st.column_config.Column(width="small"),
-        "부족수량": st.column_config.Column(width="small"),
-        "사출창고": st.column_config.Column(width="small"),
-        "분리창고": st.column_config.Column(width="small"),
-        "검사접착창고": st.column_config.Column(width="small"),
-        "누수규격검사 창고": st.column_config.Column(width="small"),
-        "공정재고 합계": st.column_config.Column(width="small"),
-    }
 
     tab_p, tab_r, tab_q, tab_rq = st.tabs(
         ["생산 현황", "사출 생산 현황", "분리 생산 현황", "사출, 분리 공용 품목 생산 현황"]
@@ -1497,11 +1501,10 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         if "사출 부족수량" not in p_detail_columns:
             insert_idx = p_detail_columns.index("부족수량") + 1 if "부족수량" in p_detail_columns else len(p_detail_columns)
             p_detail_columns.insert(insert_idx, "사출 부족수량")
-        p_detail_column_config = detail_column_config.copy()
-        p_detail_column_config["사출 부족수량"] = st.column_config.Column(width="small")
 
         p_table = p_view[p_detail_columns].sort_values(["부족수량", "이니셜", "거래처"], ascending=[False, True, True])
         p_table_display = format_numeric_columns_for_display(p_table)
+        p_detail_column_config = build_auto_column_config(p_table_display, p_detail_columns)
 
         st.dataframe(
             p_table_display,
@@ -1541,12 +1544,13 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         q_sort_asc = [True, True, False] if len(q_sort_cols) == 3 else [True, False]
         q_table = filtered.sort_values(q_sort_cols, ascending=q_sort_asc)[detail_columns]
         q_table_display = format_numeric_columns_for_display(q_table)
+        q_detail_column_config = build_auto_column_config(q_table_display, detail_columns)
         st.dataframe(
             q_table_display,
             use_container_width=True,
             height=700,
             column_order=detail_columns,
-            column_config=detail_column_config,
+            column_config=q_detail_column_config,
             key="shortage_q_table_v2",
         )
 
@@ -1642,11 +1646,10 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
             if "사출부족수량" not in rq_detail_columns:
                 insert_idx = rq_detail_columns.index("부족수량") + 1 if "부족수량" in rq_detail_columns else len(rq_detail_columns)
                 rq_detail_columns.insert(insert_idx, "사출부족수량")
-            rq_detail_column_config = detail_column_config.copy()
-            rq_detail_column_config["사출부족수량"] = st.column_config.Column(width="small")
 
             rq_table = rq_view.sort_values(rq_sort_cols, ascending=rq_sort_asc)[rq_detail_columns]
             rq_table_display = format_numeric_columns_for_display(rq_table)
+            rq_detail_column_config = build_auto_column_config(rq_table_display, rq_detail_columns)
             st.dataframe(
                 rq_table_display,
                 use_container_width=True,
