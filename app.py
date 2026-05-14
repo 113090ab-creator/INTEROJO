@@ -929,12 +929,24 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
     mapped_r_base = grouped_demand["코드5"].map(leadji_r_map).fillna(grouped_demand["코드5"].map(r_ref_map))
     mapped_q_base = grouped_demand["코드5"].map(leadji_q_map).fillna(grouped_demand["코드5"].map(q_ref_map))
 
-    grouped_demand["R코드"] = [
-        merge_mapped_base_code(inferred, mapped, "R") for inferred, mapped in zip(inferred_r, mapped_r_base)
-    ]
-    grouped_demand["Q코드"] = [
-        merge_mapped_base_code(inferred, mapped, "Q") for inferred, mapped in zip(inferred_q, mapped_q_base)
-    ]
+    merged_r = pd.Series(
+        [merge_mapped_base_code(inferred, mapped, "R") for inferred, mapped in zip(inferred_r, mapped_r_base)],
+        index=grouped_demand.index,
+    )
+    merged_q = pd.Series(
+        [merge_mapped_base_code(inferred, mapped, "Q") for inferred, mapped in zip(inferred_q, mapped_q_base)],
+        index=grouped_demand.index,
+    )
+
+    # P코드는 수요정보 품목코드 기준(P->R/Q)을 우선 유지한다.
+    # 리드지/분류 매핑 코드는 비-P 항목에서만 적용한다.
+    item_prefix = grouped_demand["품목코드"].astype(str).str.upper().str[:1]
+    use_mapped_mask = item_prefix != "P"
+
+    grouped_demand["R코드"] = inferred_r
+    grouped_demand["Q코드"] = inferred_q
+    grouped_demand.loc[use_mapped_mask, "R코드"] = merged_r.loc[use_mapped_mask]
+    grouped_demand.loc[use_mapped_mask, "Q코드"] = merged_q.loc[use_mapped_mask]
 
     grouped_demand["R코드5"] = grouped_demand["R코드"].astype(str).str[:5]
     grouped_demand["R코드 제품명"] = grouped_demand["R코드5"].map(r_name_map)
