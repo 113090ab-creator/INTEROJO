@@ -1189,7 +1189,6 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
     rq_summary = build_rq_group_summary(filtered)
 
     detail_columns = [
-        "사이트코드",
         "거래처",
         "이니셜",
         "품목코드",
@@ -1206,7 +1205,6 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         "공정재고 합계",
     ]
     detail_column_config = {
-        "사이트코드": st.column_config.Column(width="small"),
         "거래처": st.column_config.Column(width="small"),
         "이니셜": st.column_config.Column(width="small"),
         "품목코드": st.column_config.Column(width="medium"),
