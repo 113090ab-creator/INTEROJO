@@ -3,6 +3,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import openpyxl
 import pandas as pd
 import streamlit as st
 
@@ -81,8 +82,25 @@ def get_data_updated_at(base_dir: Path) -> str:
     if not dem_path.exists():
         return "-"
 
-    # 업데이트 시간은 수요정보(전공정) 파일 기준으로 표시한다.
-    latest_dt = datetime.fromtimestamp(dem_path.stat().st_mtime, tz=DISPLAY_TZ)
+    # 배포 환경에서는 파일시스템 mtime이 배포 시각으로 바뀔 수 있어
+    # 엑셀 내부 문서 속성(modified)을 우선 사용한다.
+    latest_dt: datetime | None = None
+    try:
+        wb = openpyxl.load_workbook(dem_path, read_only=True, data_only=True)
+        modified = wb.properties.modified
+        wb.close()
+        if isinstance(modified, datetime):
+            if modified.tzinfo is None:
+                # Excel core property is commonly stored as UTC naive datetime.
+                latest_dt = modified.replace(tzinfo=ZoneInfo("UTC")).astimezone(DISPLAY_TZ)
+            else:
+                latest_dt = modified.astimezone(DISPLAY_TZ)
+    except Exception:
+        latest_dt = None
+
+    if latest_dt is None:
+        latest_dt = datetime.fromtimestamp(dem_path.stat().st_mtime, tz=DISPLAY_TZ)
+
     return latest_dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
