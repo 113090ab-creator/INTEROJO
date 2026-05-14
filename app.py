@@ -646,6 +646,52 @@ def build_data_refresh_key(base_dir: Path) -> str:
     return "|".join(parts)
 
 
+def build_reference_refresh_key(base_dir: Path) -> str:
+    ref_path = find_product_name_reference_file(base_dir)
+    if ref_path is None:
+        return "-"
+    stat = ref_path.stat()
+    return f"{ref_path.name}:{stat.st_size}:{stat.st_mtime_ns}"
+
+
+@st.cache_data(show_spinner=False)
+def load_reference_maps_bundle(
+    base_dir: Path, reference_refresh_key: str
+) -> tuple[
+    dict[str, str],
+    dict[str, str],
+    dict[str, str],
+    dict[str, str],
+    dict[str, str],
+    dict[str, str],
+    dict[str, str],
+    dict[str, str],
+    dict[str, str],
+    dict[str, str],
+    dict[str, str],
+]:
+    _ = reference_refresh_key
+    product_name_map, product_group_map = load_product_reference_maps(base_dir)
+    sheet2_group_map = load_sheet2_group_map(base_dir)
+    r_ref_map, q_ref_map, r_name_map = load_rq_code_maps(base_dir)
+    bom_r_base_map, bom_q_base_map, bom_r_exact_map, bom_q_exact_map = load_bom_base_code_maps(base_dir)
+    leadji_r_map, leadji_q_map = load_leadji_process_maps(base_dir)
+    return (
+        product_name_map,
+        product_group_map,
+        sheet2_group_map,
+        r_ref_map,
+        q_ref_map,
+        r_name_map,
+        bom_r_base_map,
+        bom_q_base_map,
+        bom_r_exact_map,
+        bom_q_exact_map,
+        leadji_r_map,
+        leadji_q_map,
+    )
+
+
 def summarize_unique(values: pd.Series, head_count: int = 1) -> str:
     uniq = [v for v in values.astype(str).str.strip().tolist() if v and v.lower() != "nan"]
     # 순서를 유지한 unique
@@ -968,11 +1014,21 @@ def build_summary_group_totals_with_safe_split(df: pd.DataFrame) -> pd.DataFrame
 def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     _ = refresh_key
     inv_path, dem_path = find_excel_files(BASE_DIR)
-    product_name_map, product_group_map = load_product_reference_maps(BASE_DIR)
-    sheet2_group_map = load_sheet2_group_map(BASE_DIR)
-    r_ref_map, q_ref_map, r_name_map = load_rq_code_maps(BASE_DIR)
-    bom_r_base_map, bom_q_base_map, bom_r_exact_map, bom_q_exact_map = load_bom_base_code_maps(BASE_DIR)
-    leadji_r_map, leadji_q_map = load_leadji_process_maps(BASE_DIR)
+    reference_refresh_key = build_reference_refresh_key(BASE_DIR)
+    (
+        product_name_map,
+        product_group_map,
+        sheet2_group_map,
+        r_ref_map,
+        q_ref_map,
+        r_name_map,
+        bom_r_base_map,
+        bom_q_base_map,
+        bom_r_exact_map,
+        bom_q_exact_map,
+        leadji_r_map,
+        leadji_q_map,
+    ) = load_reference_maps_bundle(BASE_DIR, reference_refresh_key)
     process_code_map, warehouse_qty_col_indices, qty_col_indices, total_qty_col_indices = extract_demand_header_info(dem_path)
 
     inv = pd.read_excel(inv_path, sheet_name=0)
@@ -1875,8 +1931,9 @@ def main() -> None:
 
     try:
         refresh_key = build_data_refresh_key(BASE_DIR)
+        reference_refresh_key = build_reference_refresh_key(BASE_DIR)
         df, _, _ = load_data(refresh_key)
-        leadji_info, leadji_stock = load_leadji_data(refresh_key)
+        leadji_info, leadji_stock = load_leadji_data(reference_refresh_key)
     except Exception as exc:
         st.error(f"데이터 로드 실패: {exc}")
         st.stop()
