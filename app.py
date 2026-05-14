@@ -77,12 +77,9 @@ def find_demand_update_file(base_dir: Path) -> Path | None:
 
 
 def get_data_updated_at(base_dir: Path) -> str:
-    dem_path = find_demand_update_file(base_dir)
-    if dem_path is None:
-        try:
-            _, dem_path = find_excel_files(base_dir)
-        except FileNotFoundError:
-            return "-"
+    dem_path = base_dir / "수요정보(전공정).xlsx"
+    if not dem_path.exists():
+        return "-"
 
     # 업데이트 시간은 수요정보(전공정) 파일 기준으로 표시한다.
     latest_dt = datetime.fromtimestamp(dem_path.stat().st_mtime, tz=DISPLAY_TZ)
