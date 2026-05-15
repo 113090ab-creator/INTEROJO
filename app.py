@@ -1888,7 +1888,7 @@ def build_leadji_requirement_summary(
 def build_pcode5_leadji_requirement_summary(
     shortage_df: pd.DataFrame, leadji_info: pd.DataFrame, leadji_stock: pd.DataFrame
 ) -> pd.DataFrame:
-    fixed_columns = ["P코드5", "리드지코드", "리드지명", "생산필요수량", "최소납기일"]
+    fixed_columns = ["생산코드", "리드지코드", "리드지명", "생산필요수량", "최소납기일"]
     if shortage_df.empty or "품목코드" not in shortage_df.columns:
         return pd.DataFrame(columns=fixed_columns)
 
@@ -1996,7 +1996,8 @@ def build_pcode5_leadji_requirement_summary(
             active_warehouse_columns.append(w_col)
 
     summary["최소납기일"] = pd.to_datetime(summary["최소납기일"], errors="coerce").dt.strftime("%Y-%m-%d").fillna("-")
-    return summary[["P코드5", "리드지코드", "리드지명", "생산필요수량", *active_warehouse_columns, "최소납기일"]]
+    summary = summary.rename(columns={"P코드5": "생산코드"})
+    return summary[["생산코드", "리드지코드", "리드지명", "생산필요수량", *active_warehouse_columns, "최소납기일"]]
 
 
 def render_leadji_dashboard(
@@ -2051,20 +2052,20 @@ def render_leadji_dashboard(
 def render_leadji_pcode5_dashboard(
     updated_at: str, shortage_df: pd.DataFrame, leadji_info: pd.DataFrame, leadji_stock: pd.DataFrame
 ) -> None:
-    st.subheader("P코드5 기준 리드지 현황")
+    st.subheader("생산코드 기준 리드지 현황")
     st.caption(f"업데이트: {updated_at}")
-    st.caption("기준: 동일 P코드5에 여러 리드지가 매핑되면 생산필요수량이 각 리드지 행에 반복 표시됩니다.")
+    st.caption("기준: 동일 생산코드에 여러 리드지가 매핑되면 생산필요수량이 각 리드지 행에 반복 표시됩니다.")
     download_stamp = datetime.now(DISPLAY_TZ).strftime("%Y%m%d_%H%M%S")
 
     summary_df = build_pcode5_leadji_requirement_summary(shortage_df, leadji_info, leadji_stock)
     if summary_df.empty:
-        st.warning("P코드5 기준 리드지현황을 계산할 데이터가 없습니다.")
+        st.warning("생산코드 기준 리드지현황을 계산할 데이터가 없습니다.")
         return
 
     qcol, _ = st.columns([3.0, 1.0])
     with qcol:
         summary_query = st.text_input(
-            "통합 검색 (P코드5/리드지코드/리드지명/창고)",
+            "통합 검색 (생산코드/리드지코드/리드지명/창고)",
             value="",
             key="leadji_pcode5_summary_query",
             placeholder="예: P1234, BS0314, 블리스터케이스, 원료창고",
@@ -2074,20 +2075,20 @@ def render_leadji_pcode5_dashboard(
     filtered_summary = filter_with_terms_any(summary_df, summary_search_cols, summary_query)
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("P코드5 수", f"{filtered_summary['P코드5'].astype(str).nunique():,}")
+    c1.metric("생산코드 수", f"{filtered_summary['생산코드'].astype(str).nunique():,}")
     p_qty_total = (
-        filtered_summary.drop_duplicates(subset=["P코드5"], keep="first")["생산필요수량"].sum()
+        filtered_summary.drop_duplicates(subset=["생산코드"], keep="first")["생산필요수량"].sum()
         if not filtered_summary.empty
         else 0
     )
-    c2.metric("P기준 생산필요수량 합계", f"{p_qty_total:,.0f}")
+    c2.metric("생산코드 기준 생산필요수량 합계", f"{p_qty_total:,.0f}")
     min_due_dt = pd.to_datetime(filtered_summary["최소납기일"], errors="coerce").min()
     c3.metric("최소납기일", "-" if pd.isna(min_due_dt) else min_due_dt.strftime("%Y-%m-%d"))
 
     st.download_button(
         "엑셀 다운로드",
-        data=dataframe_to_excel_bytes(filtered_summary, sheet_name="P코드5기준리드지현황"),
-        file_name=f"leadji_status_by_pcode5_{download_stamp}.xlsx",
+        data=dataframe_to_excel_bytes(filtered_summary, sheet_name="생산코드기준리드지현황"),
+        file_name=f"leadji_status_by_production_code_{download_stamp}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key="download_leadji_pcode5_summary",
         use_container_width=False,
@@ -2116,7 +2117,7 @@ def main() -> None:
 
     updated_at = get_data_updated_at(BASE_DIR)
     top_shortage_tab, top_leadji_tab, top_leadji_pcode5_tab = st.tabs(
-        ["제품 부족수량 현황", "리드지 현황", "P코드5 기준 리드지"]
+        ["제품 부족수량 현황", "리드지 현황", "생산코드 기준 리드지"]
     )
 
     with top_shortage_tab:
