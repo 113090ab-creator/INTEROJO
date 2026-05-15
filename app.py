@@ -21,6 +21,15 @@ WAREHOUSE_MAP = {
 }
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 
+COLUMN_LABEL_ALIASES = {
+    "누수규격검사 창고": "누수규격",
+    "검사접착창고": "검사접착",
+    "공정재고 합계": "공정재고",
+    "사출 부족수량": "사출부족",
+    "사출생산필요수량": "사출필요",
+    "생산필요수량": "생산필요",
+}
+
 
 def find_excel_files(base_dir: Path) -> tuple[Path, Path]:
     xlsx_files = [p for p in base_dir.glob("*.xlsx") if not p.name.startswith("~$")]
@@ -733,23 +742,52 @@ def format_numeric_columns_for_display(df: pd.DataFrame) -> pd.DataFrame:
     return display_df
 
 
-def pick_auto_column_width(max_length: int) -> str:
-    if max_length <= 10:
-        return "small"
-    if max_length <= 24:
-        return "medium"
-    return "large"
+def infer_numeric_like_series(series: pd.Series) -> bool:
+    sample = series.astype(str).str.replace(",", "", regex=False).str.strip()
+    sample = sample[~sample.str.lower().isin({"", "nan", "none"})].head(200)
+    if sample.empty:
+        return False
+    numeric_mask = sample.str.fullmatch(r"[+-]?\d+(?:\.\d+)?").fillna(False)
+    return bool(float(numeric_mask.mean()) >= 0.85)
 
 
-def build_auto_column_config(df: pd.DataFrame, columns: list[str]) -> dict[str, st.column_config.Column]:
+def pick_fixed_column_width_px(column_name: str, max_length: int, numeric_like: bool) -> int:
+    if numeric_like:
+        return int(max(66, min(105, 18 + max_length * 6)))
+
+    long_text_columns = {"제품명", "R코드 제품명", "리드지명", "제품명 예시"}
+    medium_text_columns = {"품목코드", "R코드", "Q코드", "생산코드", "리드지코드", "P코드 예시"}
+
+    if column_name in long_text_columns:
+        return int(max(118, min(170, 20 + max_length * 6)))
+    if column_name in medium_text_columns:
+        return int(max(95, min(125, 20 + max_length * 6)))
+    return int(max(78, min(110, 20 + max_length * 6)))
+
+
+def build_auto_column_config(
+    df: pd.DataFrame, columns: list[str], source_df: pd.DataFrame | None = None
+) -> dict[str, st.column_config.Column]:
     config: dict[str, st.column_config.Column] = {}
     for col in columns:
         if col not in df.columns:
             continue
         col_series = df[col].astype(str)
-        max_value_len = int(col_series.map(len).max()) if not col_series.empty else 0
-        max_len = max(len(str(col)), max_value_len)
-        config[col] = st.column_config.Column(width=pick_auto_column_width(max_len))
+        length_series = col_series.map(len)
+        p90_len = int(length_series.quantile(0.90)) if not length_series.empty else 0
+        max_len = max(len(str(col)), p90_len)
+
+        numeric_like = False
+        if source_df is not None and col in source_df.columns:
+            numeric_like = pd.api.types.is_numeric_dtype(source_df[col]) or infer_numeric_like_series(col_series)
+        else:
+            numeric_like = infer_numeric_like_series(col_series)
+
+        width_px = pick_fixed_column_width_px(col, max_len, numeric_like)
+        config[col] = st.column_config.Column(
+            label=COLUMN_LABEL_ALIASES.get(col, col),
+            width=width_px,
+        )
     return config
 
 
@@ -1544,10 +1582,18 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
                 s1.metric("전체 수요 총수량", f"{float(total_row['총수량']):,.0f}")
                 s2.metric("오더 부족수량", f"{float(total_row['오더 부족수량']):,.0f}")
                 s3.metric("안전재고 부족수량", f"{float(total_row['안전재고 부족수량']):,.0f}")
+                full_demand_summary_display = format_numeric_columns_for_display(full_demand_summary)
+                full_demand_summary_column_config = build_auto_column_config(
+                    full_demand_summary_display,
+                    full_demand_summary_display.columns.tolist(),
+                    source_df=full_demand_summary,
+                )
                 st.dataframe(
-                    format_numeric_columns_for_display(full_demand_summary),
+                    full_demand_summary_display,
                     use_container_width=True,
                     height=320,
+                    column_config=full_demand_summary_column_config,
+                    hide_index=True,
                 )
 
         inj_shortage_total = (
@@ -1578,7 +1624,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
 
         p_table = p_view[p_detail_columns].sort_values(["부족수량", "이니셜", "거래처"], ascending=[False, True, True])
         p_table_display = format_numeric_columns_for_display(p_table)
-        p_detail_column_config = build_auto_column_config(p_table_display, p_detail_columns)
+        p_detail_column_config = build_auto_column_config(p_table_display, p_detail_columns, source_df=p_table)
         st.download_button(
             "엑셀 다운로드",
             data=dataframe_to_excel_bytes(p_table, sheet_name="생산현황"),
@@ -1594,6 +1640,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
             height=700,
             column_order=p_detail_columns,
             column_config=p_detail_column_config,
+            hide_index=True,
             key="shortage_p_table_v2",
         )
 
@@ -1609,6 +1656,9 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         r3.metric("R기준 사출창고 합계", f"{r_summary['사출창고 합계'].sum():,.0f}" if not r_summary.empty else "0")
         r4.metric("R기준 분리창고 합계", f"{r_summary['분리창고 합계'].sum():,.0f}" if not r_summary.empty else "0")
         r_summary_display = format_numeric_columns_for_display(r_summary)
+        r_summary_column_config = build_auto_column_config(
+            r_summary_display, r_summary_display.columns.tolist(), source_df=r_summary
+        )
         st.download_button(
             "엑셀 다운로드",
             data=dataframe_to_excel_bytes(r_summary, sheet_name="사출생산현황"),
@@ -1622,6 +1672,8 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
             r_summary_display,
             use_container_width=True,
             height=700,
+            column_config=r_summary_column_config,
+            hide_index=True,
             key="shortage_r_table_v2",
         )
 
@@ -1636,7 +1688,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         q_sort_asc = [True, True, False] if len(q_sort_cols) == 3 else [True, False]
         q_table = filtered.sort_values(q_sort_cols, ascending=q_sort_asc)[detail_columns]
         q_table_display = format_numeric_columns_for_display(q_table)
-        q_detail_column_config = build_auto_column_config(q_table_display, detail_columns)
+        q_detail_column_config = build_auto_column_config(q_table_display, detail_columns, source_df=q_table)
         st.download_button(
             "엑셀 다운로드",
             data=dataframe_to_excel_bytes(q_table, sheet_name="분리생산현황"),
@@ -1651,6 +1703,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
             height=700,
             column_order=detail_columns,
             column_config=q_detail_column_config,
+            hide_index=True,
             key="shortage_q_table_v2",
         )
 
@@ -1757,7 +1810,9 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
 
             rq_table = rq_view.sort_values(rq_sort_cols, ascending=rq_sort_asc)[rq_detail_columns]
             rq_table_display = format_numeric_columns_for_display(rq_table)
-            rq_detail_column_config = build_auto_column_config(rq_table_display, rq_detail_columns)
+            rq_detail_column_config = build_auto_column_config(
+                rq_table_display, rq_detail_columns, source_df=rq_table
+            )
             st.download_button(
                 "엑셀 다운로드",
                 data=dataframe_to_excel_bytes(rq_table, sheet_name="사출분리공용"),
@@ -1772,6 +1827,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
                 height=700,
                 column_order=rq_detail_columns,
                 column_config=rq_detail_column_config,
+                hide_index=True,
                 key="shortage_rq_table_v2",
             )
 
@@ -2046,10 +2102,16 @@ def render_leadji_dashboard(
             use_container_width=False,
         )
 
+        leadji_display = format_numeric_columns_for_display(filtered_summary)
+        leadji_column_config = build_auto_column_config(
+            leadji_display, leadji_display.columns.tolist(), source_df=filtered_summary
+        )
         st.dataframe(
-            format_numeric_columns_for_display(filtered_summary),
+            leadji_display,
             use_container_width=True,
             height=700,
+            column_config=leadji_column_config,
+            hide_index=True,
         )
 
 
@@ -2098,10 +2160,16 @@ def render_leadji_pcode5_dashboard(
         use_container_width=False,
     )
 
+    leadji_p_display = format_numeric_columns_for_display(filtered_summary)
+    leadji_p_column_config = build_auto_column_config(
+        leadji_p_display, leadji_p_display.columns.tolist(), source_df=filtered_summary
+    )
     st.dataframe(
-        format_numeric_columns_for_display(filtered_summary),
+        leadji_p_display,
         use_container_width=True,
         height=700,
+        column_config=leadji_p_column_config,
+        hide_index=True,
     )
 
 
