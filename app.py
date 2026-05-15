@@ -654,7 +654,7 @@ def build_reference_refresh_key(base_dir: Path) -> str:
     return f"{ref_path.name}:{stat.st_size}:{stat.st_mtime_ns}"
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, persist="disk")
 def load_reference_maps_bundle(
     base_dir: Path, reference_refresh_key: str
 ) -> tuple[
@@ -1010,7 +1010,7 @@ def build_summary_group_totals_with_safe_split(df: pd.DataFrame) -> pd.DataFrame
     return pd.concat([total_row, grouped], ignore_index=True)
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, persist="disk")
 def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     _ = refresh_key
     inv_path, dem_path = find_excel_files(BASE_DIR)
@@ -1472,7 +1472,7 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
     return filtered
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, persist="disk")
 def load_leadji_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     _ = refresh_key
     ref_path = find_product_name_reference_file(BASE_DIR)
@@ -1504,9 +1504,6 @@ def load_leadji_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame]:
 def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
     enriched_df = add_rq_group_columns(df)
     filtered = apply_filters(enriched_df, updated_at)
-    full_demand_summary = build_summary_group_totals_with_safe_split(filtered)
-    q_summary = build_qcode_summary(filtered)
-    rq_summary = build_rq_group_summary(filtered)
     download_stamp = datetime.now(DISPLAY_TZ).strftime("%Y%m%d_%H%M%S")
 
     detail_columns = [
@@ -1526,11 +1523,17 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         "공정재고 합계",
     ]
 
-    tab_p, tab_r, tab_q, tab_rq = st.tabs(
-        ["생산 현황", "사출 생산 현황", "분리 생산 현황", "사출, 분리 공용 품목 생산 현황"]
+    shortage_views = ["생산 현황", "사출 생산 현황", "분리 생산 현황", "사출, 분리 공용 품목 생산 현황"]
+    selected_shortage_view = st.segmented_control(
+        "상세 보기",
+        options=shortage_views,
+        default=shortage_views[0],
+        key="shortage_view_selector",
+        width="stretch",
     )
 
-    with tab_p:
+    if selected_shortage_view == "생산 현황":
+        full_demand_summary = build_summary_group_totals_with_safe_split(filtered)
         with st.expander("전체 수요 요약 (분류별요약 × 안전 포함 여부)", expanded=True):
             st.caption("오더 부족수량 = 안전 미포함, 안전재고 부족수량 = 안전 포함 - 안전 미포함, 총수량 = 오더 부족수량 + 안전재고 부족수량")
             if full_demand_summary.empty:
@@ -1594,7 +1597,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
             key="shortage_p_table_v2",
         )
 
-    with tab_r:
+    elif selected_shortage_view == "사출 생산 현황":
         r_summary = build_rcode_summary(filtered)
 
         r1, r2, r3, r4 = st.columns(4)
@@ -1622,7 +1625,8 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
             key="shortage_r_table_v2",
         )
 
-    with tab_q:
+    elif selected_shortage_view == "분리 생산 현황":
+        q_summary = build_qcode_summary(filtered)
         q1, q2, q3 = st.columns(3)
         q1.metric("Q코드 수", f"{len(q_summary):,}")
         q2.metric("Q기준 부족수량 합계", f"{q_summary['부족수량 합계'].sum():,.0f}")
@@ -1650,7 +1654,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
             key="shortage_q_table_v2",
         )
 
-    with tab_rq:
+    else:
         st.caption("사출 부족수량 = 수요정보 사출 생산 수량 합계 - 사출창고 합계 (0 미만은 0)")
         st.caption("표시 기준: 품목코드는 P코드만, 납기일/부족수량은 누수규격검사 기준")
         rq_filtered = filtered.copy()
@@ -2116,17 +2120,20 @@ def main() -> None:
         st.stop()
 
     updated_at = get_data_updated_at(BASE_DIR)
-    top_shortage_tab, top_leadji_tab, top_leadji_pcode5_tab = st.tabs(
-        ["제품 부족수량 현황", "리드지 현황", "생산코드 기준 리드지"]
+    top_views = ["제품 부족수량 현황", "리드지 현황", "생산코드 기준 리드지"]
+    selected_top_view = st.segmented_control(
+        "메뉴",
+        options=top_views,
+        default=top_views[0],
+        key="top_view_selector",
+        width="stretch",
     )
 
-    with top_shortage_tab:
+    if selected_top_view == "제품 부족수량 현황":
         render_shortage_dashboard(df, updated_at)
-
-    with top_leadji_tab:
+    elif selected_top_view == "리드지 현황":
         render_leadji_dashboard(updated_at, df, leadji_info, leadji_stock)
-
-    with top_leadji_pcode5_tab:
+    else:
         render_leadji_pcode5_dashboard(updated_at, df, leadji_info, leadji_stock)
 
 
