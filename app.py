@@ -2108,7 +2108,6 @@ def render_leadji_pcode5_dashboard(
 
 def main() -> None:
     st.title("생산 진행 현황")
-    st.caption("기준: 생산 현황은 [80]누수/규격검사 생산수량, 사출 생산 현황은 F열(사출조립 생산수량) 기준")
 
     try:
         refresh_key = build_data_refresh_key(BASE_DIR)
