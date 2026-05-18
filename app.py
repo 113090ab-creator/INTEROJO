@@ -848,7 +848,7 @@ def style_leadji_shortage_table(display_df: pd.DataFrame, source_df: pd.DataFram
     styler = display_df.style
     if "리드지부족" in display_df.columns:
         styler = styler.map(
-            lambda v: "color: #d00000; font-weight: 700;" if str(v).strip() == "부족" else "",
+            lambda v: "color: #d00000; font-weight: 700;" if str(v).strip() not in {"", "-", "nan", "None"} else "",
             subset=["리드지부족"],
         )
     if "리드지부족수량" in display_df.columns and "리드지부족수량" in source_df.columns:
@@ -1992,7 +1992,7 @@ def build_leadji_requirement_summary(
 
     shortage_qty = leadji_stock_total - summary["리드지필요수량"]
     summary["리드지부족"] = ""
-    summary.loc[shortage_qty < 0, "리드지부족"] = "부족"
+    summary.loc[shortage_qty < 0, "리드지부족"] = "●"
     summary["리드지부족수량"] = shortage_qty.where(shortage_qty < 0)
     summary["최소납기일"] = pd.to_datetime(summary["최소납기일"], errors="coerce").dt.strftime("%Y-%m-%d").fillna("-")
     return summary[
@@ -2137,6 +2137,7 @@ def render_leadji_dashboard(
     else:
         st.caption("생산필요수량: 수요 데이터의 생산필요수량 컬럼 우선, 없으면 누수규격검사 기준 부족수량 반영")
         st.caption("리드지필요수량 = 생산필요수량 × 1.3")
+        st.caption("리드지부족: 부족 시 빨간 동그라미(●) 표시")
         st.caption("리드지부족수량 = (L관창고(자재)+C관 공정부자재+S관 공정부자재+A관 공정부자재) - 리드지필요수량 (0 미만만 표시)")
         st.caption("최소납기일: 누수규격검사 기준 수요 정보의 최소 납기일")
         st.caption("창고 컬럼: 리드지 재고 시트에서 리드지코드별 재고가 존재하는 창고와 수량")
