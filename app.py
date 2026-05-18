@@ -828,6 +828,38 @@ def filter_with_terms_any(df: pd.DataFrame, columns: list[str], query: str) -> p
     return df[mask]
 
 
+def normalize_warehouse_name(value: str) -> str:
+    return re.sub(r"\s+", "", str(value)).strip().lower()
+
+
+def find_warehouse_column(columns: list[str], candidates: list[str]) -> str | None:
+    normalized_map = {normalize_warehouse_name(col): col for col in columns}
+    for candidate in candidates:
+        matched = normalized_map.get(normalize_warehouse_name(candidate))
+        if matched is not None:
+            return matched
+    return None
+
+
+def style_leadji_shortage_table(display_df: pd.DataFrame, source_df: pd.DataFrame):
+    if display_df.empty:
+        return display_df.style
+
+    styler = display_df.style
+    if "리드지부족" in display_df.columns:
+        styler = styler.map(
+            lambda v: "color: #d00000; font-weight: 700;" if str(v).strip() == "부족" else "",
+            subset=["리드지부족"],
+        )
+    if "리드지부족수량" in display_df.columns and "리드지부족수량" in source_df.columns:
+        shortage_numeric = pd.to_numeric(source_df["리드지부족수량"], errors="coerce")
+        shortage_style = shortage_numeric.map(
+            lambda v: "color: #d00000; font-weight: 700;" if pd.notna(v) and v < 0 else ""
+        )
+        styler = styler.apply(lambda _: shortage_style, axis=0, subset=["리드지부족수량"])
+    return styler
+
+
 def add_rq_group_columns(df: pd.DataFrame) -> pd.DataFrame:
     enriched = df.copy()
     if "R코드" not in enriched.columns:
@@ -1835,7 +1867,15 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
 def build_leadji_requirement_summary(
     shortage_df: pd.DataFrame, leadji_info: pd.DataFrame, leadji_stock: pd.DataFrame
 ) -> pd.DataFrame:
-    fixed_columns = ["리드지코드", "리드지명", "생산필요수량", "최소납기일"]
+    fixed_columns = [
+        "리드지코드",
+        "리드지명",
+        "생산필요수량",
+        "리드지필요수량",
+        "리드지부족",
+        "리드지부족수량",
+        "최소납기일",
+    ]
     if shortage_df.empty or "품목코드" not in shortage_df.columns:
         return pd.DataFrame(columns=fixed_columns)
 
@@ -1941,8 +1981,32 @@ def build_leadji_requirement_summary(
         if col_sum > 0:
             active_warehouse_columns.append(w_col)
 
+    summary["리드지필요수량"] = (pd.to_numeric(summary["생산필요수량"], errors="coerce").fillna(0) * 1.3).round(0)
+    leadji_target_warehouses = ["L관창고(자재)", "C관 공정부자재", "S관 공정부자재", "A관 공정부자재"]
+    leadji_stock_total = pd.Series(0.0, index=summary.index)
+    for warehouse_name in leadji_target_warehouses:
+        matched_col = find_warehouse_column(summary.columns.tolist(), [warehouse_name])
+        if matched_col is None:
+            continue
+        leadji_stock_total = leadji_stock_total + pd.to_numeric(summary[matched_col], errors="coerce").fillna(0)
+
+    shortage_qty = leadji_stock_total - summary["리드지필요수량"]
+    summary["리드지부족"] = ""
+    summary.loc[shortage_qty < 0, "리드지부족"] = "부족"
+    summary["리드지부족수량"] = shortage_qty.where(shortage_qty < 0)
     summary["최소납기일"] = pd.to_datetime(summary["최소납기일"], errors="coerce").dt.strftime("%Y-%m-%d").fillna("-")
-    return summary[["리드지코드", "리드지명", "생산필요수량", *active_warehouse_columns, "최소납기일"]]
+    return summary[
+        [
+            "리드지코드",
+            "리드지명",
+            "생산필요수량",
+            "리드지필요수량",
+            "리드지부족",
+            "리드지부족수량",
+            *active_warehouse_columns,
+            "최소납기일",
+        ]
+    ]
 
 
 def build_pcode5_leadji_requirement_summary(
@@ -2072,6 +2136,8 @@ def render_leadji_dashboard(
         st.warning("리드지재고현황을 계산할 데이터가 없습니다.")
     else:
         st.caption("생산필요수량: 수요 데이터의 생산필요수량 컬럼 우선, 없으면 누수규격검사 기준 부족수량 반영")
+        st.caption("리드지필요수량 = 생산필요수량 × 1.3")
+        st.caption("리드지부족수량 = (L관창고(자재)+C관 공정부자재+S관 공정부자재+A관 공정부자재) - 리드지필요수량 (0 미만만 표시)")
         st.caption("최소납기일: 누수규격검사 기준 수요 정보의 최소 납기일")
         st.caption("창고 컬럼: 리드지 재고 시트에서 리드지코드별 재고가 존재하는 창고와 수량")
 
@@ -2106,8 +2172,9 @@ def render_leadji_dashboard(
         leadji_column_config = build_auto_column_config(
             leadji_display, leadji_display.columns.tolist(), source_df=filtered_summary
         )
+        leadji_styled = style_leadji_shortage_table(leadji_display, filtered_summary)
         st.dataframe(
-            leadji_display,
+            leadji_styled,
             use_container_width=True,
             height=700,
             column_config=leadji_column_config,
