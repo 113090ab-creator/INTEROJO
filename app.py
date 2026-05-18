@@ -2174,6 +2174,12 @@ def render_leadji_dashboard(
         leadji_column_config = build_auto_column_config(
             leadji_display, leadji_display.columns.tolist(), source_df=filtered_summary
         )
+        if "리드지부족" in leadji_display.columns:
+            leadji_column_config["리드지부족"] = st.column_config.TextColumn(
+                "리드지부족",
+                width=90,
+                alignment="center",
+            )
         leadji_styled = style_leadji_shortage_table(leadji_display, filtered_summary)
         st.dataframe(
             leadji_styled,
