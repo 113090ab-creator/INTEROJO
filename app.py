@@ -847,6 +847,7 @@ def style_leadji_shortage_table(display_df: pd.DataFrame, source_df: pd.DataFram
 
     styler = display_df.style
     if "리드지부족" in display_df.columns:
+        styler = styler.set_properties(subset=["리드지부족"], **{"text-align": "center"})
         styler = styler.map(
             lambda v: "color: #d00000; font-weight: 700;" if str(v).strip() not in {"", "-", "nan", "None"} else "",
             subset=["리드지부족"],
@@ -1992,7 +1993,7 @@ def build_leadji_requirement_summary(
 
     shortage_qty = leadji_stock_total - summary["리드지필요수량"]
     summary["리드지부족"] = ""
-    summary.loc[shortage_qty < 0, "리드지부족"] = "●"
+    summary.loc[shortage_qty < 0, "리드지부족"] = "🔴"
     summary["리드지부족수량"] = shortage_qty.where(shortage_qty < 0)
     summary["최소납기일"] = pd.to_datetime(summary["최소납기일"], errors="coerce").dt.strftime("%Y-%m-%d").fillna("-")
     return summary[
