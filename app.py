@@ -2443,8 +2443,8 @@ def render_leadji_pcode5_dashboard(
 
 def main() -> None:
     st.title("생산 진행 현황")
-    data_base_dir, data_source_label, updated_at = select_data_source(BASE_DIR)
-    st.caption(f"사용 데이터: {data_source_label}")
+    data_base_dir = BASE_DIR
+    updated_at = get_data_updated_at(data_base_dir)
 
     try:
         refresh_key = build_data_refresh_key(data_base_dir)
