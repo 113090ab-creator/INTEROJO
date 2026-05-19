@@ -1605,7 +1605,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
 
     if selected_shortage_view == "생산 현황":
         full_demand_summary = build_summary_group_totals_with_safe_split(filtered)
-        with st.expander("전체 수요 요약 (분류별요약 × 안전 포함 여부)", expanded=True):
+        with st.expander("전체 수요 요약 (분류별요약 × 안전 포함 여부)", expanded=False):
             st.caption("오더 부족수량 = 안전 미포함, 안전재고 부족수량 = 안전 포함 - 안전 미포함, 총수량 = 오더 부족수량 + 안전재고 부족수량")
             if full_demand_summary.empty:
                 st.info("전체 수요 요약을 계산할 데이터가 없습니다.")
