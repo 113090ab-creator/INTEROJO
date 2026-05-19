@@ -989,6 +989,84 @@ def build_rq_group_summary(df: pd.DataFrame) -> pd.DataFrame:
     return grouped[columns]
 
 
+def build_initial_injection_summary(df: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "이니셜",
+        "거래처 수",
+        "품목코드 수",
+        "부족수량 합계",
+        "사출 생산 필요수량 합계",
+        "사출창고 합계",
+        "사출 부족수량",
+    ]
+    if df.empty or "이니셜" not in df.columns or "품목코드" not in df.columns:
+        return pd.DataFrame(columns=columns)
+
+    base = df.copy()
+    if "거래처" not in base.columns:
+        base["거래처"] = "-"
+    if "부족수량" not in base.columns:
+        base["부족수량"] = 0
+    if "사출생산필요수량" not in base.columns:
+        base["사출생산필요수량"] = 0
+    if "사출창고" not in base.columns:
+        base["사출창고"] = 0
+
+    base["이니셜"] = base["이니셜"].astype(str).str.strip()
+    base["이니셜"] = base["이니셜"].replace({"": "(미지정)", "nan": "(미지정)", "None": "(미지정)"})
+    base["부족수량"] = pd.to_numeric(base["부족수량"], errors="coerce").fillna(0)
+    base["사출생산필요수량"] = pd.to_numeric(base["사출생산필요수량"], errors="coerce").fillna(0)
+    base["사출창고"] = pd.to_numeric(base["사출창고"], errors="coerce").fillna(0)
+    base = base[(base["부족수량"] > 0) | (base["사출생산필요수량"] > 0)]
+    if base.empty:
+        return pd.DataFrame(columns=columns)
+
+    # 사출창고는 품목별 고정 재고 성격이라, 이니셜+품목 기준 최대값으로 중복 집계를 완화한다.
+    item_level = (
+        base.groupby(["이니셜", "품목코드"], as_index=False)
+        .agg(
+            {
+                "부족수량": "sum",
+                "사출생산필요수량": "sum",
+                "사출창고": "max",
+            }
+        )
+    )
+
+    summary = (
+        item_level.groupby("이니셜", as_index=False)
+        .agg(
+            {
+                "품목코드": "nunique",
+                "부족수량": "sum",
+                "사출생산필요수량": "sum",
+                "사출창고": "sum",
+            }
+        )
+        .rename(
+            columns={
+                "품목코드": "품목코드 수",
+                "부족수량": "부족수량 합계",
+                "사출생산필요수량": "사출 생산 필요수량 합계",
+                "사출창고": "사출창고 합계",
+            }
+        )
+    )
+
+    customer_count = (
+        base.groupby("이니셜", as_index=False)["거래처"]
+        .nunique()
+        .rename(columns={"거래처": "거래처 수"})
+    )
+    summary = summary.merge(customer_count, on="이니셜", how="left")
+    summary["사출 부족수량"] = (summary["사출 생산 필요수량 합계"] - summary["사출창고 합계"]).clip(lower=0)
+    summary = summary[columns].sort_values(
+        ["사출 부족수량", "사출 생산 필요수량 합계", "부족수량 합계", "이니셜"],
+        ascending=[False, False, False, True],
+    )
+    return summary
+
+
 def build_qcode_summary(df: pd.DataFrame) -> pd.DataFrame:
     columns = [
         "Q코드",
@@ -1641,6 +1719,26 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         c4.metric("분리창고 합계", f"{filtered['분리창고'].sum():,.0f}")
         c5.metric("검사접착창고 합계", f"{filtered['검사접착창고'].sum():,.0f}")
         c6.metric("누수규격검사창고 합계", f"{filtered['누수규격검사 창고'].sum():,.0f}")
+
+        initial_inj_summary = build_initial_injection_summary(filtered)
+        with st.expander("이니셜별 사출부족수량 요약", expanded=False):
+            st.caption("사출 부족수량 = 이니셜별(품목코드 단위) 사출 생산 필요수량 합계 - 사출창고 합계 (0 미만은 0)")
+            if initial_inj_summary.empty:
+                st.info("이니셜별 사출부족수량 요약을 계산할 데이터가 없습니다.")
+            else:
+                initial_inj_summary_display = format_numeric_columns_for_display(initial_inj_summary)
+                initial_inj_summary_column_config = build_auto_column_config(
+                    initial_inj_summary_display,
+                    initial_inj_summary_display.columns.tolist(),
+                    source_df=initial_inj_summary,
+                )
+                st.dataframe(
+                    initial_inj_summary_display,
+                    use_container_width=True,
+                    height=320,
+                    column_config=initial_inj_summary_column_config,
+                    hide_index=True,
+                )
 
         p_view = filtered.copy()
         p_view["부족수량"] = pd.to_numeric(p_view["부족수량"], errors="coerce").fillna(0)
