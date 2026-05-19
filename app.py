@@ -1985,7 +1985,7 @@ def build_leadji_requirement_summary(
     due_source_col = "최소납기일" if "최소납기일" in shortage_df.columns else "납기일"
 
     base = shortage_df.copy()
-    base["P코드5"] = base["품목코드"].astype(str).str.strip().str[:5]
+    base["P코드5"] = base["품목코드"].astype(str).str.strip().str.upper().str[:5]
     base = base[base["P코드5"].str.startswith("P")]
     base["생산필요수량"] = pd.to_numeric(base[qty_source_col], errors="coerce").fillna(0)
     base = base[base["생산필요수량"] > 0]
@@ -2023,9 +2023,8 @@ def build_leadji_requirement_summary(
     for col in selected_cols:
         mapping[col] = mapping[col].astype(str).str.strip().replace({"nan": "", "None": ""})
 
-    mapping = mapping[mapping[prod_col].str.startswith("P")]
-    mapping["P코드5"] = mapping[prod_col].str[:5]
-    mapping = mapping[(mapping["P코드5"] != "") & (mapping[b1_col] != "")]
+    mapping["P코드5"] = mapping[prod_col].str.upper().str[:5]
+    mapping = mapping[(mapping["P코드5"].str.startswith("P")) & (mapping[b1_col] != "")]
     mapping = mapping.rename(columns={b1_col: "리드지코드"})
     if b1_name_col is not None:
         mapping = mapping.rename(columns={b1_name_col: "리드지명"})
@@ -2122,7 +2121,7 @@ def build_pcode5_leadji_requirement_summary(
     due_source_col = "최소납기일" if "최소납기일" in shortage_df.columns else "납기일"
 
     base = shortage_df.copy()
-    base["P코드5"] = base["품목코드"].astype(str).str.strip().str[:5]
+    base["P코드5"] = base["품목코드"].astype(str).str.strip().str.upper().str[:5]
     base = base[base["P코드5"].str.startswith("P")]
     base["생산필요수량"] = pd.to_numeric(base[qty_source_col], errors="coerce").fillna(0)
     base = base[base["생산필요수량"] > 0]
@@ -2156,9 +2155,8 @@ def build_pcode5_leadji_requirement_summary(
         mapping = leadji_info[selected_cols].copy()
         for col in selected_cols:
             mapping[col] = mapping[col].astype(str).str.strip().replace({"nan": "", "None": ""})
-        mapping = mapping[mapping[prod_col].str.startswith("P")]
-        mapping["P코드5"] = mapping[prod_col].str[:5]
-        mapping = mapping[(mapping["P코드5"] != "") & (mapping[b1_col] != "")]
+        mapping["P코드5"] = mapping[prod_col].str.upper().str[:5]
+        mapping = mapping[(mapping["P코드5"].str.startswith("P")) & (mapping[b1_col] != "")]
         mapping = mapping.rename(columns={b1_col: "리드지코드"})
         if b1_name_col is not None:
             mapping = mapping.rename(columns={b1_name_col: "리드지명"})
