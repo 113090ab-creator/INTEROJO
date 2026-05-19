@@ -1,4 +1,7 @@
+import hashlib
 import re
+import shutil
+import uuid
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
@@ -11,6 +14,7 @@ import streamlit as st
 st.set_page_config(page_title="제품 부족수량 현황", layout="wide")
 
 BASE_DIR = Path(__file__).resolve().parent
+UPLOAD_WORKSPACE_ROOT = BASE_DIR / ".uploaded_workspaces"
 DISPLAY_TZ = ZoneInfo("Asia/Seoul")
 
 WAREHOUSE_MAP = {
@@ -112,6 +116,99 @@ def get_data_updated_at(base_dir: Path) -> str:
         latest_dt = datetime.fromtimestamp(dem_path.stat().st_mtime, tz=DISPLAY_TZ)
 
     return latest_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def get_or_create_upload_session_id() -> str:
+    key = "upload_session_id"
+    if key not in st.session_state:
+        st.session_state[key] = uuid.uuid4().hex
+    return str(st.session_state[key])
+
+
+def stage_uploaded_data_files(
+    base_dir: Path,
+    inventory_file,
+    demand_file,
+    reference_file=None,
+) -> Path:
+    session_id = get_or_create_upload_session_id()
+    session_dir = UPLOAD_WORKSPACE_ROOT / session_id
+    session_dir.mkdir(parents=True, exist_ok=True)
+
+    inv_bytes = bytes(inventory_file.getbuffer())
+    dem_bytes = bytes(demand_file.getbuffer())
+    ref_bytes = bytes(reference_file.getbuffer()) if reference_file is not None else None
+
+    local_ref = find_product_name_reference_file(base_dir) if reference_file is None else None
+    local_ref_sig = ""
+    if local_ref is not None and local_ref.exists():
+        stat = local_ref.stat()
+        local_ref_sig = f"{local_ref.name}:{stat.st_size}:{stat.st_mtime_ns}"
+
+    upload_signature = "|".join(
+        [
+            hashlib.md5(inv_bytes).hexdigest(),
+            hashlib.md5(dem_bytes).hexdigest(),
+            hashlib.md5(ref_bytes).hexdigest() if ref_bytes is not None else "-",
+            local_ref_sig,
+        ]
+    )
+    signature_key = f"upload_workspace_signature_{session_id}"
+    inv_staged = session_dir / "ODV_WIP_uploaded.xlsx"
+    dem_staged = session_dir / "수요정보(전공정).xlsx"
+    ref_staged = session_dir / "제품명 기준 정보.xlsx"
+    if (
+        st.session_state.get(signature_key) == upload_signature
+        and inv_staged.exists()
+        and dem_staged.exists()
+        and (reference_file is not None or ref_staged.exists() or local_ref is None)
+    ):
+        return session_dir
+
+    for old_xlsx in session_dir.glob("*.xlsx"):
+        old_xlsx.unlink(missing_ok=True)
+
+    inv_staged.write_bytes(inv_bytes)
+    dem_staged.write_bytes(dem_bytes)
+    ref_dst = ref_staged
+    if reference_file is not None:
+        ref_dst.write_bytes(ref_bytes if ref_bytes is not None else b"")
+    else:
+        if local_ref is not None and local_ref.exists():
+            shutil.copy2(local_ref, ref_dst)
+
+    st.session_state[signature_key] = upload_signature
+    return session_dir
+
+
+def select_data_source(base_dir: Path) -> tuple[Path, str, str]:
+    st.subheader("데이터 소스")
+    with st.expander("업로드 설정", expanded=False):
+        use_uploaded = st.toggle("업로드 파일 사용", value=False, key="use_uploaded_data_mode")
+        inv_file = st.file_uploader("재고 파일(.xlsx)", type=["xlsx"], key="upload_inventory_xlsx", disabled=not use_uploaded)
+        dem_file = st.file_uploader("수요 파일(.xlsx)", type=["xlsx"], key="upload_demand_xlsx", disabled=not use_uploaded)
+        ref_file = st.file_uploader(
+            "기준정보 파일(.xlsx, 선택)",
+            type=["xlsx"],
+            key="upload_reference_xlsx",
+            disabled=not use_uploaded,
+            help="미업로드 시 로컬의 '제품명 기준 정보.xlsx'를 사용합니다.",
+        )
+
+        if not use_uploaded:
+            st.caption("현재 설정: 로컬 폴더의 파일 사용")
+
+    if not use_uploaded:
+        return base_dir, "로컬 파일", get_data_updated_at(base_dir)
+
+    if inv_file is None or dem_file is None:
+        st.info("업로드 모드에서는 재고/수요 파일 2개 업로드가 필요합니다.")
+        st.stop()
+
+    workspace_dir = stage_uploaded_data_files(base_dir, inv_file, dem_file, ref_file)
+    source_label = f"업로드 파일 ({inv_file.name}, {dem_file.name})"
+    updated_at = get_data_updated_at(workspace_dir)
+    return workspace_dir, source_label, updated_at
 
 
 def pick_first_existing_column(columns: list[str], candidates: list[str]) -> str | None:
@@ -1160,10 +1257,11 @@ def build_summary_group_totals_with_safe_split(df: pd.DataFrame) -> pd.DataFrame
 
 
 @st.cache_data(show_spinner=False, persist="disk")
-def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def load_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     _ = refresh_key
-    inv_path, dem_path = find_excel_files(BASE_DIR)
-    reference_refresh_key = build_reference_refresh_key(BASE_DIR)
+    data_base_dir = Path(base_dir_str) if base_dir_str else BASE_DIR
+    inv_path, dem_path = find_excel_files(data_base_dir)
+    reference_refresh_key = build_reference_refresh_key(data_base_dir)
     (
         product_name_map,
         product_group_map,
@@ -1177,7 +1275,7 @@ def load_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
         bom_q_exact_map,
         leadji_r_map,
         leadji_q_map,
-    ) = load_reference_maps_bundle(BASE_DIR, reference_refresh_key)
+    ) = load_reference_maps_bundle(data_base_dir, reference_refresh_key)
     process_code_map, warehouse_qty_col_indices, qty_col_indices, total_qty_col_indices = extract_demand_header_info(dem_path)
 
     inv = pd.read_excel(inv_path, sheet_name=0)
@@ -1622,9 +1720,10 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False, persist="disk")
-def load_leadji_data(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+def load_leadji_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
     _ = refresh_key
-    ref_path = find_product_name_reference_file(BASE_DIR)
+    data_base_dir = Path(base_dir_str) if base_dir_str else BASE_DIR
+    ref_path = find_product_name_reference_file(data_base_dir)
     if ref_path is None:
         return pd.DataFrame(), pd.DataFrame()
 
@@ -2344,17 +2443,18 @@ def render_leadji_pcode5_dashboard(
 
 def main() -> None:
     st.title("생산 진행 현황")
+    data_base_dir, data_source_label, updated_at = select_data_source(BASE_DIR)
+    st.caption(f"사용 데이터: {data_source_label}")
 
     try:
-        refresh_key = build_data_refresh_key(BASE_DIR)
-        reference_refresh_key = build_reference_refresh_key(BASE_DIR)
-        df, _, _ = load_data(refresh_key)
-        leadji_info, leadji_stock = load_leadji_data(reference_refresh_key)
+        refresh_key = build_data_refresh_key(data_base_dir)
+        reference_refresh_key = build_reference_refresh_key(data_base_dir)
+        df, _, _ = load_data(refresh_key, str(data_base_dir))
+        leadji_info, leadji_stock = load_leadji_data(reference_refresh_key, str(data_base_dir))
     except Exception as exc:
         st.error(f"데이터 로드 실패: {exc}")
         st.stop()
 
-    updated_at = get_data_updated_at(BASE_DIR)
     top_views = ["제품 부족수량 현황", "리드지 현황", "생산코드 기준 리드지"]
     selected_top_view = st.segmented_control(
         "메뉴",
