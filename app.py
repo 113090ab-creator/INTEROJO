@@ -1845,14 +1845,18 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
             p_view["사출 부족수량"] = pd.to_numeric(p_view["사출생산필요수량"], errors="coerce").fillna(0)
         else:
             p_view["사출 부족수량"] = 0
-        p_view = p_view[p_view["부족수량"] > 0]
+        p_view = p_view[(p_view["부족수량"] > 0) | (p_view["사출 부족수량"] > 0)]
+        p_view["표시부족수량"] = p_view["부족수량"] + p_view["사출 부족수량"]
 
         p_detail_columns = detail_columns.copy()
         if "사출 부족수량" not in p_detail_columns:
             insert_idx = p_detail_columns.index("부족수량") + 1 if "부족수량" in p_detail_columns else len(p_detail_columns)
             p_detail_columns.insert(insert_idx, "사출 부족수량")
 
-        p_table = p_view[p_detail_columns].sort_values(["부족수량", "이니셜", "거래처"], ascending=[False, True, True])
+        p_table = p_view.sort_values(
+            ["표시부족수량", "부족수량", "사출 부족수량", "이니셜", "거래처"],
+            ascending=[False, False, False, True, True],
+        )[p_detail_columns]
         p_table_display = format_numeric_columns_for_display(p_table)
         p_detail_column_config = build_auto_column_config(p_table_display, p_detail_columns, source_df=p_table)
         st.download_button(
@@ -1945,7 +1949,13 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
             rq_filtered = rq_filtered[rq_filtered["품목코드"].astype(str).str.upper().str.startswith("P")]
         if "부족수량" in rq_filtered.columns:
             rq_filtered["부족수량"] = pd.to_numeric(rq_filtered["부족수량"], errors="coerce").fillna(0)
-            rq_filtered = rq_filtered[rq_filtered["부족수량"] > 0]
+        else:
+            rq_filtered["부족수량"] = 0
+        if "사출생산필요수량" in rq_filtered.columns:
+            rq_filtered["사출생산필요수량"] = pd.to_numeric(rq_filtered["사출생산필요수량"], errors="coerce").fillna(0)
+        else:
+            rq_filtered["사출생산필요수량"] = 0
+        rq_filtered = rq_filtered[(rq_filtered["부족수량"] > 0) | (rq_filtered["사출생산필요수량"] > 0)]
 
         multi_p_r_codes: set[str] = set()
         if {"R코드5", "P코드5", "부족수량"}.issubset(rq_filtered.columns):
@@ -1966,9 +1976,13 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         if "R코드 제품명" in rq_filtered.columns:
             rq_product_scope = rq_filtered.copy()
             rq_product_scope["부족수량"] = pd.to_numeric(rq_product_scope["부족수량"], errors="coerce").fillna(0)
-            rq_product_scope = rq_product_scope[rq_product_scope["부족수량"] > 0]
+            rq_product_scope["사출생산필요수량"] = pd.to_numeric(rq_product_scope["사출생산필요수량"], errors="coerce").fillna(0)
+            rq_product_scope = rq_product_scope[
+                (rq_product_scope["부족수량"] > 0) | (rq_product_scope["사출생산필요수량"] > 0)
+            ]
+            rq_product_scope["표시부족수량"] = rq_product_scope["부족수량"] + rq_product_scope["사출생산필요수량"]
             rq_product_sum_map = (
-                rq_product_scope.groupby("R코드 제품명", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
+                rq_product_scope.groupby("R코드 제품명", as_index=True)["표시부족수량"].sum().sort_values(ascending=False).to_dict()
                 if not rq_product_scope.empty
                 else {}
             )
@@ -1976,7 +1990,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
                 p for p in list(rq_product_sum_map.keys()) if str(p).strip() not in {"", "-", "nan", "None"}
             ]
             rq_product_count_map = {
-                "전체": float(rq_product_scope["부족수량"].sum()) if not rq_product_scope.empty else 0.0,
+                "전체": float(rq_product_scope["표시부족수량"].sum()) if not rq_product_scope.empty else 0.0,
                 **rq_product_sum_map,
             }
             rq_selected_product = st.pills(
