@@ -1901,6 +1901,14 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
 
         p_view = p_view[(p_view["부족수량"] > 0) | (p_view["사출 부족수량"] > 0)]
         p_view["표시부족수량"] = p_view["부족수량"] + p_view["사출 부족수량"]
+        if "납기일" not in p_view.columns:
+            p_view["납기일"] = "-"
+        if "사출납기일" in p_view.columns:
+            due_text = p_view["납기일"].astype(str).str.strip()
+            inj_due_text = p_view["사출납기일"].astype(str).str.strip()
+            due_missing = due_text.str.lower().isin({"", "-", "nan", "nat", "none"})
+            inj_due_valid = ~inj_due_text.str.lower().isin({"", "-", "nan", "nat", "none"})
+            p_view.loc[due_missing & inj_due_valid, "납기일"] = inj_due_text[due_missing & inj_due_valid]
 
         p_detail_columns = detail_columns.copy()
         if "사출 부족수량" not in p_detail_columns:
