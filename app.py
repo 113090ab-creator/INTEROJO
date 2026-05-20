@@ -1842,9 +1842,63 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         p_view = filtered.copy()
         p_view["부족수량"] = pd.to_numeric(p_view["부족수량"], errors="coerce").fillna(0)
         if "사출생산필요수량" in p_view.columns:
-            p_view["사출 부족수량"] = pd.to_numeric(p_view["사출생산필요수량"], errors="coerce").fillna(0)
+            p_view["사출생산필요수량"] = pd.to_numeric(p_view["사출생산필요수량"], errors="coerce").fillna(0)
         else:
-            p_view["사출 부족수량"] = 0
+            p_view["사출생산필요수량"] = 0
+
+        mapped_inj_total = 0.0
+        unmatched_inj_total = 0.0
+        if "품목코드" in p_view.columns:
+            item_prefix = p_view["품목코드"].astype(str).str.upper().str[:1]
+            p_rows = p_view[item_prefix == "P"].copy()
+            r_rows = p_view[item_prefix == "R"].copy()
+        else:
+            p_rows = p_view.copy()
+            r_rows = p_view.iloc[0:0].copy()
+
+        if p_rows.empty:
+            p_view["사출 부족수량"] = p_view["사출생산필요수량"]
+        else:
+            p_rows["사출 부족수량"] = p_rows["사출생산필요수량"]
+            key_cols = [c for c in ["사이트코드", "이니셜", "R코드"] if c in p_rows.columns and c in r_rows.columns]
+
+            if key_cols and not r_rows.empty:
+                r_key_inj = (
+                    r_rows.groupby(key_cols, as_index=False)["사출생산필요수량"]
+                    .sum()
+                    .rename(columns={"사출생산필요수량": "연결R 사출수량"})
+                )
+                p_keys = p_rows[key_cols].drop_duplicates()
+                matched_r_total = (
+                    r_key_inj.merge(p_keys, on=key_cols, how="inner")["연결R 사출수량"].sum()
+                    if not p_keys.empty
+                    else 0.0
+                )
+                unmatched_inj_total = float(r_key_inj["연결R 사출수량"].sum() - matched_r_total)
+
+                p_rows = p_rows.merge(r_key_inj, on=key_cols, how="left")
+                p_key_short_sum = p_rows.groupby(key_cols)["부족수량"].transform("sum")
+                p_key_count = p_rows.groupby(key_cols)["품목코드"].transform("count")
+
+                mapped_by_short = (
+                    pd.to_numeric(p_rows["연결R 사출수량"], errors="coerce").fillna(0)
+                    * p_rows["부족수량"]
+                    / p_key_short_sum.replace(0, pd.NA)
+                )
+                mapped_by_split = (
+                    pd.to_numeric(p_rows["연결R 사출수량"], errors="coerce").fillna(0)
+                    / p_key_count.replace(0, pd.NA)
+                )
+                p_rows["사출 부족수량(연결R)"] = mapped_by_short.where(p_key_short_sum > 0, mapped_by_split).fillna(0)
+                p_rows["사출 부족수량"] = p_rows["사출 부족수량"].where(
+                    p_rows["사출 부족수량"] > 0, p_rows["사출 부족수량(연결R)"]
+                )
+                mapped_inj_total = float(p_rows["사출 부족수량(연결R)"].sum())
+            else:
+                unmatched_inj_total = float(pd.to_numeric(r_rows["사출생산필요수량"], errors="coerce").fillna(0).sum())
+
+            p_view = p_rows.copy()
+
         p_view = p_view[(p_view["부족수량"] > 0) | (p_view["사출 부족수량"] > 0)]
         p_view["표시부족수량"] = p_view["부족수량"] + p_view["사출 부족수량"]
 
@@ -1852,6 +1906,9 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         if "사출 부족수량" not in p_detail_columns:
             insert_idx = p_detail_columns.index("부족수량") + 1 if "부족수량" in p_detail_columns else len(p_detail_columns)
             p_detail_columns.insert(insert_idx, "사출 부족수량")
+        if "사출 부족수량(연결R)" in p_view.columns and "사출 부족수량(연결R)" not in p_detail_columns:
+            insert_idx = p_detail_columns.index("사출 부족수량") + 1 if "사출 부족수량" in p_detail_columns else len(p_detail_columns)
+            p_detail_columns.insert(insert_idx, "사출 부족수량(연결R)")
 
         p_table = p_view.sort_values(
             ["표시부족수량", "부족수량", "사출 부족수량", "이니셜", "거래처"],
@@ -1859,6 +1916,12 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         )[p_detail_columns]
         p_table_display = format_numeric_columns_for_display(p_table)
         p_detail_column_config = build_auto_column_config(p_table_display, p_detail_columns, source_df=p_table)
+        if "사출 부족수량(연결R)" in p_view.columns:
+            st.caption(
+                f"R→Q→P 연결 매핑(사이트코드+이니셜+R코드): "
+                f"P행 반영 사출부족수량 {mapped_inj_total:,.0f}, "
+                f"미매핑 R 사출수량 {unmatched_inj_total:,.0f}"
+            )
         st.download_button(
             "엑셀 다운로드",
             data=dataframe_to_excel_bytes(p_table, sheet_name="생산현황"),
