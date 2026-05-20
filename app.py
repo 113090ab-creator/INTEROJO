@@ -1906,10 +1906,6 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         if "사출 부족수량" not in p_detail_columns:
             insert_idx = p_detail_columns.index("부족수량") + 1 if "부족수량" in p_detail_columns else len(p_detail_columns)
             p_detail_columns.insert(insert_idx, "사출 부족수량")
-        if "사출 부족수량(연결R)" in p_view.columns and "사출 부족수량(연결R)" not in p_detail_columns:
-            insert_idx = p_detail_columns.index("사출 부족수량") + 1 if "사출 부족수량" in p_detail_columns else len(p_detail_columns)
-            p_detail_columns.insert(insert_idx, "사출 부족수량(연결R)")
-
         p_table = p_view.sort_values(
             ["표시부족수량", "부족수량", "사출 부족수량", "이니셜", "거래처"],
             ascending=[False, False, False, True, True],
