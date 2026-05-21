@@ -246,6 +246,20 @@ def parse_mixed_excel_date(series: pd.Series) -> pd.Series:
     return parsed
 
 
+def parse_mixed_numeric(series: pd.Series) -> pd.Series:
+    """Parse mixed numeric inputs safely (number/string/comma text)."""
+    text = series.astype(str).str.strip()
+    invalid_tokens = {"", "nan", "none", "nat", "-"}
+    normalized = text.where(~text.str.lower().isin(invalid_tokens), pd.NA)
+
+    # Support accounting-style negatives like "(1,234)".
+    normalized = normalized.str.replace(r"^\((.*)\)$", r"-\1", regex=True)
+    normalized = normalized.str.replace(",", "", regex=False)
+    normalized = normalized.str.replace("\u00a0", "", regex=False).str.replace(" ", "", regex=False)
+
+    return pd.to_numeric(normalized, errors="coerce").fillna(0)
+
+
 def canonicalize_warehouse_label(raw_label: str) -> str:
     label = str(raw_label).strip()
     if not label or label.lower() == "nan":
@@ -285,7 +299,7 @@ def build_inventory_df(inv: pd.DataFrame) -> pd.DataFrame:
         {
             "품목코드": inv[item_col].astype(str).str.strip(),
             "창고": inv[warehouse_col].astype(str).str.strip().map(canonicalize_warehouse_label),
-            "재고량": pd.to_numeric(inv[qty_col], errors="coerce").fillna(0),
+            "재고량": parse_mixed_numeric(inv[qty_col]),
         }
     )
 
@@ -950,7 +964,7 @@ def style_leadji_shortage_table(display_df: pd.DataFrame, source_df: pd.DataFram
             subset=["리드지부족"],
         )
     if "리드지부족수량" in display_df.columns and "리드지부족수량" in source_df.columns:
-        shortage_numeric = pd.to_numeric(source_df["리드지부족수량"], errors="coerce")
+        shortage_numeric = parse_mixed_numeric(source_df["리드지부족수량"])
         shortage_style = shortage_numeric.map(
             lambda v: "color: #d00000; font-weight: 700;" if pd.notna(v) and v < 0 else ""
         )
@@ -990,7 +1004,7 @@ def build_rcode_summary(df: pd.DataFrame) -> pd.DataFrame:
     r_df["R코드"] = r_df["R코드"].astype(str).str.strip()
     r_df = r_df[(r_df["R코드"] != "") & (r_df["R코드"].str.lower() != "nan")]
     if "사출생산필요수량" in r_df.columns:
-        r_df["사출생산필요수량"] = pd.to_numeric(r_df["사출생산필요수량"], errors="coerce").fillna(0)
+        r_df["사출생산필요수량"] = parse_mixed_numeric(r_df["사출생산필요수량"])
         r_df = r_df[r_df["사출생산필요수량"] > 0]
     if r_df.empty:
         return pd.DataFrame(columns=columns)
@@ -1042,9 +1056,9 @@ def build_rq_group_summary(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=columns)
 
     df = df.copy()
-    df["부족수량"] = pd.to_numeric(df["부족수량"], errors="coerce").fillna(0)
+    df["부족수량"] = parse_mixed_numeric(df["부족수량"])
     if "사출생산필요수량" in df.columns:
-        df["사출생산필요수량"] = pd.to_numeric(df["사출생산필요수량"], errors="coerce").fillna(0)
+        df["사출생산필요수량"] = parse_mixed_numeric(df["사출생산필요수량"])
     else:
         df["사출생산필요수량"] = 0
     df = df[(df["부족수량"] > 0) | (df["사출생산필요수량"] > 0)]
@@ -1111,9 +1125,9 @@ def build_initial_injection_summary(df: pd.DataFrame) -> pd.DataFrame:
 
     base["이니셜"] = base["이니셜"].astype(str).str.strip()
     base["이니셜"] = base["이니셜"].replace({"": "(미지정)", "nan": "(미지정)", "None": "(미지정)"})
-    base["부족수량"] = pd.to_numeric(base["부족수량"], errors="coerce").fillna(0)
-    base["사출생산필요수량"] = pd.to_numeric(base["사출생산필요수량"], errors="coerce").fillna(0)
-    base["사출창고"] = pd.to_numeric(base["사출창고"], errors="coerce").fillna(0)
+    base["부족수량"] = parse_mixed_numeric(base["부족수량"])
+    base["사출생산필요수량"] = parse_mixed_numeric(base["사출생산필요수량"])
+    base["사출창고"] = parse_mixed_numeric(base["사출창고"])
     base = base[(base["부족수량"] > 0) | (base["사출생산필요수량"] > 0)]
     if base.empty:
         return pd.DataFrame(columns=columns)
@@ -1182,7 +1196,7 @@ def build_qcode_summary(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=columns)
 
     q_df = df.copy()
-    q_df["부족수량"] = pd.to_numeric(q_df["부족수량"], errors="coerce").fillna(0)
+    q_df["부족수량"] = parse_mixed_numeric(q_df["부족수량"])
     q_df = q_df[q_df["부족수량"] > 0]
     if q_df.empty:
         return pd.DataFrame(columns=columns)
@@ -1334,15 +1348,15 @@ def load_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[pd.Dat
     leak_qty_idx = warehouse_qty_col_indices.get("누수규격검사 창고")
     leak_due_idx = leak_qty_idx + 1 if leak_qty_idx is not None and (leak_qty_idx + 1) < dem.shape[1] else None
     if leak_qty_idx is not None:
-        shortage_qty = pd.to_numeric(dem.iloc[:, leak_qty_idx], errors="coerce").fillna(0)
+        shortage_qty = parse_mixed_numeric(dem.iloc[:, leak_qty_idx])
     elif total_qty_col_indices:
         total_qty_col = dem.columns[total_qty_col_indices[-1]]
-        shortage_qty = pd.to_numeric(dem[total_qty_col], errors="coerce").fillna(0)
+        shortage_qty = parse_mixed_numeric(dem[total_qty_col])
     else:
         qty_cols = [dem.columns[i] for i in qty_col_indices]
         if not qty_cols:
             raise ValueError("수요 파일에서 '생산 수량' 컬럼을 찾지 못했습니다.")
-        shortage_qty = dem[qty_cols].apply(pd.to_numeric, errors="coerce").fillna(0).sum(axis=1)
+        shortage_qty = dem[qty_cols].apply(parse_mixed_numeric).fillna(0).sum(axis=1)
 
     if leak_due_idx is not None:
         leak_due_date = parse_mixed_excel_date(dem.iloc[:, leak_due_idx])
@@ -1353,17 +1367,17 @@ def load_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[pd.Dat
     # 파일 구조가 바뀌어도 공정 헤더 기준으로 우선 선택한다.
     selected_qty_idx: int | None = warehouse_qty_col_indices.get("사출창고")
     if selected_qty_idx is not None and 0 <= selected_qty_idx < dem.shape[1]:
-        inj_qty = pd.to_numeric(dem.iloc[:, selected_qty_idx], errors="coerce").fillna(0)
+        inj_qty = parse_mixed_numeric(dem.iloc[:, selected_qty_idx])
     else:
         inj_qty_col = pick_first_existing_column(
             dem.columns.tolist(),
             ["사출조립 생산수량", "사출조립생산수량", "사출조립 생산 수량"],
         )
         if inj_qty_col is not None:
-            inj_qty = pd.to_numeric(dem[inj_qty_col], errors="coerce").fillna(0)
+            inj_qty = parse_mixed_numeric(dem[inj_qty_col])
             selected_qty_idx = dem.columns.get_loc(inj_qty_col)
         elif dem.shape[1] > 5:
-            inj_qty = pd.to_numeric(dem.iloc[:, 5], errors="coerce").fillna(0)
+            inj_qty = parse_mixed_numeric(dem.iloc[:, 5])
             selected_qty_idx = 5
         else:
             raise ValueError("수요 파일 사출조립 생산수량 컬럼을 찾지 못했습니다.")
@@ -1551,7 +1565,7 @@ def load_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[pd.Dat
     item_prefix = result["품목코드"].astype(str).str.upper().str[:1]
     p_scope = result[(item_prefix == "P") & result["R코드5"].str.startswith("R", na=False)].copy()
     if not p_scope.empty:
-        p_scope["부족수량_num"] = pd.to_numeric(p_scope["부족수량"], errors="coerce").fillna(0)
+        p_scope["부족수량_num"] = parse_mixed_numeric(p_scope["부족수량"])
         p_scope = p_scope.sort_values(["부족수량_num", "품목코드"], ascending=[False, True])
 
         p_sheet_scope = p_scope[p_scope["시트분류"].notna()].copy()
@@ -1738,13 +1752,13 @@ def load_leadji_data(refresh_key: str, base_dir_str: str | None = None) -> tuple
         leadji_info.columns = [str(c).strip() for c in leadji_info.columns]
         for col in leadji_info.columns:
             if "소요량" in col:
-                leadji_info[col] = pd.to_numeric(leadji_info[col], errors="coerce").fillna(0)
+                leadji_info[col] = parse_mixed_numeric(leadji_info[col])
 
     if not leadji_stock.empty:
         leadji_stock.columns = [str(c).strip() for c in leadji_stock.columns]
         for col in ["기초", "입고", "출고", "재고", "검사대기"]:
             if col in leadji_stock.columns:
-                leadji_stock[col] = pd.to_numeric(leadji_stock[col], errors="coerce").fillna(0)
+                leadji_stock[col] = parse_mixed_numeric(leadji_stock[col])
 
     return leadji_info, leadji_stock
 
@@ -1807,7 +1821,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
                 )
 
         inj_shortage_total = (
-            pd.to_numeric(filtered["사출생산필요수량"], errors="coerce").fillna(0).sum()
+            parse_mixed_numeric(filtered["사출생산필요수량"]).sum()
             if "사출생산필요수량" in filtered.columns
             else 0
         )
@@ -1840,9 +1854,9 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
                 )
 
         p_view = filtered.copy()
-        p_view["부족수량"] = pd.to_numeric(p_view["부족수량"], errors="coerce").fillna(0)
+        p_view["부족수량"] = parse_mixed_numeric(p_view["부족수량"])
         if "사출생산필요수량" in p_view.columns:
-            p_view["사출생산필요수량"] = pd.to_numeric(p_view["사출생산필요수량"], errors="coerce").fillna(0)
+            p_view["사출생산필요수량"] = parse_mixed_numeric(p_view["사출생산필요수량"])
         else:
             p_view["사출생산필요수량"] = 0
 
@@ -1881,12 +1895,12 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
                 p_key_count = p_rows.groupby(key_cols)["품목코드"].transform("count")
 
                 mapped_by_short = (
-                    pd.to_numeric(p_rows["연결R 사출수량"], errors="coerce").fillna(0)
+                    parse_mixed_numeric(p_rows["연결R 사출수량"])
                     * p_rows["부족수량"]
                     / p_key_short_sum.replace(0, pd.NA)
                 )
                 mapped_by_split = (
-                    pd.to_numeric(p_rows["연결R 사출수량"], errors="coerce").fillna(0)
+                    parse_mixed_numeric(p_rows["연결R 사출수량"])
                     / p_key_count.replace(0, pd.NA)
                 )
                 p_rows["사출 부족수량(연결R)"] = mapped_by_short.where(p_key_short_sum > 0, mapped_by_split).fillna(0)
@@ -1895,7 +1909,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
                 )
                 mapped_inj_total = float(p_rows["사출 부족수량(연결R)"].sum())
             else:
-                unmatched_inj_total = float(pd.to_numeric(r_rows["사출생산필요수량"], errors="coerce").fillna(0).sum())
+                unmatched_inj_total = float(parse_mixed_numeric(r_rows["사출생산필요수량"]).sum())
 
             p_view = p_rows.copy()
 
@@ -2015,11 +2029,11 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         if "품목코드" in rq_filtered.columns:
             rq_filtered = rq_filtered[rq_filtered["품목코드"].astype(str).str.upper().str.startswith("P")]
         if "부족수량" in rq_filtered.columns:
-            rq_filtered["부족수량"] = pd.to_numeric(rq_filtered["부족수량"], errors="coerce").fillna(0)
+            rq_filtered["부족수량"] = parse_mixed_numeric(rq_filtered["부족수량"])
         else:
             rq_filtered["부족수량"] = 0
         if "사출생산필요수량" in rq_filtered.columns:
-            rq_filtered["사출생산필요수량"] = pd.to_numeric(rq_filtered["사출생산필요수량"], errors="coerce").fillna(0)
+            rq_filtered["사출생산필요수량"] = parse_mixed_numeric(rq_filtered["사출생산필요수량"])
         else:
             rq_filtered["사출생산필요수량"] = 0
         rq_filtered = rq_filtered[(rq_filtered["부족수량"] > 0) | (rq_filtered["사출생산필요수량"] > 0)]
@@ -2042,8 +2056,8 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
 
         if "R코드 제품명" in rq_filtered.columns:
             rq_product_scope = rq_filtered.copy()
-            rq_product_scope["부족수량"] = pd.to_numeric(rq_product_scope["부족수량"], errors="coerce").fillna(0)
-            rq_product_scope["사출생산필요수량"] = pd.to_numeric(rq_product_scope["사출생산필요수량"], errors="coerce").fillna(0)
+            rq_product_scope["부족수량"] = parse_mixed_numeric(rq_product_scope["부족수량"])
+            rq_product_scope["사출생산필요수량"] = parse_mixed_numeric(rq_product_scope["사출생산필요수량"])
             rq_product_scope = rq_product_scope[
                 (rq_product_scope["부족수량"] > 0) | (rq_product_scope["사출생산필요수량"] > 0)
             ]
@@ -2072,12 +2086,12 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
 
         rq_summary_tab = build_rq_group_summary(rq_filtered)
         rq_shortage_total = (
-            pd.to_numeric(rq_filtered["부족수량"], errors="coerce").fillna(0).sum()
+            parse_mixed_numeric(rq_filtered["부족수량"]).sum()
             if "부족수량" in rq_filtered.columns
             else 0
         )
         rq_inj_shortage_total = (
-            pd.to_numeric(rq_summary_tab["사출 부족수량"], errors="coerce").fillna(0).sum()
+            parse_mixed_numeric(rq_summary_tab["사출 부족수량"]).sum()
             if not rq_summary_tab.empty and "사출 부족수량" in rq_summary_tab.columns
             else 0
         )
@@ -2104,7 +2118,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
             if "부족수량" not in rq_view.columns:
                 rq_view["부족수량"] = 0
             if "사출생산필요수량" in rq_view.columns:
-                rq_view["사출부족수량"] = pd.to_numeric(rq_view["사출생산필요수량"], errors="coerce").fillna(0)
+                rq_view["사출부족수량"] = parse_mixed_numeric(rq_view["사출생산필요수량"])
             else:
                 rq_view["사출부족수량"] = 0
 
@@ -2167,7 +2181,7 @@ def build_leadji_requirement_summary(
     base = shortage_df.copy()
     base["P코드5"] = base["품목코드"].astype(str).str.strip().str.upper().str[:5]
     base = base[base["P코드5"].str.startswith("P")]
-    base["생산필요수량"] = pd.to_numeric(base[qty_source_col], errors="coerce").fillna(0)
+    base["생산필요수량"] = parse_mixed_numeric(base[qty_source_col])
     base = base[base["생산필요수량"] > 0]
     if due_source_col in base.columns:
         base["납기일_dt"] = pd.to_datetime(base[due_source_col], errors="coerce")
@@ -2231,7 +2245,7 @@ def build_leadji_requirement_summary(
             stock = leadji_stock[[code_col, warehouse_col, qty_col]].copy()
             stock[code_col] = stock[code_col].astype(str).str.strip()
             stock[warehouse_col] = stock[warehouse_col].astype(str).str.strip()
-            stock[qty_col] = pd.to_numeric(stock[qty_col], errors="coerce").fillna(0)
+            stock[qty_col] = parse_mixed_numeric(stock[qty_col])
             stock = stock[(stock[code_col] != "") & (stock[warehouse_col] != "") & (stock[qty_col] > 0)]
             if not stock.empty:
                 stock = stock.groupby([code_col, warehouse_col], as_index=False)[qty_col].sum()
@@ -2251,22 +2265,22 @@ def build_leadji_requirement_summary(
                     pivot = pivot.reindex(columns=warehouse_columns).reset_index().rename(columns={code_col: "리드지코드"})
                     summary = summary.merge(pivot, on="리드지코드", how="left")
                     for w_col in warehouse_columns:
-                        summary[w_col] = pd.to_numeric(summary[w_col], errors="coerce").fillna(0)
+                        summary[w_col] = parse_mixed_numeric(summary[w_col])
 
     active_warehouse_columns: list[str] = []
     for w_col in warehouse_columns:
-        col_sum = pd.to_numeric(summary[w_col], errors="coerce").fillna(0).sum() if w_col in summary.columns else 0
+        col_sum = parse_mixed_numeric(summary[w_col]).sum() if w_col in summary.columns else 0
         if col_sum > 0:
             active_warehouse_columns.append(w_col)
 
-    summary["리드지필요수량"] = (pd.to_numeric(summary["생산필요수량"], errors="coerce").fillna(0) * 1.3).round(0)
+    summary["리드지필요수량"] = (parse_mixed_numeric(summary["생산필요수량"]) * 1.3).round(0)
     leadji_target_warehouses = ["L관창고(자재)", "C관 공정부자재", "S관 공정부자재", "A관 공정부자재"]
     leadji_stock_total = pd.Series(0.0, index=summary.index)
     for warehouse_name in leadji_target_warehouses:
         matched_col = find_warehouse_column(summary.columns.tolist(), [warehouse_name])
         if matched_col is None:
             continue
-        leadji_stock_total = leadji_stock_total + pd.to_numeric(summary[matched_col], errors="coerce").fillna(0)
+        leadji_stock_total = leadji_stock_total + parse_mixed_numeric(summary[matched_col])
 
     shortage_qty = leadji_stock_total - summary["리드지필요수량"]
     summary["리드지부족"] = ""
@@ -2303,7 +2317,7 @@ def build_pcode5_leadji_requirement_summary(
     base = shortage_df.copy()
     base["P코드5"] = base["품목코드"].astype(str).str.strip().str.upper().str[:5]
     base = base[base["P코드5"].str.startswith("P")]
-    base["생산필요수량"] = pd.to_numeric(base[qty_source_col], errors="coerce").fillna(0)
+    base["생산필요수량"] = parse_mixed_numeric(base[qty_source_col])
     base = base[base["생산필요수량"] > 0]
     if due_source_col in base.columns:
         base["납기일_dt"] = pd.to_datetime(base[due_source_col], errors="coerce")
@@ -2368,7 +2382,7 @@ def build_pcode5_leadji_requirement_summary(
             stock = leadji_stock[[code_col, warehouse_col, qty_col]].copy()
             stock[code_col] = stock[code_col].astype(str).str.strip()
             stock[warehouse_col] = stock[warehouse_col].astype(str).str.strip()
-            stock[qty_col] = pd.to_numeric(stock[qty_col], errors="coerce").fillna(0)
+            stock[qty_col] = parse_mixed_numeric(stock[qty_col])
             stock = stock[(stock[code_col] != "") & (stock[warehouse_col] != "") & (stock[qty_col] > 0)]
             if not stock.empty:
                 stock = stock.groupby([code_col, warehouse_col], as_index=False)[qty_col].sum()
@@ -2388,11 +2402,11 @@ def build_pcode5_leadji_requirement_summary(
                     pivot = pivot.reindex(columns=warehouse_columns).reset_index().rename(columns={code_col: "리드지코드"})
                     summary = summary.merge(pivot, on="리드지코드", how="left")
                     for w_col in warehouse_columns:
-                        summary[w_col] = pd.to_numeric(summary[w_col], errors="coerce").fillna(0)
+                        summary[w_col] = parse_mixed_numeric(summary[w_col])
 
     active_warehouse_columns: list[str] = []
     for w_col in warehouse_columns:
-        col_sum = pd.to_numeric(summary[w_col], errors="coerce").fillna(0).sum() if w_col in summary.columns else 0
+        col_sum = parse_mixed_numeric(summary[w_col]).sum() if w_col in summary.columns else 0
         if col_sum > 0:
             active_warehouse_columns.append(w_col)
 
