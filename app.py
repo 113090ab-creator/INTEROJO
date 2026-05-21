@@ -1872,6 +1872,33 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
 
         if p_rows.empty:
             p_view["사출 부족수량"] = p_view["사출생산필요수량"]
+            key_cols = [c for c in ["사이트코드", "이니셜", "R코드"] if c in p_view.columns]
+            if key_cols and not r_rows.empty and "품목코드" in enriched_df.columns:
+                # Fallback: when current filters leave only R rows, recover representative P codes
+                # from the full scope using (사이트코드+이니셜+R코드) keys.
+                p_universe = enriched_df.copy()
+                universe_prefix = p_universe["품목코드"].astype(str).str.upper().str[:1]
+                p_universe = p_universe[universe_prefix == "P"]
+                if not p_universe.empty and all(c in p_universe.columns for c in key_cols):
+                    if "부족수량" in p_universe.columns:
+                        p_universe["부족수량_num"] = parse_mixed_numeric(p_universe["부족수량"])
+                    else:
+                        p_universe["부족수량_num"] = 0
+                    if "제품명" not in p_universe.columns:
+                        p_universe["제품명"] = "-"
+
+                    p_key_map = (
+                        p_universe.sort_values(["부족수량_num", "품목코드"], ascending=[False, True])
+                        .drop_duplicates(subset=key_cols, keep="first")[key_cols + ["품목코드", "제품명"]]
+                        .rename(columns={"품목코드": "매핑P코드", "제품명": "매핑제품명"})
+                    )
+                    p_view = p_view.merge(p_key_map, on=key_cols, how="left")
+                    mapped_mask = p_view["매핑P코드"].astype(str).str.strip().str.lower().ne("nan")
+                    mapped_mask = mapped_mask & p_view["매핑P코드"].astype(str).str.strip().ne("")
+                    p_view.loc[mapped_mask, "품목코드"] = p_view.loc[mapped_mask, "매핑P코드"]
+                    if "제품명" in p_view.columns:
+                        p_view.loc[mapped_mask, "제품명"] = p_view.loc[mapped_mask, "매핑제품명"]
+                    p_view = p_view.drop(columns=["매핑P코드", "매핑제품명"], errors="ignore")
         else:
             p_rows["사출 부족수량"] = p_rows["사출생산필요수량"]
             key_cols = [c for c in ["사이트코드", "이니셜", "R코드"] if c in p_rows.columns and c in r_rows.columns]
