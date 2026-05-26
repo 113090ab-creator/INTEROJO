@@ -1295,7 +1295,9 @@ def load_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[pd.Dat
         leadji_r_map,
         leadji_q_map,
     ) = load_reference_maps_bundle(data_base_dir, reference_refresh_key)
-    process_code_map, warehouse_qty_col_indices, qty_col_indices, total_qty_col_indices = extract_demand_header_info(dem_path)
+    process_code_map, warehouse_qty_col_indices, qty_col_indices, total_qty_col_indices, process_qty_col_indices = (
+        extract_demand_header_info(dem_path)
+    )
 
     inv = pd.read_excel(inv_path, sheet_name=0)
     dem = pd.read_excel(dem_path, sheet_name=0, header=1)
@@ -1368,6 +1370,22 @@ def load_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[pd.Dat
     else:
         leak_due_date = pd.Series(pd.NaT, index=dem.index, dtype="datetime64[ns]")
 
+    leadji_qty_idx: int | None = None
+    for process_label, idx in process_qty_col_indices.items():
+        if "[45]" in process_label and ("하이드레이션" in process_label or "전면검사" in process_label):
+            leadji_qty_idx = idx
+            break
+    if leadji_qty_idx is None:
+        for process_label, idx in process_qty_col_indices.items():
+            if "하이드레이션" in process_label or "전면검사" in process_label:
+                leadji_qty_idx = idx
+                break
+
+    if leadji_qty_idx is not None and 0 <= leadji_qty_idx < dem.shape[1]:
+        leadji_required_qty = parse_mixed_numeric(dem.iloc[:, leadji_qty_idx])
+    else:
+        leadji_required_qty = shortage_qty
+
     # 기준2) 사출 생산 현황: [10]사출조립 생산수량 + 해당 납기일
     # 파일 구조가 바뀌어도 공정 헤더 기준으로 우선 선택한다.
     selected_qty_idx: int | None = warehouse_qty_col_indices.get("사출창고")
@@ -1406,6 +1424,7 @@ def load_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[pd.Dat
             "사출납기일": inj_due_date,
             "생산수량": shortage_qty,
             "사출생산필요수량": inj_qty,
+            LEADJI_REQUIRED_QTY_COL: leadji_required_qty,
         }
     )
 
@@ -1419,7 +1438,9 @@ def load_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[pd.Dat
     dem_df = dem_df[(dem_df["사이트코드"] != "") & (dem_df["사이트코드"].str.lower() != "nan")]
     dem_df = dem_df[(dem_df["품목코드"] != "") & (dem_df["품목코드"].str.lower() != "nan")]
     dem_df = dem_df[dem_df["품목코드"].astype(str).str.upper().str.startswith(("P", "Q", "R"))]
-    dem_df = dem_df[(dem_df["생산수량"] > 0) | (dem_df["사출생산필요수량"] > 0)]
+    dem_df = dem_df[
+        (dem_df["생산수량"] > 0) | (dem_df["사출생산필요수량"] > 0) | (dem_df[LEADJI_REQUIRED_QTY_COL] > 0)
+    ]
     dem_df["제품명"] = dem_df["제품명"].replace({"nan": "", "None": ""})
 
     grouped_demand = (
@@ -1428,6 +1449,7 @@ def load_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[pd.Dat
             {
                 "생산수량": "sum",
                 "사출생산필요수량": "sum",
+                LEADJI_REQUIRED_QTY_COL: "sum",
                 "납기일": "min",
                 "사출납기일": "min",
                 "제품명": lambda s: next((v for v in s if str(v).strip() and str(v).strip().lower() != "nan"), "-"),
