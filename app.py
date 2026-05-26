@@ -322,10 +322,12 @@ def normalize_process_to_warehouse(process_label: str) -> str | None:
     return None
 
 
-def extract_demand_header_info(dem_path: Path) -> tuple[dict[str, str], dict[str, int], list[int], list[int]]:
+def extract_demand_header_info(dem_path: Path) -> tuple[
+    dict[str, str], dict[str, int], list[int], list[int], dict[str, int]
+]:
     header_rows = pd.read_excel(dem_path, sheet_name=0, header=None, nrows=2)
     if header_rows.shape[0] < 2:
-        return {}, {}, [], []
+        return {}, {}, [], [], {}
 
     top_row = header_rows.iloc[0]
     second_row = header_rows.iloc[1]
@@ -334,6 +336,7 @@ def extract_demand_header_info(dem_path: Path) -> tuple[dict[str, str], dict[str
     warehouse_qty_col_indices: dict[str, int] = {}
     qty_col_indices: list[int] = []
     total_qty_col_indices: list[int] = []
+    process_qty_col_indices: dict[str, int] = {}
 
     for idx, column_name in second_row.items():
         if "생산 수량" not in str(column_name):
@@ -345,6 +348,7 @@ def extract_demand_header_info(dem_path: Path) -> tuple[dict[str, str], dict[str
         top_label = str(top_row.iloc[idx]).strip()
         if not top_label or top_label.lower() == "nan":
             continue
+        process_qty_col_indices[top_label.replace(" ", "")] = idx
         if "총합계" in top_label:
             total_qty_col_indices.append(idx)
             continue
@@ -358,7 +362,7 @@ def extract_demand_header_info(dem_path: Path) -> tuple[dict[str, str], dict[str
         code_map[warehouse_name] = extracted_code
         warehouse_qty_col_indices[warehouse_name] = idx
 
-    return code_map, warehouse_qty_col_indices, qty_col_indices, total_qty_col_indices
+    return code_map, warehouse_qty_col_indices, qty_col_indices, total_qty_col_indices, process_qty_col_indices
 
 
 def map_demand_code_to_process_code(demand_code: str, process_prefix: str) -> str:
