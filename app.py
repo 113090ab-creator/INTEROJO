@@ -17,6 +17,7 @@ BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_WORKSPACE_ROOT = BASE_DIR / ".uploaded_workspaces"
 DISPLAY_TZ = ZoneInfo("Asia/Seoul")
 LEADJI_REQUIRED_QTY_COL = "[45]하이드레이션/전면검사 필요수량"
+LEADJI_REQUIRED_DUE_COL = "[45]하이드레이션/전면검사 납기일"
 LEADJI_COMPLETED_STOCK_COL = "누수규격검사 창고"
 
 WAREHOUSE_MAP = {
@@ -1384,8 +1385,14 @@ def load_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[pd.Dat
 
     if leadji_qty_idx is not None and 0 <= leadji_qty_idx < dem.shape[1]:
         leadji_required_qty = parse_mixed_numeric(dem.iloc[:, leadji_qty_idx])
+        leadji_due_idx = leadji_qty_idx + 1 if (leadji_qty_idx + 1) < dem.shape[1] else None
+        if leadji_due_idx is not None:
+            leadji_due_date = parse_mixed_excel_date(dem.iloc[:, leadji_due_idx])
+        else:
+            leadji_due_date = pd.Series(pd.NaT, index=dem.index, dtype="datetime64[ns]")
     else:
         leadji_required_qty = shortage_qty
+        leadji_due_date = leak_due_date
 
     # 기준2) 사출 생산 현황: [10]사출조립 생산수량 + 해당 납기일
     # 파일 구조가 바뀌어도 공정 헤더 기준으로 우선 선택한다.
@@ -1423,6 +1430,7 @@ def load_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[pd.Dat
             "제품명": name_series,
             "납기일": leak_due_date,
             "사출납기일": inj_due_date,
+            LEADJI_REQUIRED_DUE_COL: leadji_due_date,
             "생산수량": shortage_qty,
             "사출생산필요수량": inj_qty,
             LEADJI_REQUIRED_QTY_COL: leadji_required_qty,
@@ -1445,14 +1453,16 @@ def load_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[pd.Dat
     dem_df["제품명"] = dem_df["제품명"].replace({"nan": "", "None": ""})
 
     grouped_demand = (
-        dem_df.groupby(["사이트코드", "이니셜", "거래처", "품목코드"], as_index=False)
+        dem_df.groupby(
+            ["사이트코드", "이니셜", "거래처", "품목코드", "납기일", "사출납기일", LEADJI_REQUIRED_DUE_COL],
+            as_index=False,
+            dropna=False,
+        )
         .agg(
             {
                 "생산수량": "sum",
                 "사출생산필요수량": "sum",
                 LEADJI_REQUIRED_QTY_COL: "sum",
-                "납기일": "min",
-                "사출납기일": "min",
                 "제품명": lambda s: next((v for v in s if str(v).strip() and str(v).strip().lower() != "nan"), "-"),
             }
         )
@@ -2353,7 +2363,10 @@ def build_leadji_p_shortage(shortage_df: pd.DataFrame) -> pd.DataFrame:
     if qty_source_col not in shortage_df.columns:
         return pd.DataFrame(columns=["P코드5", "생산필요수량", "최소납기일"])
 
-    due_source_col = "최소납기일" if "최소납기일" in shortage_df.columns else "납기일"
+    if qty_source_col == LEADJI_REQUIRED_QTY_COL and LEADJI_REQUIRED_DUE_COL in shortage_df.columns:
+        due_source_col = LEADJI_REQUIRED_DUE_COL
+    else:
+        due_source_col = "최소납기일" if "최소납기일" in shortage_df.columns else "납기일"
 
     base = shortage_df.copy()
     base["품목코드"] = base["품목코드"].astype(str).str.strip().str.upper()
@@ -2499,7 +2512,7 @@ def render_leadji_dashboard(
         st.caption("리드지필요수량 = 생산필요수량 × 1.3")
         st.caption("리드지부족: 부족 시 이모지(🔴) 표시")
         st.caption("리드지부족수량 = (L관창고(자재)+C관 공정부자재+S관 공정부자재+A관 공정부자재) - 리드지필요수량 (0 미만만 표시)")
-        st.caption("최소납기일: 누수규격검사 기준 수요 정보의 최소 납기일")
+        st.caption(f"최소납기일: {LEADJI_REQUIRED_DUE_COL} 기준(없으면 누수규격검사 납기일 기준)")
         st.caption("창고 컬럼: 리드지 재고 시트에서 리드지코드별 재고가 존재하는 창고와 수량")
 
         qcol, _ = st.columns([3.0, 1.0])
