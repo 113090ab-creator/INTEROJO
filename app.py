@@ -2355,6 +2355,22 @@ def build_leadji_requirement_summary(
     ]
 
 
+def compute_leadji_source_total(shortage_df: pd.DataFrame) -> float:
+    if shortage_df.empty or "품목코드" not in shortage_df.columns:
+        return 0.0
+
+    qty_source_col = LEADJI_REQUIRED_QTY_COL if LEADJI_REQUIRED_QTY_COL in shortage_df.columns else "부족수량"
+    if qty_source_col not in shortage_df.columns:
+        return 0.0
+
+    base = shortage_df.copy()
+    base["P코드5"] = base["품목코드"].astype(str).str.strip().str.upper().str[:5]
+    base = base[base["P코드5"].str.startswith("P")]
+    base["생산필요수량"] = parse_mixed_numeric(base[qty_source_col])
+    base = base[base["생산필요수량"] > 0]
+    return float(base["생산필요수량"].sum())
+
+
 def build_pcode5_leadji_requirement_summary(
     shortage_df: pd.DataFrame, leadji_info: pd.DataFrame, leadji_stock: pd.DataFrame
 ) -> pd.DataFrame:
@@ -2505,6 +2521,14 @@ def render_leadji_dashboard(
         c2.metric("생산필요수량 합계", f"{filtered_summary['생산필요수량'].sum():,.0f}")
         min_due_dt = pd.to_datetime(filtered_summary["최소납기일"], errors="coerce").min()
         c3.metric("최소납기일", "-" if pd.isna(min_due_dt) else min_due_dt.strftime("%Y-%m-%d"))
+
+        source_total = compute_leadji_source_total(shortage_df)
+        summary_total = float(parse_mixed_numeric(summary_df["생산필요수량"]).sum())
+        verify_diff = summary_total - source_total
+        st.caption(
+            f"검증: 원본 {LEADJI_REQUIRED_QTY_COL} 합계 {source_total:,.0f} / "
+            f"리드지 합계 {summary_total:,.0f} / 차이 {verify_diff:,.0f}"
+        )
 
         st.download_button(
             "엑셀 다운로드",
