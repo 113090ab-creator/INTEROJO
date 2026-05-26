@@ -17,6 +17,7 @@ BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_WORKSPACE_ROOT = BASE_DIR / ".uploaded_workspaces"
 DISPLAY_TZ = ZoneInfo("Asia/Seoul")
 LEADJI_REQUIRED_QTY_COL = "[45]하이드레이션/전면검사 필요수량"
+LEADJI_COMPLETED_STOCK_COL = "누수규격검사 창고"
 
 WAREHOUSE_MAP = {
     "사출창고": "사출창고",
@@ -2226,27 +2227,9 @@ def build_leadji_requirement_summary(
     if shortage_df.empty or "품목코드" not in shortage_df.columns:
         return pd.DataFrame(columns=fixed_columns)
 
-    qty_source_col = LEADJI_REQUIRED_QTY_COL if LEADJI_REQUIRED_QTY_COL in shortage_df.columns else "부족수량"
-    if qty_source_col not in shortage_df.columns:
+    p_shortage = build_leadji_p_shortage(shortage_df)
+    if p_shortage.empty:
         return pd.DataFrame(columns=fixed_columns)
-
-    due_source_col = "최소납기일" if "최소납기일" in shortage_df.columns else "납기일"
-
-    base = shortage_df.copy()
-    base["P코드5"] = base["품목코드"].astype(str).str.strip().str.upper().str[:5]
-    base = base[base["P코드5"].str.startswith("P")]
-    base["생산필요수량"] = parse_mixed_numeric(base[qty_source_col])
-    base = base[base["생산필요수량"] > 0]
-    if due_source_col in base.columns:
-        base["납기일_dt"] = pd.to_datetime(base[due_source_col], errors="coerce")
-    else:
-        base["납기일_dt"] = pd.NaT
-
-    p_shortage = (
-        base.groupby("P코드5", as_index=False)
-        .agg({"생산필요수량": "sum", "납기일_dt": "min"})
-        .rename(columns={"납기일_dt": "최소납기일"})
-    )
 
     if leadji_info.empty:
         return pd.DataFrame(columns=fixed_columns)
@@ -2356,19 +2339,51 @@ def build_leadji_requirement_summary(
 
 
 def compute_leadji_source_total(shortage_df: pd.DataFrame) -> float:
-    if shortage_df.empty or "품목코드" not in shortage_df.columns:
+    p_shortage = build_leadji_p_shortage(shortage_df)
+    if p_shortage.empty:
         return 0.0
+    return float(parse_mixed_numeric(p_shortage["생산필요수량"]).sum())
+
+
+def build_leadji_p_shortage(shortage_df: pd.DataFrame) -> pd.DataFrame:
+    if shortage_df.empty or "품목코드" not in shortage_df.columns:
+        return pd.DataFrame(columns=["P코드5", "생산필요수량", "최소납기일"])
 
     qty_source_col = LEADJI_REQUIRED_QTY_COL if LEADJI_REQUIRED_QTY_COL in shortage_df.columns else "부족수량"
     if qty_source_col not in shortage_df.columns:
-        return 0.0
+        return pd.DataFrame(columns=["P코드5", "생산필요수량", "최소납기일"])
+
+    due_source_col = "최소납기일" if "최소납기일" in shortage_df.columns else "납기일"
 
     base = shortage_df.copy()
-    base["P코드5"] = base["품목코드"].astype(str).str.strip().str.upper().str[:5]
+    base["품목코드"] = base["품목코드"].astype(str).str.strip().str.upper()
+    base["P코드5"] = base["품목코드"].str[:5]
     base = base[base["P코드5"].str.startswith("P")]
     base["생산필요수량"] = parse_mixed_numeric(base[qty_source_col])
-    base = base[base["생산필요수량"] > 0]
-    return float(base["생산필요수량"].sum())
+    base["완료재고수량"] = (
+        parse_mixed_numeric(base[LEADJI_COMPLETED_STOCK_COL])
+        if LEADJI_COMPLETED_STOCK_COL in base.columns
+        else 0
+    )
+    if due_source_col in base.columns:
+        base["납기일_dt"] = pd.to_datetime(base[due_source_col], errors="coerce")
+    else:
+        base["납기일_dt"] = pd.NaT
+
+    item_shortage = (
+        base.groupby("품목코드", as_index=False)
+        .agg({"P코드5": "first", "생산필요수량": "sum", "완료재고수량": "max", "납기일_dt": "min"})
+    )
+    # 품목코드 단위로 필요수량 합산 후 완료재고(누수규격검사 창고)를 1회 차감한다.
+    item_shortage["생산필요수량"] = (item_shortage["생산필요수량"] - item_shortage["완료재고수량"]).clip(lower=0)
+    item_shortage = item_shortage[item_shortage["생산필요수량"] > 0]
+
+    p_shortage = (
+        item_shortage.groupby("P코드5", as_index=False)
+        .agg({"생산필요수량": "sum", "납기일_dt": "min"})
+        .rename(columns={"납기일_dt": "최소납기일"})
+    )
+    return p_shortage
 
 
 def build_pcode5_leadji_requirement_summary(
@@ -2378,27 +2393,7 @@ def build_pcode5_leadji_requirement_summary(
     if shortage_df.empty or "품목코드" not in shortage_df.columns:
         return pd.DataFrame(columns=fixed_columns)
 
-    qty_source_col = LEADJI_REQUIRED_QTY_COL if LEADJI_REQUIRED_QTY_COL in shortage_df.columns else "부족수량"
-    if qty_source_col not in shortage_df.columns:
-        return pd.DataFrame(columns=fixed_columns)
-
-    due_source_col = "최소납기일" if "최소납기일" in shortage_df.columns else "납기일"
-
-    base = shortage_df.copy()
-    base["P코드5"] = base["품목코드"].astype(str).str.strip().str.upper().str[:5]
-    base = base[base["P코드5"].str.startswith("P")]
-    base["생산필요수량"] = parse_mixed_numeric(base[qty_source_col])
-    base = base[base["생산필요수량"] > 0]
-    if due_source_col in base.columns:
-        base["납기일_dt"] = pd.to_datetime(base[due_source_col], errors="coerce")
-    else:
-        base["납기일_dt"] = pd.NaT
-
-    p_shortage = (
-        base.groupby("P코드5", as_index=False)
-        .agg({"생산필요수량": "sum", "납기일_dt": "min"})
-        .rename(columns={"납기일_dt": "최소납기일"})
-    )
+    p_shortage = build_leadji_p_shortage(shortage_df)
     if p_shortage.empty:
         return pd.DataFrame(columns=fixed_columns)
 
@@ -2497,7 +2492,10 @@ def render_leadji_dashboard(
         st.warning("리드지재고현황을 계산할 데이터가 없습니다.")
     else:
         st.caption(f"생산필요수량: 수요 데이터의 {LEADJI_REQUIRED_QTY_COL} 컬럼 우선, 없으면 누수규격검사 기준 부족수량 반영")
-        st.caption(f"집계 기준: 동일 P코드가 여러 주문행에 있으면 {LEADJI_REQUIRED_QTY_COL}을 합산(sum)하여 리드지코드에 매핑")
+        st.caption(
+            f"완료 차감 기준: 품목코드별 {LEADJI_REQUIRED_QTY_COL} 합계에서 {LEADJI_COMPLETED_STOCK_COL} 재고를 1회 차감 후 0 미만은 0 처리"
+        )
+        st.caption(f"집계 기준: 동일 P코드가 여러 주문행에 있으면 위 기준 수량을 합산(sum)하여 리드지코드에 매핑")
         st.caption("리드지필요수량 = 생산필요수량 × 1.3")
         st.caption("리드지부족: 부족 시 이모지(🔴) 표시")
         st.caption("리드지부족수량 = (L관창고(자재)+C관 공정부자재+S관 공정부자재+A관 공정부자재) - 리드지필요수량 (0 미만만 표시)")
@@ -2526,7 +2524,7 @@ def render_leadji_dashboard(
         summary_total = float(parse_mixed_numeric(summary_df["생산필요수량"]).sum())
         verify_diff = summary_total - source_total
         st.caption(
-            f"검증: 원본 {LEADJI_REQUIRED_QTY_COL} 합계 {source_total:,.0f} / "
+            f"검증: 품목코드별 ({LEADJI_REQUIRED_QTY_COL} - {LEADJI_COMPLETED_STOCK_COL}) 합계 {source_total:,.0f} / "
             f"리드지 합계 {summary_total:,.0f} / 차이 {verify_diff:,.0f}"
         )
 
@@ -2561,7 +2559,9 @@ def render_leadji_pcode5_dashboard(
 ) -> None:
     st.subheader("생산코드 기준 리드지 현황")
     st.caption(f"업데이트: {updated_at}")
-    st.caption(f"집계 기준: 동일 P코드가 여러 주문행에 있으면 {LEADJI_REQUIRED_QTY_COL}을 합산(sum)합니다.")
+    st.caption(
+        f"집계 기준: 품목코드별 ({LEADJI_REQUIRED_QTY_COL} - {LEADJI_COMPLETED_STOCK_COL})를 0 미만 0으로 만든 뒤 P코드 단위 합산(sum)"
+    )
     st.caption("기준: 동일 생산코드에 여러 리드지가 매핑되면 생산필요수량이 각 리드지 행에 반복 표시됩니다.")
     download_stamp = datetime.now(DISPLAY_TZ).strftime("%Y%m%d_%H%M%S")
 
