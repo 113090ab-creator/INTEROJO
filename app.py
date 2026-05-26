@@ -2481,6 +2481,7 @@ def render_leadji_dashboard(
         st.warning("리드지재고현황을 계산할 데이터가 없습니다.")
     else:
         st.caption(f"생산필요수량: 수요 데이터의 {LEADJI_REQUIRED_QTY_COL} 컬럼 우선, 없으면 누수규격검사 기준 부족수량 반영")
+        st.caption(f"집계 기준: 동일 P코드가 여러 주문행에 있으면 {LEADJI_REQUIRED_QTY_COL}을 합산(sum)하여 리드지코드에 매핑")
         st.caption("리드지필요수량 = 생산필요수량 × 1.3")
         st.caption("리드지부족: 부족 시 이모지(🔴) 표시")
         st.caption("리드지부족수량 = (L관창고(자재)+C관 공정부자재+S관 공정부자재+A관 공정부자재) - 리드지필요수량 (0 미만만 표시)")
@@ -2536,6 +2537,7 @@ def render_leadji_pcode5_dashboard(
 ) -> None:
     st.subheader("생산코드 기준 리드지 현황")
     st.caption(f"업데이트: {updated_at}")
+    st.caption(f"집계 기준: 동일 P코드가 여러 주문행에 있으면 {LEADJI_REQUIRED_QTY_COL}을 합산(sum)합니다.")
     st.caption("기준: 동일 생산코드에 여러 리드지가 매핑되면 생산필요수량이 각 리드지 행에 반복 표시됩니다.")
     download_stamp = datetime.now(DISPLAY_TZ).strftime("%Y%m%d_%H%M%S")
 
