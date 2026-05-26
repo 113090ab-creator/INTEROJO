@@ -16,6 +16,7 @@ st.set_page_config(page_title="제품 부족수량 현황", layout="wide")
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_WORKSPACE_ROOT = BASE_DIR / ".uploaded_workspaces"
 DISPLAY_TZ = ZoneInfo("Asia/Seoul")
+LEADJI_REQUIRED_QTY_COL = "[45]하이드레이션/전면검사 필요수량"
 
 WAREHOUSE_MAP = {
     "사출창고": "사출창고",
@@ -2199,7 +2200,7 @@ def build_leadji_requirement_summary(
     if shortage_df.empty or "품목코드" not in shortage_df.columns:
         return pd.DataFrame(columns=fixed_columns)
 
-    qty_source_col = "생산필요수량" if "생산필요수량" in shortage_df.columns else "부족수량"
+    qty_source_col = LEADJI_REQUIRED_QTY_COL if LEADJI_REQUIRED_QTY_COL in shortage_df.columns else "부족수량"
     if qty_source_col not in shortage_df.columns:
         return pd.DataFrame(columns=fixed_columns)
 
@@ -2335,7 +2336,7 @@ def build_pcode5_leadji_requirement_summary(
     if shortage_df.empty or "품목코드" not in shortage_df.columns:
         return pd.DataFrame(columns=fixed_columns)
 
-    qty_source_col = "생산필요수량" if "생산필요수량" in shortage_df.columns else "부족수량"
+    qty_source_col = LEADJI_REQUIRED_QTY_COL if LEADJI_REQUIRED_QTY_COL in shortage_df.columns else "부족수량"
     if qty_source_col not in shortage_df.columns:
         return pd.DataFrame(columns=fixed_columns)
 
@@ -2453,7 +2454,7 @@ def render_leadji_dashboard(
     if summary_df.empty:
         st.warning("리드지재고현황을 계산할 데이터가 없습니다.")
     else:
-        st.caption("생산필요수량: 수요 데이터의 생산필요수량 컬럼 우선, 없으면 누수규격검사 기준 부족수량 반영")
+        st.caption(f"생산필요수량: 수요 데이터의 {LEADJI_REQUIRED_QTY_COL} 컬럼 우선, 없으면 누수규격검사 기준 부족수량 반영")
         st.caption("리드지필요수량 = 생산필요수량 × 1.3")
         st.caption("리드지부족: 부족 시 이모지(🔴) 표시")
         st.caption("리드지부족수량 = (L관창고(자재)+C관 공정부자재+S관 공정부자재+A관 공정부자재) - 리드지필요수량 (0 미만만 표시)")
