@@ -796,13 +796,262 @@ def load_reference_maps_bundle(
     dict[str, str],
     dict[str, str],
     dict[str, str],
+    dict[str, str],
 ]:
     _ = reference_refresh_key
-    product_name_map, product_group_map = load_product_reference_maps(base_dir)
-    sheet2_group_map = load_sheet2_group_map(base_dir)
-    r_ref_map, q_ref_map, r_name_map = load_rq_code_maps(base_dir)
-    bom_r_base_map, bom_q_base_map, bom_r_exact_map, bom_q_exact_map = load_bom_base_code_maps(base_dir)
-    leadji_r_map, leadji_q_map = load_leadji_process_maps(base_dir)
+    ref_path = find_product_name_reference_file(base_dir)
+    empty_bundle = ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
+    if ref_path is None:
+        return empty_bundle
+
+    try:
+        xls = pd.ExcelFile(ref_path)
+    except Exception:
+        return empty_bundle
+
+    sheet_names = xls.sheet_names
+    if not sheet_names:
+        return empty_bundle
+
+    def parse_sheet(sheet_name: str, usecols=None) -> pd.DataFrame:
+        try:
+            df = xls.parse(sheet_name=sheet_name, usecols=usecols)
+        except Exception:
+            return pd.DataFrame()
+        df.columns = [str(c).strip() for c in df.columns]
+        return df
+
+    def find_sheet(required_columns: set[str], preferred_name: str | None = None) -> str | None:
+        if preferred_name:
+            normalized = preferred_name.replace(" ", "")
+            by_name = next((s for s in sheet_names if str(s).replace(" ", "") == normalized), None)
+            if by_name is not None:
+                return by_name
+
+        for sheet_name in sheet_names:
+            try:
+                preview = xls.parse(sheet_name=sheet_name, nrows=0)
+            except Exception:
+                continue
+            cols = {str(c).strip() for c in preview.columns}
+            if required_columns.issubset(cols):
+                return sheet_name
+        return None
+
+    product_name_map: dict[str, str] = {}
+    product_group_map: dict[str, str] = {}
+    sheet2_group_map: dict[str, str] = {}
+    r_ref_map: dict[str, str] = {}
+    q_ref_map: dict[str, str] = {}
+    r_name_map: dict[str, str] = {}
+    bom_r_base_map: dict[str, str] = {}
+    bom_q_base_map: dict[str, str] = {}
+    bom_r_exact_map: dict[str, str] = {}
+    bom_q_exact_map: dict[str, str] = {}
+    leadji_r_map: dict[str, str] = {}
+    leadji_q_map: dict[str, str] = {}
+
+    # 1) 제품명/분류 맵 + R코드명 fallback 기반 시트
+    sheet0 = parse_sheet(sheet_names[0])
+    if not sheet0.empty and len(sheet0.columns) >= 2:
+        code_col = "제품명코드" if "제품명코드" in sheet0.columns else sheet0.columns[0]
+        name_col = "제품명" if "제품명" in sheet0.columns else sheet0.columns[1]
+        group_col = "분류요약" if "분류요약" in sheet0.columns else None
+        if group_col is None and "판매제품군" in sheet0.columns:
+            group_col = "판매제품군"
+        if group_col is None and "생산제품군" in sheet0.columns:
+            group_col = "생산제품군"
+
+        selected_cols = [code_col, name_col] + ([group_col] if group_col is not None else [])
+        ref_df = sheet0[selected_cols].copy()
+        ref_df[code_col] = ref_df[code_col].astype(str).str.strip()
+        ref_df[name_col] = ref_df[name_col].astype(str).str.strip()
+        if group_col is not None:
+            ref_df[group_col] = ref_df[group_col].astype(str).str.strip()
+
+        ref_df = ref_df[
+            ref_df[code_col].str.startswith("P")
+            & (ref_df[code_col].str.lower() != "nan")
+            & (ref_df[name_col] != "")
+            & (ref_df[name_col].str.lower() != "nan")
+        ]
+        ref_df["코드5"] = ref_df[code_col].str[:5]
+        ref_df = ref_df.drop_duplicates(subset=["코드5"], keep="first")
+        product_name_map = ref_df.set_index("코드5")[name_col].to_dict()
+
+        if group_col is not None:
+            group_df = ref_df[(ref_df[group_col] != "") & (ref_df[group_col].str.lower() != "nan")]
+            product_group_map = group_df.set_index("코드5")[group_col].to_dict()
+
+    # 2) 분류정보 시트 기반 (시트분류 + R/Q 맵 + R코드명 우선)
+    group_sheet = find_sheet({"코드", "시트이름"}, preferred_name="분류정보")
+    rq_sheet = find_sheet({"코드", "Q코드", "R코드"}, preferred_name="분류정보")
+    group_df_source = parse_sheet(group_sheet) if group_sheet else pd.DataFrame()
+    rq_df_source = group_df_source if (rq_sheet and group_sheet and rq_sheet == group_sheet) else (
+        parse_sheet(rq_sheet) if rq_sheet else pd.DataFrame()
+    )
+
+    if not group_df_source.empty and {"코드", "시트이름"}.issubset(group_df_source.columns):
+        s2 = group_df_source[["코드", "시트이름"]].copy()
+        s2["코드"] = s2["코드"].astype(str).str.strip()
+        s2["시트이름"] = s2["시트이름"].astype(str).str.strip()
+        s2 = s2[
+            s2["코드"].str.startswith("P")
+            & (s2["코드"].str.lower() != "nan")
+            & (s2["시트이름"] != "")
+            & (s2["시트이름"].str.lower() != "nan")
+        ]
+        s2["코드5"] = s2["코드"].str[:5]
+        s2 = s2.drop_duplicates(subset=["코드5"], keep="first")
+        sheet2_group_map = s2.set_index("코드5")["시트이름"].to_dict()
+
+    if not rq_df_source.empty and {"코드", "Q코드", "R코드"}.issubset(rq_df_source.columns):
+        rq = rq_df_source.copy()
+        for col in ["코드", "Q코드", "R코드"]:
+            rq[col] = rq[col].astype(str).str.strip()
+        name_col = "제품명" if "제품명" in rq.columns else None
+        if name_col:
+            rq[name_col] = rq[name_col].astype(str).str.strip()
+
+        rq = rq[
+            rq["코드"].str.startswith("P")
+            & (rq["코드"].str.lower() != "nan")
+            & (rq["Q코드"].str.lower() != "nan")
+            & (rq["R코드"].str.lower() != "nan")
+            & (rq["Q코드"] != "")
+            & (rq["R코드"] != "")
+        ]
+        rq["코드5"] = rq["코드"].str[:5]
+        code5_df = rq.drop_duplicates(subset=["코드5"], keep="first")
+        q_ref_map = code5_df.set_index("코드5")["Q코드"].to_dict()
+        r_ref_map = code5_df.set_index("코드5")["R코드"].to_dict()
+
+        if name_col:
+            r_name_df = rq[(rq[name_col] != "") & (rq[name_col].str.lower() != "nan")].copy()
+            r_name_df["R코드5"] = r_name_df["R코드"].str[:5]
+            r_name_df = r_name_df[(r_name_df["R코드5"] != "") & (r_name_df["R코드5"].str.lower() != "nan")]
+            r_name_df = r_name_df.drop_duplicates(subset=["R코드5", name_col], keep="first")
+            r_name_df = r_name_df.drop_duplicates(subset=["R코드5"], keep="first")
+            r_name_map = r_name_df.set_index("R코드5")[name_col].to_dict()
+
+    # 2-b) sheet0 기반 R코드명 fallback
+    if not sheet0.empty and len(sheet0.columns) >= 2:
+        code_col = "제품명코드" if "제품명코드" in sheet0.columns else sheet0.columns[0]
+        name_col = "제품명" if "제품명" in sheet0.columns else sheet0.columns[1]
+        fb = sheet0[[code_col, name_col]].copy()
+        fb[code_col] = fb[code_col].astype(str).str.strip()
+        fb[name_col] = fb[name_col].astype(str).str.strip()
+        fb = fb[
+            (fb[code_col] != "")
+            & (fb[code_col].str.lower() != "nan")
+            & (fb[name_col] != "")
+            & (fb[name_col].str.lower() != "nan")
+        ]
+        fb["코드5"] = fb[code_col].str[:5]
+        fb = fb[fb["코드5"].str.match(r"^[PQRSTU]\d{4}$", na=False)]
+        fb["R코드5"] = "R" + fb["코드5"].str[-4:]
+        fb = fb.drop_duplicates(subset=["R코드5", name_col], keep="first")
+        fb = fb.drop_duplicates(subset=["R코드5"], keep="first")
+        for key, value in fb.set_index("R코드5")[name_col].to_dict().items():
+            if key not in r_name_map:
+                r_name_map[key] = value
+
+    # 3) BOM 기반 매핑
+    bom_sheet = find_sheet({"SALES_ITEM_CD", "FROM_ITEM_ID"}, preferred_name="BOM정보")
+    if bom_sheet is not None:
+        use_cols = {"SALES_ITEM_CD", "TO_ITEM_ID", "FROM_ITEM_ID", "SEQ"}
+        bom = parse_sheet(bom_sheet, usecols=lambda c: str(c).strip() in use_cols)
+        if not bom.empty and {"SALES_ITEM_CD", "FROM_ITEM_ID"}.issubset(bom.columns):
+            bom["SALES_ITEM_CD"] = bom["SALES_ITEM_CD"].astype(str).str.strip()
+            bom["FROM_ITEM_ID"] = bom["FROM_ITEM_ID"].astype(str).str.strip()
+            bom["SEQ"] = pd.to_numeric(bom["SEQ"], errors="coerce").fillna(9999) if "SEQ" in bom.columns else 9999
+            bom = bom[
+                (bom["SALES_ITEM_CD"] != "")
+                & (bom["SALES_ITEM_CD"].str.lower() != "nan")
+                & (bom["FROM_ITEM_ID"] != "")
+                & (bom["FROM_ITEM_ID"].str.lower() != "nan")
+            ].copy()
+
+            if not bom.empty:
+                if "TO_ITEM_ID" in bom.columns:
+                    bom["TO_ITEM_ID"] = bom["TO_ITEM_ID"].astype(str).str.strip()
+                    exact = bom[
+                        (bom["TO_ITEM_ID"] != "")
+                        & (bom["TO_ITEM_ID"].str.lower() != "nan")
+                        & bom["FROM_ITEM_ID"].str.match(r"^[QR].+", na=False)
+                    ].copy()
+                    exact = exact.sort_values(["TO_ITEM_ID", "SEQ"], ascending=[True, True]).drop_duplicates(
+                        subset=["TO_ITEM_ID"], keep="first"
+                    )
+                else:
+                    exact = pd.DataFrame(columns=["TO_ITEM_ID", "FROM_ITEM_ID"])
+
+                if not exact.empty:
+                    for to_code, from_code in exact[["TO_ITEM_ID", "FROM_ITEM_ID"]].itertuples(index=False):
+                        from_code = str(from_code).strip()
+                        if from_code.startswith("Q"):
+                            bom_q_exact_map[to_code] = from_code
+                            if len(from_code) > 1:
+                                bom_r_exact_map[to_code] = "R" + from_code[1:]
+                        elif from_code.startswith("R"):
+                            bom_r_exact_map[to_code] = from_code
+                            if len(from_code) > 1:
+                                bom_q_exact_map[to_code] = "Q" + from_code[1:]
+
+                bom["SALES_CODE5"] = bom["SALES_ITEM_CD"].str[:5]
+                bom["FROM_CODE5"] = bom["FROM_ITEM_ID"].str[:5]
+                bom = bom[bom["SALES_CODE5"].str.match(r"^[PQRSTU]\d{4}$", na=False)]
+                bom = bom[bom["FROM_CODE5"].str.match(r"^[PQRSTU]\d{4}$", na=False)]
+                if not bom.empty:
+                    bom = bom.sort_values(["SALES_CODE5", "SEQ"], ascending=[True, True])
+                    q_df = bom[bom["FROM_CODE5"].str.startswith("Q")].drop_duplicates(
+                        subset=["SALES_CODE5"], keep="first"
+                    )
+                    r_df = bom[bom["FROM_CODE5"].str.startswith("R")].drop_duplicates(
+                        subset=["SALES_CODE5"], keep="first"
+                    )
+                    bom_q_base_map = q_df.set_index("SALES_CODE5")["FROM_CODE5"].to_dict()
+                    bom_r_base_map = r_df.set_index("SALES_CODE5")["FROM_CODE5"].to_dict()
+                    for sales_code5, q_code5 in bom_q_base_map.items():
+                        q_code5 = str(q_code5)
+                        if sales_code5 not in bom_r_base_map and q_code5.startswith("Q") and len(q_code5) >= 5:
+                            bom_r_base_map[sales_code5] = "R" + q_code5[1:5]
+
+    # 4) 리드지 공정 맵
+    if len(sheet_names) >= 3:
+        leadji_sheet = next((s for s in sheet_names if s.replace(" ", "") == "리드지정보"), sheet_names[2])
+        leadji = parse_sheet(leadji_sheet)
+        if not leadji.empty:
+            prod_col = "생산" if "생산" in leadji.columns else (leadji.columns[3] if len(leadji.columns) > 3 else None)
+            q_col = "분리" if "분리" in leadji.columns else (leadji.columns[9] if len(leadji.columns) > 9 else None)
+            r_col = "사출" if "사출" in leadji.columns else (leadji.columns[21] if len(leadji.columns) > 21 else None)
+            if prod_col is not None and q_col is not None and r_col is not None:
+                ldf = leadji[[prod_col, q_col, r_col]].copy()
+                for col in [prod_col, q_col, r_col]:
+                    ldf[col] = ldf[col].astype(str).str.strip()
+                    ldf.loc[ldf[col].str.lower() == "nan", col] = ""
+                ldf = ldf[ldf[prod_col].str.startswith("P")]
+                if not ldf.empty:
+                    ldf["코드5"] = ldf[prod_col].str[:5]
+                    ldf = ldf[(ldf["코드5"] != "") & (ldf["코드5"].str.lower() != "nan")]
+
+                    def normalize_to_code(code: str, prefix: str) -> str:
+                        value = str(code).strip()
+                        if not value or value.lower() == "nan":
+                            return ""
+                        if value.startswith(prefix):
+                            return value
+                        if value.startswith("P"):
+                            return f"{prefix}{value[1:]}"
+                        return value
+
+                    ldf["Q정규"] = ldf[q_col].map(lambda x: normalize_to_code(x, "Q"))
+                    ldf["R정규"] = ldf[r_col].map(lambda x: normalize_to_code(x, "R"))
+                    q_df = ldf[ldf["Q정규"] != ""].drop_duplicates(subset=["코드5"], keep="first")
+                    r_df = ldf[ldf["R정규"] != ""].drop_duplicates(subset=["코드5"], keep="first")
+                    leadji_q_map = q_df.set_index("코드5")["Q정규"].to_dict()
+                    leadji_r_map = r_df.set_index("코드5")["R정규"].to_dict()
+
     return (
         product_name_map,
         product_group_map,
