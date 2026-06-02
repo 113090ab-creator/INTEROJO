@@ -1395,15 +1395,22 @@ def build_thousand_separator_config(df: pd.DataFrame) -> dict[str, st.column_con
 
 def format_numeric_columns_for_display(df: pd.DataFrame) -> pd.DataFrame:
     display_df = df.copy()
-    numeric_cols = display_df.select_dtypes(include="number").columns
 
-    for col in numeric_cols:
-        series = pd.to_numeric(display_df[col], errors="coerce")
+    for col in display_df.columns:
+        force_integer_display = any(token in str(col) for token in ["수량", "부족", "재고", "창고", "발주", "합계"])
+        numeric_dtype = pd.api.types.is_numeric_dtype(display_df[col])
+        numeric_like = numeric_dtype or force_integer_display or infer_numeric_like_series(display_df[col])
+        if not numeric_like:
+            continue
+
+        series = parse_mixed_numeric(display_df[col])
         non_null = series.dropna()
-        is_integer_like = non_null.empty or ((non_null % 1) == 0).all()
+        if non_null.empty and not numeric_dtype:
+            continue
+        is_integer_like = force_integer_display or non_null.empty or ((non_null % 1) == 0).all()
 
         if is_integer_like:
-            display_df[col] = series.map(lambda x: "" if pd.isna(x) else f"{x:,.0f}")
+            display_df[col] = series.round(0).map(lambda x: "" if pd.isna(x) else f"{x:,.0f}")
         else:
             display_df[col] = series.map(lambda x: "" if pd.isna(x) else f"{x:,.2f}")
 
@@ -1503,7 +1510,7 @@ def style_operational_table(display_df: pd.DataFrame, source_df: pd.DataFrame | 
         shortage_style = shortage_numeric.map(
             lambda v: "color: #DC2626; font-weight: 850;" if pd.notna(v) and abs(float(v)) > 0 else "color: #6B7280;"
         )
-        styler = styler.apply(lambda _: shortage_style, axis=0, subset=[col])
+        styler = styler.apply(lambda _, style=shortage_style: style, axis=0, subset=[col])
 
     if "상태" in display_df.columns:
         styler = styler.set_properties(subset=["상태"], **{"text-align": "center"})
