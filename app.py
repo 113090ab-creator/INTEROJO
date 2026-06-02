@@ -3352,7 +3352,6 @@ def render_leadji_dashboard(
         priority_columns = [
             "리드지코드",
             "리드지명",
-            "우선순위",
             "리드지부족수량",
             "발주수량",
             "입고예상일자",
@@ -3402,7 +3401,6 @@ def render_leadji_dashboard(
         basic_columns = [
             "리드지코드",
             "리드지명",
-            "우선순위",
             "상태",
             "리드지필요수량",
             "재고합계",
