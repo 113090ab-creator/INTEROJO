@@ -39,6 +39,111 @@ COLUMN_LABEL_ALIASES = {
 }
 
 
+def inject_dashboard_theme() -> None:
+    st.markdown(
+        """
+        <style>
+        .stApp {
+            background: #f8fafc;
+            color: #111827;
+        }
+        [data-testid="stAppViewContainer"] > .main {
+            background: #f8fafc;
+        }
+        [data-testid="stHeader"] {
+            background: rgba(248, 250, 252, 0.92);
+            backdrop-filter: blur(8px);
+        }
+        .block-container {
+            max-width: 1480px;
+            padding-top: 28px;
+            padding-bottom: 44px;
+        }
+        h1, h2, h3 {
+            color: #111827;
+            letter-spacing: 0;
+        }
+        h1 {
+            font-size: 28px;
+            font-weight: 800;
+            margin-bottom: 8px;
+        }
+        h2, h3 {
+            font-weight: 800;
+        }
+        [data-testid="stCaptionContainer"] {
+            color: #6b7280;
+        }
+        [data-testid="stAlert"] {
+            border-radius: 8px;
+            border: 1px solid #dbeafe;
+            box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+        }
+        [data-testid="stDataFrame"] {
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+            background: #ffffff;
+        }
+        [data-testid="stExpander"] {
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            background: #ffffff;
+            box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+        }
+        [data-testid="stTextInput"] input {
+            border-radius: 8px;
+            border-color: #d1d5db;
+            background: #ffffff;
+        }
+        .stButton > button,
+        [data-testid="stDownloadButton"] button {
+            border-radius: 8px;
+            border-color: #d1d5db;
+            background: #ffffff;
+            color: #111827;
+            font-weight: 700;
+            box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+        }
+        .stButton > button:hover,
+        [data-testid="stDownloadButton"] button:hover {
+            border-color: #2563eb;
+            color: #1d4ed8;
+        }
+        .dashboard-section-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 22px 0 10px;
+        }
+        .dashboard-section-header h3 {
+            margin: 0;
+            font-size: 20px;
+            line-height: 1.2;
+        }
+        .dashboard-count-badge {
+            display: inline-flex;
+            align-items: center;
+            border-radius: 999px;
+            background: #dbeafe;
+            color: #1d4ed8;
+            padding: 4px 9px;
+            font-size: 12px;
+            font-weight: 800;
+        }
+        .dashboard-section-subtle {
+            color: #6b7280;
+            font-size: 13px;
+            margin-top: -4px;
+            margin-bottom: 10px;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def find_excel_files(base_dir: Path) -> tuple[Path, Path]:
     xlsx_files = [p for p in base_dir.glob("*.xlsx") if not p.name.startswith("~$")]
     if len(xlsx_files) < 2:
@@ -3059,68 +3164,230 @@ def render_leadji_dashboard(
         st.warning("리드지재고현황을 계산할 데이터가 없습니다.")
     else:
         summary_df = merge_leadji_with_order_status(summary_df, leadji_order_df)
-        st.warning("입고 예상일자는 구매의뢰 기준 일자이므로 구매팀에 문의 필요", icon="⚠️")
+        st.warning("입고예정일자는 구매의뢰 기준입니다. 실제 입고 일정은 구매팀 확인이 필요합니다.")
 
-        qcol, _ = st.columns([3.0, 1.0])
-        with qcol:
-            summary_query = st.text_input(
-                "통합 검색 (리드지코드/리드지명/창고/상태)",
-                value="",
-                key="leadji_summary_query",
-                placeholder="예: BS0314, 블리스터케이스, 입고 예정, 구매의뢰",
-            ).strip()
+        stock_target_names = ["L관창고(자재)", "C관 공정부자재", "S관 공정부자재", "A관 공정부자재"]
+        stock_detail_columns: list[str] = []
+        summary_df["재고합계"] = 0.0
+        for warehouse_name in stock_target_names:
+            matched_col = find_warehouse_column(summary_df.columns.tolist(), [warehouse_name])
+            display_col = warehouse_name
+            if matched_col is not None:
+                summary_df[display_col] = parse_mixed_numeric(summary_df[matched_col])
+            elif display_col not in summary_df.columns:
+                summary_df[display_col] = 0.0
+            summary_df["재고합계"] = summary_df["재고합계"] + parse_mixed_numeric(summary_df[display_col])
+            stock_detail_columns.append(display_col)
 
-        hidden_cols = ["입고예상일자_dt"]
-        summary_visible = summary_df.drop(columns=hidden_cols, errors="ignore")
-        summary_search_cols = [c for c in summary_visible.columns if c not in ["생산필요수량"]]
-        filtered_summary = filter_with_terms_any(summary_visible, summary_search_cols, summary_query)
-        filtered_meta = summary_df.loc[filtered_summary.index]
-
-        c1, c2, c3 = st.columns(3)
-        c1.metric("리드지코드 수", f"{filtered_summary['리드지코드'].astype(str).nunique():,}")
-        c2.metric("생산필요수량 합계", f"{filtered_summary['생산필요수량'].sum():,.0f}")
-        min_due_dt = pd.to_datetime(filtered_summary["최소납기일"], errors="coerce").min()
-        c3.metric("생산 최소 납기일", "-" if pd.isna(min_due_dt) else min_due_dt.strftime("%Y-%m-%d"))
-
-        c4, c5, c6 = st.columns(3)
-        inbound_planned_count = filtered_summary[filtered_summary["상태"] == "입고 예정"]["리드지코드"].astype(str).nunique()
-        c4.metric("입고예정 리드코드 수", f"{inbound_planned_count:,}")
-        c5.metric("총 발주수량", f"{parse_mixed_numeric(filtered_summary['발주수량']).sum():,.0f}")
-        earliest_inbound_dt = pd.to_datetime(filtered_meta["입고예상일자_dt"], errors="coerce").min()
-        c6.metric("가장 빠른 입고예상일자", "미확인" if pd.isna(earliest_inbound_dt) else earliest_inbound_dt.strftime("%Y-%m-%d"))
-
-        source_total = compute_leadji_source_total(shortage_df)
-        summary_total = float(parse_mixed_numeric(summary_df["생산필요수량"]).sum())
-        verify_diff = summary_total - source_total
-        st.caption(
-            f"검증: 품목코드별 ({LEADJI_REQUIRED_QTY_COL} - {LEADJI_COMPLETED_STOCK_COL}) 합계 {source_total:,.0f} / "
-            f"리드지 합계 {summary_total:,.0f} / 차이 {verify_diff:,.0f}"
+        summary_df["생산 최소 납기일"] = summary_df["최소납기일"] if "최소납기일" in summary_df.columns else "-"
+        shortage_numeric = parse_mixed_numeric(summary_df["리드지부족수량"])
+        shortage_abs = (-shortage_numeric).clip(lower=0)
+        inbound_date = pd.to_datetime(summary_df["입고예상일자_dt"], errors="coerce")
+        summary_df["부족수량_abs"] = shortage_abs
+        summary_df["우선순위"] = "정상"
+        summary_df.loc[(shortage_numeric < 0) & inbound_date.isna(), "우선순위"] = "긴급"
+        summary_df.loc[(shortage_numeric < 0) & inbound_date.notna(), "우선순위"] = "확인필요"
+        priority_order = {"긴급": 0, "확인필요": 1, "정상": 2}
+        summary_df["우선순위정렬"] = summary_df["우선순위"].map(priority_order).fillna(9)
+        summary_df = summary_df.sort_values(
+            ["우선순위정렬", "부족수량_abs", "리드지코드"],
+            ascending=[True, False, True],
         )
 
+        total_codes = summary_df["리드지코드"].astype(str).str.strip().replace("", pd.NA).dropna().nunique()
+        shortage_count = int((shortage_numeric < 0).sum())
+        inbound_planned_count = int(summary_df["상태"].astype(str).str.contains("입고 예정", regex=False).sum())
+        total_shortage_qty = float(shortage_abs.sum())
+        st.markdown(
+            f"""
+            <style>
+            .leadji-kpi-grid {{
+                display: grid;
+                grid-template-columns: repeat(4, minmax(0, 1fr));
+                gap: 12px;
+                margin: 14px 0 18px;
+            }}
+            .leadji-kpi-card {{
+                border: 1px solid #e5e7eb;
+                border-radius: 8px;
+                background: #ffffff;
+                padding: 14px 16px;
+                min-height: 96px;
+            }}
+            .leadji-kpi-card strong {{
+                display: block;
+                color: #4b5563;
+                font-size: 13px;
+                font-weight: 700;
+                margin-bottom: 8px;
+            }}
+            .leadji-kpi-card span {{
+                display: block;
+                color: #111827;
+                font-size: 28px;
+                font-weight: 800;
+                line-height: 1.15;
+            }}
+            .leadji-kpi-card.risk {{
+                background: #fff1f2;
+                border-color: #fecdd3;
+            }}
+            .leadji-kpi-card.risk strong,
+            .leadji-kpi-card.risk span {{
+                color: #be123c;
+            }}
+            .leadji-kpi-card.inbound {{
+                background: #eff6ff;
+                border-color: #bfdbfe;
+            }}
+            .leadji-kpi-card.inbound span {{
+                color: #1d4ed8;
+            }}
+            @media (max-width: 900px) {{
+                .leadji-kpi-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+            }}
+            </style>
+            <div class="leadji-kpi-grid">
+                <div class="leadji-kpi-card"><strong>전체 리드지코드</strong><span>{total_codes:,.0f}</span></div>
+                <div class="leadji-kpi-card risk"><strong>부족 리드지</strong><span>{shortage_count:,.0f}</span></div>
+                <div class="leadji-kpi-card inbound"><strong>입고예정</strong><span>{inbound_planned_count:,.0f}</span></div>
+                <div class="leadji-kpi-card risk"><strong>총 리드지 부족수량</strong><span>{total_shortage_qty:,.0f}</span></div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        qcol, _ = st.columns([1.35, 2.65])
+        with qcol:
+            summary_query = st.text_input(
+                "검색",
+                value="",
+                key="leadji_summary_query",
+                placeholder="리드지코드, 리드지명, 창고, 상태로 검색하세요",
+            ).strip()
+
+        hidden_cols = ["입고예상일자_dt", "우선순위정렬", "부족수량_abs", "최소납기일"]
+        summary_visible = summary_df.drop(columns=hidden_cols, errors="ignore")
+        summary_search_cols = [c for c in summary_visible.columns if c not in ["생산필요수량"]]
+        filtered_visible = filter_with_terms_any(summary_visible, summary_search_cols, summary_query)
+        filtered_summary = summary_df.loc[filtered_visible.index].copy()
+
+        priority_columns = [
+            "리드지코드",
+            "리드지명",
+            "우선순위",
+            "리드지부족수량",
+            "발주수량",
+            "입고예상일자",
+            "생산 최소 납기일",
+        ]
+        priority_rows = (
+            filtered_summary[filtered_summary["우선순위"].isin(["긴급", "확인필요"])]
+            .sort_values("부족수량_abs", ascending=False)
+            .head(10)
+        )
+        st.markdown(
+            f"""
+            <div class="dashboard-section-header">
+                <h3>우선 확인 필요 리스트</h3>
+                <span class="dashboard-count-badge">최대 {min(len(priority_rows), 10):,}건</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if priority_rows.empty:
+            st.info("우선 확인이 필요한 리드지가 없습니다.")
+        else:
+            priority_table = priority_rows[[c for c in priority_columns if c in priority_rows.columns]]
+            priority_display = format_numeric_columns_for_display(priority_table)
+            priority_column_config = build_auto_column_config(
+                priority_display, priority_display.columns.tolist(), source_df=priority_table
+            )
+            priority_styled = style_leadji_shortage_table(priority_display, priority_table)
+            st.dataframe(
+                priority_styled,
+                use_container_width=True,
+                height=min(430, 78 + len(priority_table) * 38),
+                column_config=priority_column_config,
+                hide_index=True,
+            )
+
+        st.markdown(
+            f"""
+            <div class="dashboard-section-header">
+                <h3>리드지 목록</h3>
+                <span class="dashboard-count-badge">전체 {len(filtered_summary):,}건</span>
+            </div>
+            <div class="dashboard-section-subtle">핵심 운영 컬럼만 기본 표시합니다. 창고별 수량은 아래 재고 상세 컬럼에서 확인하세요.</div>
+            """,
+            unsafe_allow_html=True,
+        )
+        basic_columns = [
+            "리드지코드",
+            "리드지명",
+            "우선순위",
+            "상태",
+            "리드지필요수량",
+            "재고합계",
+            "리드지부족수량",
+            "발주수량",
+            "입고예상일자",
+            "생산 최소 납기일",
+        ]
+        table_df = filtered_summary[[c for c in basic_columns if c in filtered_summary.columns]]
+
+        download_df = filtered_summary.drop(columns=hidden_cols, errors="ignore")
         st.download_button(
             "엑셀 다운로드",
-            data=dataframe_to_excel_bytes(filtered_summary, sheet_name="리드지현황"),
+            data=dataframe_to_excel_bytes(download_df, sheet_name="리드지현황"),
             file_name=f"leadji_status_{download_stamp}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key="download_leadji_summary",
             use_container_width=False,
         )
 
-        leadji_display = format_numeric_columns_for_display(filtered_summary)
+        leadji_display = format_numeric_columns_for_display(table_df)
         leadji_column_config = build_auto_column_config(
-            leadji_display, leadji_display.columns.tolist(), source_df=filtered_summary
+            leadji_display, leadji_display.columns.tolist(), source_df=table_df
         )
-        # Streamlit 1.53.1 does not support `alignment` in column_config.
-        # Remove this column from column_config so Styler's text-align can take effect.
         leadji_column_config.pop("리드지부족", None)
-        leadji_styled = style_leadji_shortage_table(leadji_display, filtered_summary)
+        leadji_styled = style_leadji_shortage_table(leadji_display, table_df)
         st.dataframe(
             leadji_styled,
             use_container_width=True,
-            height=700,
+            height=620,
             column_config=leadji_column_config,
             hide_index=True,
         )
+
+        with st.expander("재고 상세 컬럼"):
+            stock_table_columns = [
+                "리드지코드",
+                "리드지명",
+                "재고합계",
+                *stock_detail_columns,
+            ]
+            stock_table = filtered_summary[[c for c in stock_table_columns if c in filtered_summary.columns]]
+            stock_display = format_numeric_columns_for_display(stock_table)
+            stock_column_config = build_auto_column_config(
+                stock_display, stock_display.columns.tolist(), source_df=stock_table
+            )
+            st.dataframe(
+                stock_display,
+                use_container_width=True,
+                height=420,
+                column_config=stock_column_config,
+                hide_index=True,
+            )
+
+        source_total = compute_leadji_source_total(shortage_df)
+        summary_total = float(parse_mixed_numeric(summary_df["생산필요수량"]).sum())
+        verify_diff = summary_total - source_total
+        with st.expander("데이터 검증 정보"):
+            st.caption(
+                f"검증: 품목코드별 ({LEADJI_REQUIRED_QTY_COL} - {LEADJI_COMPLETED_STOCK_COL}) 합계 {source_total:,.0f} / "
+                f"리드지 합계 {summary_total:,.0f} / 차이 {verify_diff:,.0f}"
+            )
 
 
 def render_leadji_pcode5_dashboard(
@@ -3186,6 +3453,7 @@ def render_leadji_pcode5_dashboard(
 
 
 def main() -> None:
+    inject_dashboard_theme()
     st.title("생산 진행 현황")
     data_base_dir = BASE_DIR
     updated_at = get_data_updated_at(data_base_dir)
