@@ -1247,6 +1247,18 @@ def style_leadji_shortage_table(display_df: pd.DataFrame, source_df: pd.DataFram
         return display_df.style
 
     styler = display_df.style
+    if "우선순위" in display_df.columns:
+        styler = styler.set_properties(subset=["우선순위"], **{"text-align": "center"})
+        styler = styler.map(
+            lambda v: (
+                "background-color: #fee2e2; color: #991b1b; font-weight: 700;"
+                if str(v).strip() == "긴급"
+                else "background-color: #fef3c7; color: #92400e; font-weight: 700;"
+                if str(v).strip() == "확인필요"
+                else "background-color: #f3f4f6; color: #4b5563; font-weight: 600;"
+            ),
+            subset=["우선순위"],
+        )
     if "리드지부족" in display_df.columns:
         styler = styler.set_properties(subset=["리드지부족"], **{"text-align": "center"})
         styler = styler.map(
@@ -1256,20 +1268,22 @@ def style_leadji_shortage_table(display_df: pd.DataFrame, source_df: pd.DataFram
     if "리드지부족수량" in display_df.columns and "리드지부족수량" in source_df.columns:
         shortage_numeric = parse_mixed_numeric(source_df["리드지부족수량"])
         shortage_style = shortage_numeric.map(
-            lambda v: "color: #d00000; font-weight: 700;" if pd.notna(v) and v < 0 else ""
+            lambda v: "color: #b91c1c; font-weight: 800;" if pd.notna(v) and v < 0 else "color: #9ca3af;"
         )
         styler = styler.apply(lambda _: shortage_style, axis=0, subset=["리드지부족수량"])
     if "상태" in display_df.columns:
         styler = styler.set_properties(subset=["상태"], **{"text-align": "center"})
         styler = styler.map(
             lambda v: (
-                "color: #d00000; font-weight: 700;"
+                "background-color: #fee2e2; color: #991b1b; font-weight: 700;"
                 if str(v).strip() == "입고일 미확인"
-                else "color: #d97706; font-weight: 700;"
+                else "background-color: #fef3c7; color: #92400e; font-weight: 700;"
                 if str(v).strip() == "발주부족"
-                else "color: #15803d; font-weight: 700;"
-                if str(v).strip() == "입고 예정"
-                else ""
+                else "background-color: #dbeafe; color: #1d4ed8; font-weight: 700;"
+                if str(v).strip() in {"입고 예정", "입고 예정+의뢰"}
+                else "background-color: #ede9fe; color: #6d28d9; font-weight: 700;"
+                if str(v).strip() == "구매의뢰"
+                else "background-color: #f3f4f6; color: #4b5563; font-weight: 600;"
             ),
             subset=["상태"],
         )
