@@ -45,35 +45,16 @@ def inject_dashboard_theme() -> None:
         <style>
         @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
-        :root {
-            --app-bg: #0F1117;
-            --panel: #1E2130;
-            --panel-soft: #171A24;
-            --panel-border: #2B3042;
-            --text: #F8FAFC;
-            --muted: #9CA3AF;
-            --subtle: #6B7280;
-            --accent: #0EA5E9;
-            --accent-soft: rgba(14, 165, 233, 0.14);
-            --danger: #EF4444;
-            --danger-soft: rgba(239, 68, 68, 0.15);
-            --warning: #F59E0B;
-            --warning-soft: rgba(245, 158, 11, 0.16);
-            --success: #22C55E;
-            --success-soft: rgba(34, 197, 94, 0.14);
-        }
         .stApp {
-            background: var(--app-bg);
-            color: var(--text);
+            background: #FFFFFF;
+            color: #111827;
             font-family: Pretendard, Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         }
         [data-testid="stAppViewContainer"] > .main {
-            background:
-                radial-gradient(circle at top right, rgba(14, 165, 233, 0.12), transparent 34rem),
-                linear-gradient(180deg, #111827 0%, var(--app-bg) 34rem);
+            background: linear-gradient(180deg, #FFFFFF 0%, #F8FAFC 100%);
         }
         [data-testid="stHeader"] {
-            background: rgba(15, 17, 23, 0.86);
+            background: rgba(255, 255, 255, 0.94);
             backdrop-filter: blur(8px);
         }
         .block-container {
@@ -82,23 +63,23 @@ def inject_dashboard_theme() -> None:
             padding-bottom: 44px;
         }
         [data-testid="stSidebar"] {
-            background: #111827;
-            border-right: 1px solid var(--panel-border);
+            background: #F0F9FF;
+            border-right: 1px solid #D7E9F7;
         }
         [data-testid="stSidebar"] * {
             font-family: Pretendard, Inter, sans-serif;
         }
-        [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p,
         [data-testid="stSidebar"] label,
-        [data-testid="stSidebar"] span {
-            color: var(--muted);
+        [data-testid="stSidebar"] span,
+        [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {
+            color: #334155;
         }
         h1, h2, h3 {
-            color: var(--text);
+            color: #111827;
             letter-spacing: 0;
         }
         h1 {
-            font-size: 30px;
+            font-size: 28px;
             font-weight: 800;
             margin-bottom: 8px;
         }
@@ -106,105 +87,98 @@ def inject_dashboard_theme() -> None:
             font-weight: 800;
         }
         .dashboard-hero {
-            border: 1px solid var(--panel-border);
-            border-radius: 12px;
-            background: linear-gradient(135deg, rgba(30, 33, 48, 0.96), rgba(17, 24, 39, 0.9));
-            box-shadow: 0 18px 60px rgba(0, 0, 0, 0.22);
+            border: 1px solid #D7E9F7;
+            border-radius: 14px;
+            background: linear-gradient(135deg, #FFFFFF 0%, #ECFEFF 55%, #F0F9FF 100%);
+            box-shadow: 0 14px 40px rgba(15, 23, 42, 0.08);
             padding: 22px 24px;
             margin-bottom: 18px;
         }
         .dashboard-hero-title {
-            color: var(--text);
-            font-size: 28px;
+            color: #0F172A;
+            font-size: 30px;
             font-weight: 850;
             line-height: 1.25;
             margin: 0 0 6px;
         }
         .dashboard-hero-subtitle {
-            color: var(--muted);
+            color: #64748B;
             font-size: 14px;
             margin: 0;
         }
         .sidebar-section-title {
-            color: var(--text);
+            color: #0F172A;
             font-size: 16px;
-            font-weight: 800;
-            padding: 4px 0 8px;
-            border-bottom: 1px solid var(--panel-border);
-            margin-bottom: 10px;
+            font-weight: 850;
+            padding: 4px 0 9px;
+            border-bottom: 1px solid #BAE6FD;
+            margin-bottom: 12px;
         }
         [data-testid="stCaptionContainer"] {
-            color: var(--muted);
+            color: #6b7280;
         }
         [data-testid="stAlert"] {
             border-radius: 8px;
-            border: 1px solid rgba(245, 158, 11, 0.35);
-            background: var(--warning-soft);
-            color: #FDE68A;
-            box-shadow: 0 12px 35px rgba(0, 0, 0, 0.18);
+            border: 1px solid #BAE6FD;
+            background: #F0F9FF;
+            box-shadow: 0 4px 14px rgba(14, 165, 233, 0.08);
         }
         [data-testid="stDataFrame"] {
-            border: 1px solid var(--panel-border);
-            border-radius: 10px;
+            border: 1px solid #E5E7EB;
+            border-radius: 12px;
             overflow: hidden;
-            box-shadow: 0 16px 45px rgba(0, 0, 0, 0.20);
-            background: var(--panel);
+            box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+            background: #ffffff;
         }
         [data-testid="stExpander"] {
-            border: 1px solid var(--panel-border);
-            border-radius: 10px;
-            background: var(--panel);
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.16);
+            border: 1px solid #E5E7EB;
+            border-radius: 12px;
+            background: #ffffff;
+            box-shadow: 0 8px 22px rgba(15, 23, 42, 0.05);
         }
-        [data-testid="stTextInput"] input,
-        [data-testid="stSelectbox"] div,
-        [data-testid="stMultiSelect"] div {
+        [data-testid="stTextInput"] input {
             border-radius: 8px;
-            border-color: var(--panel-border);
-            background: #131722;
-            color: var(--text);
+            border-color: #D1D5DB;
+            background: #ffffff;
+            color: #111827;
         }
-        [data-testid="stTextInput"] input::placeholder {
-            color: var(--subtle);
-        }
-        [data-testid="stCheckbox"] label,
-        [data-testid="stRadio"] label {
-            color: var(--muted);
-            font-weight: 600;
+        [data-testid="stTextInput"] input:focus {
+            border-color: #0EA5E9;
+            box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.12);
         }
         div[data-testid="stMetric"] {
-            background: linear-gradient(180deg, rgba(30, 33, 48, 0.98), rgba(23, 26, 36, 0.98));
-            border: 1px solid var(--panel-border);
-            border-radius: 12px;
-            padding: 14px 16px;
-            box-shadow: 0 14px 35px rgba(0, 0, 0, 0.18);
+            background: #FFFFFF;
+            border: 1px solid #E5E7EB;
+            border-radius: 14px;
+            padding: 15px 16px;
+            box-shadow: 0 10px 28px rgba(15, 23, 42, 0.07);
         }
         div[data-testid="stMetric"] label {
-            color: var(--muted) !important;
+            color: #64748B !important;
             font-weight: 700;
         }
         div[data-testid="stMetric"] [data-testid="stMetricValue"] {
-            color: var(--text);
+            color: #0F172A;
             font-weight: 850;
         }
         .stButton > button,
         [data-testid="stDownloadButton"] button {
             border-radius: 8px;
-            border: 1px solid rgba(14, 165, 233, 0.28);
-            background: var(--accent-soft);
-            color: #BAE6FD;
+            border: 1px solid #BAE6FD;
+            background: #ffffff;
+            color: #111827;
             font-weight: 700;
-            box-shadow: 0 10px 24px rgba(14, 165, 233, 0.08);
+            box-shadow: 0 5px 14px rgba(14, 165, 233, 0.08);
         }
         .stButton > button:hover,
         [data-testid="stDownloadButton"] button:hover {
-            border-color: var(--accent);
-            color: #E0F2FE;
-            background: rgba(14, 165, 233, 0.20);
+            border-color: #0EA5E9;
+            color: #0284C7;
+            background: #F0F9FF;
         }
         [data-testid="stSegmentedControl"] {
-            background: var(--panel-soft);
-            border: 1px solid var(--panel-border);
+            background: #F8FAFC;
+            border: 1px solid #E5E7EB;
             border-radius: 10px;
             padding: 4px;
         }
@@ -212,26 +186,25 @@ def inject_dashboard_theme() -> None:
             display: flex;
             align-items: center;
             gap: 10px;
-            margin: 26px 0 10px;
+            margin: 22px 0 10px;
         }
         .dashboard-section-header h3 {
             margin: 0;
             font-size: 20px;
             line-height: 1.2;
-            color: var(--text);
         }
         .dashboard-count-badge {
             display: inline-flex;
             align-items: center;
             border-radius: 999px;
-            background: var(--accent-soft);
-            color: #7DD3FC;
+            background: #E0F2FE;
+            color: #0284C7;
             padding: 4px 9px;
             font-size: 12px;
             font-weight: 800;
         }
         .dashboard-section-subtle {
-            color: var(--muted);
+            color: #6b7280;
             font-size: 13px;
             margin-top: -4px;
             margin-bottom: 10px;
@@ -1454,11 +1427,11 @@ def style_leadji_shortage_table(display_df: pd.DataFrame, source_df: pd.DataFram
         styler = styler.set_properties(subset=["우선순위"], **{"text-align": "center"})
         styler = styler.map(
             lambda v: (
-                "background-color: rgba(239, 68, 68, 0.18); color: #FCA5A5; font-weight: 800;"
+                "background-color: #FEE2E2; color: #B91C1C; font-weight: 800;"
                 if str(v).strip() == "긴급"
-                else "background-color: rgba(245, 158, 11, 0.18); color: #FCD34D; font-weight: 800;"
+                else "background-color: #FEF3C7; color: #92400E; font-weight: 800;"
                 if str(v).strip() == "확인필요"
-                else "background-color: rgba(148, 163, 184, 0.12); color: #CBD5E1; font-weight: 700;"
+                else "background-color: #F1F5F9; color: #475569; font-weight: 700;"
             ),
             subset=["우선순위"],
         )
@@ -1471,22 +1444,22 @@ def style_leadji_shortage_table(display_df: pd.DataFrame, source_df: pd.DataFram
     if "리드지부족수량" in display_df.columns and "리드지부족수량" in source_df.columns:
         shortage_numeric = parse_mixed_numeric(source_df["리드지부족수량"])
         shortage_style = shortage_numeric.map(
-            lambda v: "color: #F87171; font-weight: 850;" if pd.notna(v) and v < 0 else "color: #94A3B8;"
+            lambda v: "color: #EF4444; font-weight: 850;" if pd.notna(v) and v < 0 else "color: #94A3B8;"
         )
         styler = styler.apply(lambda _: shortage_style, axis=0, subset=["리드지부족수량"])
     if "상태" in display_df.columns:
         styler = styler.set_properties(subset=["상태"], **{"text-align": "center"})
         styler = styler.map(
             lambda v: (
-                "background-color: rgba(239, 68, 68, 0.18); color: #FCA5A5; font-weight: 800;"
+                "background-color: #FEE2E2; color: #B91C1C; font-weight: 800;"
                 if str(v).strip() == "입고일 미확인"
-                else "background-color: rgba(245, 158, 11, 0.18); color: #FCD34D; font-weight: 800;"
+                else "background-color: #FEF3C7; color: #92400E; font-weight: 800;"
                 if str(v).strip() == "발주부족"
-                else "background-color: rgba(14, 165, 233, 0.18); color: #7DD3FC; font-weight: 800;"
+                else "background-color: #E0F2FE; color: #0369A1; font-weight: 800;"
                 if str(v).strip() in {"입고 예정", "입고 예정+의뢰"}
-                else "background-color: rgba(99, 102, 241, 0.18); color: #C4B5FD; font-weight: 800;"
+                else "background-color: #D1FAE5; color: #047857; font-weight: 800;"
                 if str(v).strip() == "구매의뢰"
-                else "background-color: rgba(148, 163, 184, 0.12); color: #CBD5E1; font-weight: 700;"
+                else "background-color: #F1F5F9; color: #475569; font-weight: 700;"
             ),
             subset=["상태"],
         )
@@ -3307,41 +3280,41 @@ def render_leadji_dashboard(
                 margin: 16px 0 20px;
             }}
             .leadji-kpi-card {{
-                border: 1px solid var(--panel-border);
+                border: 1px solid #E5E7EB;
                 border-radius: 12px;
-                background: linear-gradient(180deg, rgba(30, 33, 48, 0.98), rgba(23, 26, 36, 0.98));
+                background: #FFFFFF;
                 padding: 16px 18px;
                 min-height: 104px;
-                box-shadow: 0 16px 42px rgba(0, 0, 0, 0.20);
+                box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
             }}
             .leadji-kpi-card strong {{
                 display: block;
-                color: var(--muted);
+                color: #64748B;
                 font-size: 13px;
                 font-weight: 700;
                 margin-bottom: 8px;
             }}
             .leadji-kpi-card span {{
                 display: block;
-                color: var(--text);
+                color: #0F172A;
                 font-size: 30px;
                 font-weight: 850;
                 line-height: 1.15;
             }}
             .leadji-kpi-card.risk {{
-                background: linear-gradient(180deg, rgba(127, 29, 29, 0.38), rgba(30, 33, 48, 0.96));
-                border-color: rgba(239, 68, 68, 0.34);
+                background: #FFF7F7;
+                border-color: #FECACA;
             }}
             .leadji-kpi-card.risk strong,
             .leadji-kpi-card.risk span {{
-                color: #FCA5A5;
+                color: #EF4444;
             }}
             .leadji-kpi-card.inbound {{
-                background: linear-gradient(180deg, rgba(14, 165, 233, 0.20), rgba(30, 33, 48, 0.96));
-                border-color: rgba(14, 165, 233, 0.36);
+                background: #F0F9FF;
+                border-color: #BAE6FD;
             }}
             .leadji-kpi-card.inbound span {{
-                color: #7DD3FC;
+                color: #0284C7;
             }}
             @media (max-width: 900px) {{
                 .leadji-kpi-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
