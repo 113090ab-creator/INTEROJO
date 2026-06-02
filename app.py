@@ -1477,24 +1477,6 @@ def render_dashboard_kpi(label: str, value: str, variant: str = "stock") -> None
     )
 
 
-def add_production_status_column(df: pd.DataFrame) -> pd.DataFrame:
-    display_source = df.copy()
-    if display_source.empty or "상태" in display_source.columns:
-        return display_source
-
-    status = pd.Series("정상", index=display_source.index)
-    if "사출 부족수량" in display_source.columns:
-        status = status.mask(parse_mixed_numeric(display_source["사출 부족수량"]) > 0, "확인필요")
-    if "사출부족수량" in display_source.columns:
-        status = status.mask(parse_mixed_numeric(display_source["사출부족수량"]) > 0, "확인필요")
-    for col in ["부족수량", "부족수량 합계"]:
-        if col in display_source.columns:
-            status = status.mask(parse_mixed_numeric(display_source[col]) > 0, "부족")
-
-    display_source["상태"] = status
-    return display_source
-
-
 def style_operational_table(display_df: pd.DataFrame, source_df: pd.DataFrame | None = None):
     if display_df.empty:
         return display_df.style
@@ -2785,7 +2767,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
             ["표시부족수량", "부족수량", "사출 부족수량", "이니셜", "거래처"],
             ascending=[False, False, False, True, True],
         )[p_detail_columns]
-        p_table_ui = add_production_status_column(p_table)
+        p_table_ui = p_table.drop(columns=["상태"], errors="ignore")
         p_display_columns = p_table_ui.columns.tolist()
         p_table_display = format_numeric_columns_for_display(p_table_ui)
         p_detail_column_config = build_auto_column_config(p_table_display, p_display_columns, source_df=p_table_ui)
@@ -2825,7 +2807,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         )
         r3.metric("R기준 사출 재고", f"{r_summary['사출창고 합계'].sum():,.0f}" if not r_summary.empty else "0")
         r4.metric("R기준 분리 재고", f"{r_summary['분리창고 합계'].sum():,.0f}" if not r_summary.empty else "0")
-        r_summary_ui = add_production_status_column(r_summary)
+        r_summary_ui = r_summary.drop(columns=["상태"], errors="ignore")
         r_summary_display = format_numeric_columns_for_display(r_summary_ui)
         r_summary_column_config = build_auto_column_config(
             r_summary_display, r_summary_display.columns.tolist(), source_df=r_summary_ui
@@ -2858,7 +2840,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         q_sort_cols = ["Q코드5", "Q코드", "부족수량"] if {"Q코드5", "Q코드", "부족수량"}.issubset(filtered.columns) else ["Q코드", "부족수량"]
         q_sort_asc = [True, True, False] if len(q_sort_cols) == 3 else [True, False]
         q_table = filtered.sort_values(q_sort_cols, ascending=q_sort_asc)[detail_columns]
-        q_table_ui = add_production_status_column(q_table)
+        q_table_ui = q_table.drop(columns=["상태"], errors="ignore")
         q_display_columns = q_table_ui.columns.tolist()
         q_table_display = format_numeric_columns_for_display(q_table_ui)
         q_detail_column_config = build_auto_column_config(q_table_display, q_display_columns, source_df=q_table_ui)
@@ -2992,7 +2974,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
                 rq_detail_columns.insert(insert_idx, "사출부족수량")
 
             rq_table = rq_view.sort_values(rq_sort_cols, ascending=rq_sort_asc)[rq_detail_columns]
-            rq_table_ui = add_production_status_column(rq_table)
+            rq_table_ui = rq_table.drop(columns=["상태"], errors="ignore")
             rq_display_columns = rq_table_ui.columns.tolist()
             rq_table_display = format_numeric_columns_for_display(rq_table_ui)
             rq_detail_column_config = build_auto_column_config(
