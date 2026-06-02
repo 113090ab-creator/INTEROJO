@@ -2653,6 +2653,9 @@ def build_leadji_requirement_summary(
     mapping = mapping[["P코드5", "리드지코드", "리드지명"]].drop_duplicates(subset=["P코드5", "리드지코드"], keep="first")
 
     bs_base = p_shortage.merge(mapping, on="P코드5", how="left")
+    unmatched_map = bs_base["리드지코드"].isna() | (bs_base["리드지코드"].astype(str).str.strip() == "")
+    bs_base.loc[unmatched_map, "리드지코드"] = "매칭필요:" + bs_base.loc[unmatched_map, "P코드5"].astype(str)
+    bs_base.loc[unmatched_map, "리드지명"] = "리드지정보 B1코드 없음"
     bs_base["리드지코드"] = bs_base["리드지코드"].fillna("-")
     bs_base["리드지명"] = bs_base["리드지명"].fillna("-")
 
