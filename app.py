@@ -2104,35 +2104,80 @@ def load_leadji_order_data(refresh_key: str, base_dir_str: str | None = None) ->
     data_base_dir = Path(base_dir_str) if base_dir_str else BASE_DIR
     order_path = find_leadji_order_status_file(data_base_dir)
 
-    empty = pd.DataFrame(columns=["리드지코드", "발주수량", "입고예상일자", "입고예상일자_dt"])
+    empty = pd.DataFrame(
+        columns=["리드지코드", "발주수량", "입고예상일자", "입고예상일자_dt", "구매발주수량", "구매의뢰수량"]
+    )
     if order_path is None:
         return empty
 
     try:
-        # 리드지 발주현황 기준: J열(품목코드), O열(미입고수량), X열(납기일자).
-        # 화면의 "발주수량"은 현재 남아 있는 입고 예정 수량이므로 미입고수량을 사용한다.
-        raw = pd.read_excel(order_path, sheet_name=0, header=0, usecols=[9, 14, 23])
+        sheet_names = pd.ExcelFile(order_path).sheet_names
     except Exception:
         return empty
 
-    if raw.empty:
+    normalized_sheet_names = {str(name).replace(" ", ""): name for name in sheet_names}
+    purchase_order_sheet = normalized_sheet_names.get("구매발주현황", sheet_names[0] if sheet_names else 0)
+    purchase_request_sheet = normalized_sheet_names.get("구매의뢰현황")
+
+    summaries: list[pd.DataFrame] = []
+
+    try:
+        # 구매발주현황 기준: J열(품목코드), O열(미입고수량), X열(납기일자).
+        # 화면의 "발주수량"은 현재 남아 있는 입고 예정 수량이므로 미입고수량을 사용한다.
+        raw_order = pd.read_excel(order_path, sheet_name=purchase_order_sheet, header=0, usecols=[9, 14, 23])
+    except Exception:
+        raw_order = pd.DataFrame()
+
+    if not raw_order.empty:
+        raw_order.columns = ["리드지코드_raw", "구매발주수량", "입고예상일자_raw"]
+        raw_order["리드지코드"] = raw_order["리드지코드_raw"].map(normalize_leadji_code_key)
+        raw_order = raw_order[raw_order["리드지코드"].str.fullmatch(r"[A-Z]{2}\d{4}", na=False)]
+        raw_order["구매발주수량"] = parse_mixed_numeric(raw_order["구매발주수량"])
+        raw_order["입고예상일자_dt"] = parse_mixed_excel_date(raw_order["입고예상일자_raw"])
+        raw_order = raw_order[raw_order["구매발주수량"] > 0]
+        if not raw_order.empty:
+            order_summary = raw_order.groupby("리드지코드", as_index=False).agg(
+                {"구매발주수량": "sum", "입고예상일자_dt": "min"}
+            )
+            summaries.append(order_summary)
+
+    if purchase_request_sheet is not None:
+        try:
+            # 구매의뢰현황 기준: G열(품목코드), U열(발주잔량), Y열(요청일).
+            raw_request = pd.read_excel(order_path, sheet_name=purchase_request_sheet, header=0, usecols=[6, 20, 24])
+        except Exception:
+            raw_request = pd.DataFrame()
+    else:
+        raw_request = pd.DataFrame()
+
+    if not raw_request.empty:
+        raw_request.columns = ["리드지코드_raw", "구매의뢰수량", "입고예상일자_raw"]
+        raw_request["리드지코드"] = raw_request["리드지코드_raw"].map(normalize_leadji_code_key)
+        raw_request = raw_request[raw_request["리드지코드"].str.fullmatch(r"[A-Z]{2}\d{4}", na=False)]
+        raw_request["구매의뢰수량"] = parse_mixed_numeric(raw_request["구매의뢰수량"])
+        raw_request["입고예상일자_dt"] = parse_mixed_excel_date(raw_request["입고예상일자_raw"])
+        raw_request = raw_request[raw_request["구매의뢰수량"] > 0]
+        if not raw_request.empty:
+            request_summary = raw_request.groupby("리드지코드", as_index=False).agg(
+                {"구매의뢰수량": "sum", "입고예상일자_dt": "min"}
+            )
+            summaries.append(request_summary)
+
+    if not summaries:
         return empty
 
-    raw.columns = ["리드지코드_raw", "발주수량_raw", "입고예상일자_raw"]
-    raw["리드지코드"] = raw["리드지코드_raw"].map(normalize_leadji_code_key)
-    raw = raw[raw["리드지코드"].str.fullmatch(r"[A-Z]{2}\d{4}", na=False)]
-    if raw.empty:
-        return empty
-
-    raw["발주수량"] = parse_mixed_numeric(raw["발주수량_raw"])
-    raw["입고예상일자_dt"] = parse_mixed_excel_date(raw["입고예상일자_raw"])
-    raw = raw[raw["발주수량"] > 0]
-    if raw.empty:
-        return empty
-
-    summary = raw.groupby("리드지코드", as_index=False).agg({"발주수량": "sum", "입고예상일자_dt": "min"})
+    summary = pd.concat(summaries, ignore_index=True, sort=False)
+    for qty_col in ["구매발주수량", "구매의뢰수량"]:
+        if qty_col not in summary.columns:
+            summary[qty_col] = 0.0
+        summary[qty_col] = parse_mixed_numeric(summary[qty_col])
+    summary["입고예상일자_dt"] = pd.to_datetime(summary["입고예상일자_dt"], errors="coerce")
+    summary = summary.groupby("리드지코드", as_index=False).agg(
+        {"구매발주수량": "sum", "구매의뢰수량": "sum", "입고예상일자_dt": "min"}
+    )
+    summary["발주수량"] = summary["구매발주수량"] + summary["구매의뢰수량"]
     summary["입고예상일자"] = summary["입고예상일자_dt"].dt.strftime("%Y-%m-%d").fillna("미확인")
-    return summary[["리드지코드", "발주수량", "입고예상일자", "입고예상일자_dt"]]
+    return summary[["리드지코드", "발주수량", "입고예상일자", "입고예상일자_dt", "구매발주수량", "구매의뢰수량"]]
 
 
 def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
@@ -2833,17 +2878,25 @@ def merge_leadji_with_order_status(summary_df: pd.DataFrame, leadji_order_df: pd
 
     if leadji_order_df.empty:
         merged["발주수량"] = 0.0
+        merged["구매발주수량"] = 0.0
+        merged["구매의뢰수량"] = 0.0
         merged["입고예상일자_dt"] = pd.NaT
     else:
         order = leadji_order_df.copy()
         order["리드지코드_join"] = order["리드지코드"].map(normalize_leadji_code_key)
+        for qty_col in ["구매발주수량", "구매의뢰수량"]:
+            if qty_col not in order.columns:
+                order[qty_col] = 0.0
+            order[qty_col] = parse_mixed_numeric(order[qty_col])
         order = (
             order.groupby("리드지코드_join", as_index=False)
-            .agg({"발주수량": "sum", "입고예상일자_dt": "min"})
+            .agg({"발주수량": "sum", "구매발주수량": "sum", "구매의뢰수량": "sum", "입고예상일자_dt": "min"})
             .rename(columns={"발주수량": "발주수량_join"})
         )
         merged = merged.merge(order, on="리드지코드_join", how="left")
         merged["발주수량"] = parse_mixed_numeric(merged["발주수량_join"])
+        merged["구매발주수량"] = parse_mixed_numeric(merged["구매발주수량"])
+        merged["구매의뢰수량"] = parse_mixed_numeric(merged["구매의뢰수량"])
 
     merged["입고예상일자_dt"] = pd.to_datetime(merged["입고예상일자_dt"], errors="coerce")
     merged["입고예상일자"] = merged["입고예상일자_dt"].dt.strftime("%Y-%m-%d").fillna("미확인")
@@ -2853,10 +2906,23 @@ def merge_leadji_with_order_status(summary_df: pd.DataFrame, leadji_order_df: pd
     shortage_mask = shortage_qty > 0
     missing_due_mask = merged["입고예상일자_dt"].isna()
     enough_order_mask = merged["발주수량"] >= shortage_qty
+    has_purchase_order_mask = parse_mixed_numeric(merged["구매발주수량"]) > 0
+    has_purchase_request_mask = parse_mixed_numeric(merged["구매의뢰수량"]) > 0
 
     merged["상태"] = "부족 없음"
     merged.loc[shortage_mask & missing_due_mask, "상태"] = "입고일 미확인"
-    merged.loc[shortage_mask & ~missing_due_mask & enough_order_mask, "상태"] = "입고 예정"
+    merged.loc[
+        shortage_mask & ~missing_due_mask & enough_order_mask & has_purchase_order_mask & ~has_purchase_request_mask,
+        "상태",
+    ] = "입고 예정"
+    merged.loc[
+        shortage_mask & ~missing_due_mask & enough_order_mask & ~has_purchase_order_mask & has_purchase_request_mask,
+        "상태",
+    ] = "구매의뢰"
+    merged.loc[
+        shortage_mask & ~missing_due_mask & enough_order_mask & has_purchase_order_mask & has_purchase_request_mask,
+        "상태",
+    ] = "입고 예정+의뢰"
     merged.loc[shortage_mask & ~missing_due_mask & ~enough_order_mask, "상태"] = "발주부족"
 
     ordered_cols: list[str] = []
@@ -2894,7 +2960,11 @@ def render_leadji_dashboard(
         st.caption("리드지부족: 부족 시 이모지(🔴) 표시")
         st.caption("리드지부족수량 = (L관창고(자재)+C관 공정부자재+S관 공정부자재+A관 공정부자재) - 리드지필요수량 (0 미만만 표시)")
         st.caption(f"생산 최소 납기일: {LEADJI_REQUIRED_DUE_COL} 기준(없으면 누수규격검사 납기일 기준)")
-        st.caption("리드지 발주현황: J열 품목코드 기준 LEFT JOIN, O열 미입고수량을 발주수량으로 합산, X열 납기일자 최솟값을 입고예상일자로 표시")
+        st.caption(
+            "리드지 발주현황: 구매발주현황 J/O/X열(품목코드/미입고수량/납기일자) + "
+            "구매의뢰현황 G/U/Y열(품목코드/발주잔량/요청일)을 리드지코드 기준으로 합산"
+        )
+        st.caption("상태: 구매발주만 있으면 입고 예정, 구매의뢰만 있으면 구매의뢰, 둘 다 있으면 입고 예정+의뢰")
         st.caption("창고 컬럼: 리드지 재고 시트에서 리드지코드별 재고가 존재하는 창고와 수량")
 
         qcol, _ = st.columns([3.0, 1.0])
@@ -2903,7 +2973,7 @@ def render_leadji_dashboard(
                 "통합 검색 (리드지코드/리드지명/창고/상태)",
                 value="",
                 key="leadji_summary_query",
-                placeholder="예: BS0314, 블리스터케이스, 입고 예정",
+                placeholder="예: BS0314, 블리스터케이스, 입고 예정, 구매의뢰",
             ).strip()
 
         hidden_cols = ["입고예상일자_dt"]
