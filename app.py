@@ -43,97 +43,195 @@ def inject_dashboard_theme() -> None:
     st.markdown(
         """
         <style>
+        @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+        :root {
+            --app-bg: #0F1117;
+            --panel: #1E2130;
+            --panel-soft: #171A24;
+            --panel-border: #2B3042;
+            --text: #F8FAFC;
+            --muted: #9CA3AF;
+            --subtle: #6B7280;
+            --accent: #0EA5E9;
+            --accent-soft: rgba(14, 165, 233, 0.14);
+            --danger: #EF4444;
+            --danger-soft: rgba(239, 68, 68, 0.15);
+            --warning: #F59E0B;
+            --warning-soft: rgba(245, 158, 11, 0.16);
+            --success: #22C55E;
+            --success-soft: rgba(34, 197, 94, 0.14);
+        }
         .stApp {
-            background: #f8fafc;
-            color: #111827;
+            background: var(--app-bg);
+            color: var(--text);
+            font-family: Pretendard, Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         }
         [data-testid="stAppViewContainer"] > .main {
-            background: #f8fafc;
+            background:
+                radial-gradient(circle at top right, rgba(14, 165, 233, 0.12), transparent 34rem),
+                linear-gradient(180deg, #111827 0%, var(--app-bg) 34rem);
         }
         [data-testid="stHeader"] {
-            background: rgba(248, 250, 252, 0.92);
+            background: rgba(15, 17, 23, 0.86);
             backdrop-filter: blur(8px);
         }
         .block-container {
             max-width: 1480px;
-            padding-top: 28px;
+            padding-top: 24px;
             padding-bottom: 44px;
         }
+        [data-testid="stSidebar"] {
+            background: #111827;
+            border-right: 1px solid var(--panel-border);
+        }
+        [data-testid="stSidebar"] * {
+            font-family: Pretendard, Inter, sans-serif;
+        }
+        [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p,
+        [data-testid="stSidebar"] label,
+        [data-testid="stSidebar"] span {
+            color: var(--muted);
+        }
         h1, h2, h3 {
-            color: #111827;
+            color: var(--text);
             letter-spacing: 0;
         }
         h1 {
-            font-size: 28px;
+            font-size: 30px;
             font-weight: 800;
             margin-bottom: 8px;
         }
         h2, h3 {
             font-weight: 800;
         }
+        .dashboard-hero {
+            border: 1px solid var(--panel-border);
+            border-radius: 12px;
+            background: linear-gradient(135deg, rgba(30, 33, 48, 0.96), rgba(17, 24, 39, 0.9));
+            box-shadow: 0 18px 60px rgba(0, 0, 0, 0.22);
+            padding: 22px 24px;
+            margin-bottom: 18px;
+        }
+        .dashboard-hero-title {
+            color: var(--text);
+            font-size: 28px;
+            font-weight: 850;
+            line-height: 1.25;
+            margin: 0 0 6px;
+        }
+        .dashboard-hero-subtitle {
+            color: var(--muted);
+            font-size: 14px;
+            margin: 0;
+        }
+        .sidebar-section-title {
+            color: var(--text);
+            font-size: 16px;
+            font-weight: 800;
+            padding: 4px 0 8px;
+            border-bottom: 1px solid var(--panel-border);
+            margin-bottom: 10px;
+        }
         [data-testid="stCaptionContainer"] {
-            color: #6b7280;
+            color: var(--muted);
         }
         [data-testid="stAlert"] {
             border-radius: 8px;
-            border: 1px solid #dbeafe;
-            box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+            border: 1px solid rgba(245, 158, 11, 0.35);
+            background: var(--warning-soft);
+            color: #FDE68A;
+            box-shadow: 0 12px 35px rgba(0, 0, 0, 0.18);
         }
         [data-testid="stDataFrame"] {
-            border: 1px solid #e5e7eb;
-            border-radius: 8px;
+            border: 1px solid var(--panel-border);
+            border-radius: 10px;
             overflow: hidden;
-            box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
-            background: #ffffff;
+            box-shadow: 0 16px 45px rgba(0, 0, 0, 0.20);
+            background: var(--panel);
         }
         [data-testid="stExpander"] {
-            border: 1px solid #e5e7eb;
-            border-radius: 8px;
-            background: #ffffff;
-            box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+            border: 1px solid var(--panel-border);
+            border-radius: 10px;
+            background: var(--panel);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.16);
         }
-        [data-testid="stTextInput"] input {
+        [data-testid="stTextInput"] input,
+        [data-testid="stSelectbox"] div,
+        [data-testid="stMultiSelect"] div {
             border-radius: 8px;
-            border-color: #d1d5db;
-            background: #ffffff;
+            border-color: var(--panel-border);
+            background: #131722;
+            color: var(--text);
+        }
+        [data-testid="stTextInput"] input::placeholder {
+            color: var(--subtle);
+        }
+        [data-testid="stCheckbox"] label,
+        [data-testid="stRadio"] label {
+            color: var(--muted);
+            font-weight: 600;
+        }
+        div[data-testid="stMetric"] {
+            background: linear-gradient(180deg, rgba(30, 33, 48, 0.98), rgba(23, 26, 36, 0.98));
+            border: 1px solid var(--panel-border);
+            border-radius: 12px;
+            padding: 14px 16px;
+            box-shadow: 0 14px 35px rgba(0, 0, 0, 0.18);
+        }
+        div[data-testid="stMetric"] label {
+            color: var(--muted) !important;
+            font-weight: 700;
+        }
+        div[data-testid="stMetric"] [data-testid="stMetricValue"] {
+            color: var(--text);
+            font-weight: 850;
         }
         .stButton > button,
         [data-testid="stDownloadButton"] button {
             border-radius: 8px;
-            border-color: #d1d5db;
-            background: #ffffff;
-            color: #111827;
+            border: 1px solid rgba(14, 165, 233, 0.28);
+            background: var(--accent-soft);
+            color: #BAE6FD;
             font-weight: 700;
-            box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+            box-shadow: 0 10px 24px rgba(14, 165, 233, 0.08);
         }
         .stButton > button:hover,
         [data-testid="stDownloadButton"] button:hover {
-            border-color: #2563eb;
-            color: #1d4ed8;
+            border-color: var(--accent);
+            color: #E0F2FE;
+            background: rgba(14, 165, 233, 0.20);
+        }
+        [data-testid="stSegmentedControl"] {
+            background: var(--panel-soft);
+            border: 1px solid var(--panel-border);
+            border-radius: 10px;
+            padding: 4px;
         }
         .dashboard-section-header {
             display: flex;
             align-items: center;
             gap: 10px;
-            margin: 22px 0 10px;
+            margin: 26px 0 10px;
         }
         .dashboard-section-header h3 {
             margin: 0;
             font-size: 20px;
             line-height: 1.2;
+            color: var(--text);
         }
         .dashboard-count-badge {
             display: inline-flex;
             align-items: center;
             border-radius: 999px;
-            background: #dbeafe;
-            color: #1d4ed8;
+            background: var(--accent-soft);
+            color: #7DD3FC;
             padding: 4px 9px;
             font-size: 12px;
             font-weight: 800;
         }
         .dashboard-section-subtle {
-            color: #6b7280;
+            color: var(--muted);
             font-size: 13px;
             margin-top: -4px;
             margin-bottom: 10px;
@@ -1356,11 +1454,11 @@ def style_leadji_shortage_table(display_df: pd.DataFrame, source_df: pd.DataFram
         styler = styler.set_properties(subset=["우선순위"], **{"text-align": "center"})
         styler = styler.map(
             lambda v: (
-                "background-color: #fee2e2; color: #991b1b; font-weight: 700;"
+                "background-color: rgba(239, 68, 68, 0.18); color: #FCA5A5; font-weight: 800;"
                 if str(v).strip() == "긴급"
-                else "background-color: #fef3c7; color: #92400e; font-weight: 700;"
+                else "background-color: rgba(245, 158, 11, 0.18); color: #FCD34D; font-weight: 800;"
                 if str(v).strip() == "확인필요"
-                else "background-color: #f3f4f6; color: #4b5563; font-weight: 600;"
+                else "background-color: rgba(148, 163, 184, 0.12); color: #CBD5E1; font-weight: 700;"
             ),
             subset=["우선순위"],
         )
@@ -1373,22 +1471,22 @@ def style_leadji_shortage_table(display_df: pd.DataFrame, source_df: pd.DataFram
     if "리드지부족수량" in display_df.columns and "리드지부족수량" in source_df.columns:
         shortage_numeric = parse_mixed_numeric(source_df["리드지부족수량"])
         shortage_style = shortage_numeric.map(
-            lambda v: "color: #b91c1c; font-weight: 800;" if pd.notna(v) and v < 0 else "color: #9ca3af;"
+            lambda v: "color: #F87171; font-weight: 850;" if pd.notna(v) and v < 0 else "color: #94A3B8;"
         )
         styler = styler.apply(lambda _: shortage_style, axis=0, subset=["리드지부족수량"])
     if "상태" in display_df.columns:
         styler = styler.set_properties(subset=["상태"], **{"text-align": "center"})
         styler = styler.map(
             lambda v: (
-                "background-color: #fee2e2; color: #991b1b; font-weight: 700;"
+                "background-color: rgba(239, 68, 68, 0.18); color: #FCA5A5; font-weight: 800;"
                 if str(v).strip() == "입고일 미확인"
-                else "background-color: #fef3c7; color: #92400e; font-weight: 700;"
+                else "background-color: rgba(245, 158, 11, 0.18); color: #FCD34D; font-weight: 800;"
                 if str(v).strip() == "발주부족"
-                else "background-color: #dbeafe; color: #1d4ed8; font-weight: 700;"
+                else "background-color: rgba(14, 165, 233, 0.18); color: #7DD3FC; font-weight: 800;"
                 if str(v).strip() in {"입고 예정", "입고 예정+의뢰"}
-                else "background-color: #ede9fe; color: #6d28d9; font-weight: 700;"
+                else "background-color: rgba(99, 102, 241, 0.18); color: #C4B5FD; font-weight: 800;"
                 if str(v).strip() == "구매의뢰"
-                else "background-color: #f3f4f6; color: #4b5563; font-weight: 600;"
+                else "background-color: rgba(148, 163, 184, 0.12); color: #CBD5E1; font-weight: 700;"
             ),
             subset=["상태"],
         )
@@ -2102,71 +2200,72 @@ def load_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[pd.Dat
 
 
 def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
-    st.subheader("필터")
-    st.caption(f"업데이트: {updated_at}")
-    st.caption("기본 적용: 전체 수요")
+    with st.sidebar:
+        st.markdown('<div class="sidebar-section-title">필터</div>', unsafe_allow_html=True)
+        st.caption(f"업데이트: {updated_at}")
+        st.caption("기본 적용: 전체 수요")
 
-    scope_df = df.copy()
-    if "사이트코드" not in scope_df.columns:
-        scope_df["사이트코드"] = "(미지정)"
-    site_label = scope_df["사이트코드"].astype(str).str.strip()
-    scope_df["사이트코드"] = site_label.replace({"": "(미지정)", "nan": "(미지정)", "None": "(미지정)"})
+        scope_df = df.copy()
+        if "사이트코드" not in scope_df.columns:
+            scope_df["사이트코드"] = "(미지정)"
+        site_label = scope_df["사이트코드"].astype(str).str.strip()
+        scope_df["사이트코드"] = site_label.replace({"": "(미지정)", "nan": "(미지정)", "None": "(미지정)"})
 
-    site_sum_map = (
-        scope_df.groupby("사이트코드", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
-    )
-    site_options = ["전체"] + list(site_sum_map.keys())
-    site_count_map = {"전체": float(scope_df["부족수량"].sum()), **site_sum_map}
-    selected_site_option = st.pills(
-        "사이트코드",
-        options=site_options,
-        default="전체",
-        key="flt_site_pills",
-        format_func=lambda x: format_pill_label(x, site_count_map),
-    )
-    if selected_site_option and selected_site_option != "전체":
-        scope_df = scope_df[scope_df["사이트코드"] == selected_site_option]
+        site_sum_map = (
+            scope_df.groupby("사이트코드", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
+        )
+        site_options = ["전체"] + list(site_sum_map.keys())
+        site_count_map = {"전체": float(scope_df["부족수량"].sum()), **site_sum_map}
+        selected_site_option = st.pills(
+            "사이트코드",
+            options=site_options,
+            default="전체",
+            key="flt_site_pills",
+            format_func=lambda x: format_pill_label(x, site_count_map),
+        )
+        if selected_site_option and selected_site_option != "전체":
+            scope_df = scope_df[scope_df["사이트코드"] == selected_site_option]
 
-    r1c1, r1c2 = st.columns([3.0, 1.2])
-    with r1c1:
+        st.divider()
         unified_query = st.text_input(
-            "통합 검색 (사이트코드/이니셜/거래처/품목코드/제품명/R코드/Q코드)",
+            "통합 검색",
             value="",
             key="flt_unified_query",
-            placeholder="예: PIA, 국내, P1234",
+            placeholder="사이트/거래처/품목/RQ 코드",
             help="콤마(,)로 여러 키워드를 입력하면 OR 조건으로 검색합니다.",
         ).strip()
-    with r1c2:
+
         only_with_stock = st.checkbox("공정재고만", value=False, key="flt_only_stock")
         exclude_safe_initial = st.checkbox("안전 이니셜 제외", value=False, key="flt_exclude_safe_initial")
         only_same_rq_group = st.checkbox("동일 RQ그룹만(R5/Q5, P5종류2+)", value=False, key="flt_only_same_rq_group")
 
-    sheet_sum_map = (
-        scope_df.groupby("시트분류", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
-    )
-    summary_sum_map = (
-        scope_df.groupby("분류별요약", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
-    )
+        sheet_sum_map = (
+            scope_df.groupby("시트분류", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
+        )
+        summary_sum_map = (
+            scope_df.groupby("분류별요약", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
+        )
 
-    sheet_options = ["전체"] + list(sheet_sum_map.keys())
-    summary_options = ["전체"] + list(summary_sum_map.keys())
-    sheet_count_map = {"전체": float(scope_df["부족수량"].sum()), **sheet_sum_map}
-    summary_count_map = {"전체": float(scope_df["부족수량"].sum()), **summary_sum_map}
+        sheet_options = ["전체"] + list(sheet_sum_map.keys())
+        summary_options = ["전체"] + list(summary_sum_map.keys())
+        sheet_count_map = {"전체": float(scope_df["부족수량"].sum()), **sheet_sum_map}
+        summary_count_map = {"전체": float(scope_df["부족수량"].sum()), **summary_sum_map}
 
-    selected_sheet_option = st.pills(
-        "시트 분류",
-        options=sheet_options,
-        default="전체",
-        key="flt_sheet_pills",
-        format_func=lambda x: format_pill_label(x, sheet_count_map),
-    )
-    selected_summary_option = st.pills(
-        "분류별 요약",
-        options=summary_options,
-        default="전체",
-        key="flt_summary_pills",
-        format_func=lambda x: format_pill_label(x, summary_count_map),
-    )
+        st.divider()
+        selected_sheet_option = st.pills(
+            "시트 분류",
+            options=sheet_options,
+            default="전체",
+            key="flt_sheet_pills",
+            format_func=lambda x: format_pill_label(x, sheet_count_map),
+        )
+        selected_summary_option = st.pills(
+            "분류별 요약",
+            options=summary_options,
+            default="전체",
+            key="flt_summary_pills",
+            format_func=lambda x: format_pill_label(x, summary_count_map),
+        )
 
     base_filtered = scope_df.copy()
     search_cols = [c for c in ["사이트코드", "이니셜", "거래처", "품목코드", "제품명", "R코드 제품명", "R코드", "Q코드"] if c in base_filtered.columns]
@@ -3204,44 +3303,45 @@ def render_leadji_dashboard(
             .leadji-kpi-grid {{
                 display: grid;
                 grid-template-columns: repeat(4, minmax(0, 1fr));
-                gap: 12px;
-                margin: 14px 0 18px;
+                gap: 14px;
+                margin: 16px 0 20px;
             }}
             .leadji-kpi-card {{
-                border: 1px solid #e5e7eb;
-                border-radius: 8px;
-                background: #ffffff;
-                padding: 14px 16px;
-                min-height: 96px;
+                border: 1px solid var(--panel-border);
+                border-radius: 12px;
+                background: linear-gradient(180deg, rgba(30, 33, 48, 0.98), rgba(23, 26, 36, 0.98));
+                padding: 16px 18px;
+                min-height: 104px;
+                box-shadow: 0 16px 42px rgba(0, 0, 0, 0.20);
             }}
             .leadji-kpi-card strong {{
                 display: block;
-                color: #4b5563;
+                color: var(--muted);
                 font-size: 13px;
                 font-weight: 700;
                 margin-bottom: 8px;
             }}
             .leadji-kpi-card span {{
                 display: block;
-                color: #111827;
-                font-size: 28px;
-                font-weight: 800;
+                color: var(--text);
+                font-size: 30px;
+                font-weight: 850;
                 line-height: 1.15;
             }}
             .leadji-kpi-card.risk {{
-                background: #fff1f2;
-                border-color: #fecdd3;
+                background: linear-gradient(180deg, rgba(127, 29, 29, 0.38), rgba(30, 33, 48, 0.96));
+                border-color: rgba(239, 68, 68, 0.34);
             }}
             .leadji-kpi-card.risk strong,
             .leadji-kpi-card.risk span {{
-                color: #be123c;
+                color: #FCA5A5;
             }}
             .leadji-kpi-card.inbound {{
-                background: #eff6ff;
-                border-color: #bfdbfe;
+                background: linear-gradient(180deg, rgba(14, 165, 233, 0.20), rgba(30, 33, 48, 0.96));
+                border-color: rgba(14, 165, 233, 0.36);
             }}
             .leadji-kpi-card.inbound span {{
-                color: #1d4ed8;
+                color: #7DD3FC;
             }}
             @media (max-width: 900px) {{
                 .leadji-kpi-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
@@ -3454,7 +3554,15 @@ def render_leadji_pcode5_dashboard(
 
 def main() -> None:
     inject_dashboard_theme()
-    st.title("생산 진행 현황")
+    st.markdown(
+        """
+        <div class="dashboard-hero">
+            <div class="dashboard-hero-title">생산 진행 현황</div>
+            <p class="dashboard-hero-subtitle">부족 리스크, 공정 재고, 리드지 입고 상태를 한 화면에서 확인합니다.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     data_base_dir = BASE_DIR
     updated_at = get_data_updated_at(data_base_dir)
 
