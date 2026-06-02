@@ -11,7 +11,7 @@ import openpyxl
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="제품 부족수량 현황", layout="wide")
+st.set_page_config(page_title="생산현황", layout="wide")
 
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_WORKSPACE_ROOT = BASE_DIR / ".uploaded_workspaces"
@@ -29,8 +29,14 @@ WAREHOUSE_MAP = {
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 
 COLUMN_LABEL_ALIASES = {
-    "누수규격검사 창고": "누수규격",
-    "검사접착창고": "검사접착",
+    "사출창고": "사출 재고",
+    "분리창고": "분리 재고",
+    "검사접착창고": "검사접착 재고",
+    "누수규격검사 창고": "누수규격 재고",
+    "사출창고 합계": "사출 재고",
+    "분리창고 합계": "분리 재고",
+    "검사접착창고 합계": "검사접착 재고",
+    "누수규격검사창고 합계": "누수규격 재고",
     "공정재고 합계": "공정재고",
     "사출 부족수량": "사출부족",
     "사출생산필요수량": "사출필요",
@@ -56,8 +62,11 @@ def inject_dashboard_theme() -> None:
             background: rgba(255, 255, 255, 0.94);
             backdrop-filter: blur(8px);
         }
+        .main .block-container,
         .block-container {
-            max-width: 1480px;
+            max-width: 100%;
+            padding-left: 2rem;
+            padding-right: 2rem;
             padding-top: 24px;
             padding-bottom: 44px;
         }
@@ -72,6 +81,40 @@ def inject_dashboard_theme() -> None:
         [data-testid="stSidebar"] span,
         [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {
             color: #334155;
+        }
+        .sidebar-brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 0 18px;
+            margin-bottom: 10px;
+            border-bottom: 1px solid #E5E7EB;
+        }
+        .sidebar-brand-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 30px;
+            height: 30px;
+            border-radius: 8px;
+            background: #EEF2FF;
+            color: #1A2B5E;
+        }
+        .sidebar-brand-title {
+            color: #111827;
+            font-size: 19px;
+            font-weight: 850;
+            letter-spacing: 0;
+        }
+        .sidebar-divider {
+            height: 1px;
+            background: #E5E7EB;
+            margin: 16px 0;
+        }
+        [data-testid="stSidebar"] [role="radiogroup"] label {
+            border-radius: 8px;
+            padding: 6px 8px;
+            margin-bottom: 3px;
         }
         h1, h2, h3 {
             color: #111827;
@@ -161,6 +204,53 @@ def inject_dashboard_theme() -> None:
         div[data-testid="stMetric"] [data-testid="stMetricValue"] {
             color: #374151;
             font-weight: 850;
+            white-space: nowrap;
+            overflow: visible;
+            text-overflow: unset;
+            font-size: clamp(22px, 1.7vw, 32px);
+        }
+        .ops-kpi-card {
+            min-height: 108px;
+            border-radius: 14px;
+            background: #FFFFFF;
+            border: 1px solid #E5E7EB;
+            border-left: 5px solid #2563EB;
+            box-shadow: 0 10px 28px rgba(15, 23, 42, 0.07);
+            padding: 16px 18px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            overflow: visible;
+        }
+        .ops-kpi-card.risk {
+            border-left-color: #DC2626;
+            background: linear-gradient(180deg, #FFFFFF 0%, #FFF7F7 100%);
+        }
+        .ops-kpi-card.stock {
+            border-left-color: #2563EB;
+            background: linear-gradient(180deg, #FFFFFF 0%, #F8FAFF 100%);
+        }
+        .kpi-label {
+            color: #64748B;
+            font-size: 13px;
+            font-weight: 800;
+            line-height: 1.25;
+        }
+        .kpi-value {
+            white-space: nowrap;
+            overflow: visible;
+            text-overflow: unset;
+            font-size: clamp(24px, 2vw, 36px);
+            font-weight: 850;
+            line-height: 1.1;
+            letter-spacing: 0;
+            color: #374151;
+        }
+        .ops-kpi-card.risk .kpi-value {
+            color: #DC2626;
+        }
+        .ops-kpi-card.stock .kpi-value {
+            color: #1A2B5E;
         }
         .stButton > button,
         [data-testid="stDownloadButton"] button {
@@ -1331,16 +1421,22 @@ def infer_numeric_like_series(series: pd.Series) -> bool:
 
 def pick_fixed_column_width_px(column_name: str, max_length: int, numeric_like: bool) -> int:
     if numeric_like:
-        return int(max(66, min(105, 18 + max_length * 6)))
+        return int(max(90, min(145, 24 + max_length * 7)))
 
     long_text_columns = {"제품명", "R코드 제품명", "리드지명", "제품명 예시"}
     medium_text_columns = {"품목코드", "R코드", "Q코드", "생산코드", "리드지코드", "P코드 예시"}
+    status_columns = {"상태"}
+    date_columns = {"납기일", "입고예상일자", "생산 최소 납기일", "최소납기일"}
 
     if column_name in long_text_columns:
-        return int(max(118, min(170, 20 + max_length * 6)))
+        return int(max(240, min(380, 28 + max_length * 7)))
     if column_name in medium_text_columns:
-        return int(max(95, min(125, 20 + max_length * 6)))
-    return int(max(78, min(110, 20 + max_length * 6)))
+        return int(max(120, min(170, 24 + max_length * 7)))
+    if column_name in status_columns:
+        return 96
+    if column_name in date_columns:
+        return 118
+    return int(max(92, min(145, 24 + max_length * 7)))
 
 
 def build_auto_column_config(
@@ -1367,6 +1463,82 @@ def build_auto_column_config(
             width=width_px,
         )
     return config
+
+
+def render_dashboard_kpi(label: str, value: str, variant: str = "stock") -> None:
+    st.markdown(
+        f"""
+        <div class="ops-kpi-card {variant}">
+            <div class="kpi-label">{label}</div>
+            <div class="kpi-value">{value}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def add_production_status_column(df: pd.DataFrame) -> pd.DataFrame:
+    display_source = df.copy()
+    if display_source.empty or "상태" in display_source.columns:
+        return display_source
+
+    status = pd.Series("정상", index=display_source.index)
+    if "사출 부족수량" in display_source.columns:
+        status = status.mask(parse_mixed_numeric(display_source["사출 부족수량"]) > 0, "확인필요")
+    if "사출부족수량" in display_source.columns:
+        status = status.mask(parse_mixed_numeric(display_source["사출부족수량"]) > 0, "확인필요")
+    for col in ["부족수량", "부족수량 합계"]:
+        if col in display_source.columns:
+            status = status.mask(parse_mixed_numeric(display_source[col]) > 0, "부족")
+
+    display_source["상태"] = status
+    return display_source
+
+
+def style_operational_table(display_df: pd.DataFrame, source_df: pd.DataFrame | None = None):
+    if display_df.empty:
+        return display_df.style
+
+    source = source_df if source_df is not None else display_df
+    styler = display_df.style
+    numeric_cols: list[str] = []
+    for col in display_df.columns:
+        source_col = source[col] if col in source.columns else display_df[col]
+        if pd.api.types.is_numeric_dtype(source_col) or infer_numeric_like_series(display_df[col]):
+            numeric_cols.append(col)
+
+    if numeric_cols:
+        styler = styler.set_properties(subset=numeric_cols, **{"text-align": "right"})
+
+    text_cols = [c for c in ["제품명", "R코드 제품명", "리드지명", "제품명 예시"] if c in display_df.columns]
+    if text_cols:
+        styler = styler.set_properties(subset=text_cols, **{"text-align": "left"})
+
+    shortage_cols = [c for c in display_df.columns if "부족" in c]
+    for col in shortage_cols:
+        source_col = source[col] if col in source.columns else display_df[col]
+        shortage_numeric = parse_mixed_numeric(source_col)
+        shortage_style = shortage_numeric.map(
+            lambda v: "color: #DC2626; font-weight: 850;" if pd.notna(v) and abs(float(v)) > 0 else "color: #6B7280;"
+        )
+        styler = styler.apply(lambda _: shortage_style, axis=0, subset=[col])
+
+    if "상태" in display_df.columns:
+        styler = styler.set_properties(subset=["상태"], **{"text-align": "center"})
+        styler = styler.map(
+            lambda v: (
+                "background-color: #FEE2E2; color: #B91C1C; font-weight: 850;"
+                if str(v).strip() == "부족"
+                else "background-color: #FEF3C7; color: #92400E; font-weight: 850;"
+                if str(v).strip() == "확인필요"
+                else "background-color: #DCFCE7; color: #166534; font-weight: 850;"
+                if str(v).strip() == "정상"
+                else "background-color: #EEF2FF; color: #1A2B5E; font-weight: 800;"
+            ),
+            subset=["상태"],
+        )
+
+    return styler
 
 
 def dataframe_to_excel_bytes(df: pd.DataFrame, sheet_name: str = "data") -> bytes:
@@ -2416,12 +2588,12 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         "공정재고 합계",
     ]
 
-    shortage_views = ["생산 현황", "사출 생산 현황", "분리 생산 현황", "사출, 분리 공용 품목 생산 현황"]
+    shortage_views = ["생산 현황", "사출 현황", "분리 현황", "공용 품목 현황"]
     selected_shortage_view = st.segmented_control(
-        "상세 보기",
+        "공정별 현황",
         options=shortage_views,
         default=shortage_views[0],
-        key="shortage_view_selector",
+        key="shortage_view_selector_v3",
         width="stretch",
     )
 
@@ -2456,13 +2628,19 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
             if "사출생산필요수량" in filtered.columns
             else 0
         )
-        c1, c2, c3, c4, c5, c6 = st.columns(6)
-        c1.metric("부족수량 합계", f"{filtered['부족수량'].sum():,.0f}")
-        c2.metric("사출부족수량 합계", f"{inj_shortage_total:,.0f}")
-        c3.metric("사출창고 합계", f"{filtered['사출창고'].sum():,.0f}")
-        c4.metric("분리창고 합계", f"{filtered['분리창고'].sum():,.0f}")
-        c5.metric("검사접착창고 합계", f"{filtered['검사접착창고'].sum():,.0f}")
-        c6.metric("누수규격검사창고 합계", f"{filtered['누수규격검사 창고'].sum():,.0f}")
+        c1, c2, c3, c4, c5, c6 = st.columns(6, gap="medium")
+        with c1:
+            render_dashboard_kpi("부족수량 합계", f"{filtered['부족수량'].sum():,.0f}", "risk")
+        with c2:
+            render_dashboard_kpi("사출부족수량 합계", f"{inj_shortage_total:,.0f}", "risk")
+        with c3:
+            render_dashboard_kpi("사출 재고", f"{filtered['사출창고'].sum():,.0f}", "stock")
+        with c4:
+            render_dashboard_kpi("분리 재고", f"{filtered['분리창고'].sum():,.0f}", "stock")
+        with c5:
+            render_dashboard_kpi("검사접착 재고", f"{filtered['검사접착창고'].sum():,.0f}", "stock")
+        with c6:
+            render_dashboard_kpi("누수규격 재고", f"{filtered['누수규격검사 창고'].sum():,.0f}", "stock")
 
         initial_inj_summary = build_initial_injection_summary(filtered)
         with st.expander("이니셜별 사출부족수량 요약", expanded=False):
@@ -2590,8 +2768,10 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
             ["표시부족수량", "부족수량", "사출 부족수량", "이니셜", "거래처"],
             ascending=[False, False, False, True, True],
         )[p_detail_columns]
-        p_table_display = format_numeric_columns_for_display(p_table)
-        p_detail_column_config = build_auto_column_config(p_table_display, p_detail_columns, source_df=p_table)
+        p_table_ui = add_production_status_column(p_table)
+        p_display_columns = p_table_ui.columns.tolist()
+        p_table_display = format_numeric_columns_for_display(p_table_ui)
+        p_detail_column_config = build_auto_column_config(p_table_display, p_display_columns, source_df=p_table_ui)
         if "사출 부족수량(연결R)" in p_view.columns:
             st.caption(
                 f"R→Q→P 연결 매핑(사이트코드+이니셜+R코드): "
@@ -2608,16 +2788,16 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         )
 
         st.dataframe(
-            p_table_display,
+            style_operational_table(p_table_display, p_table_ui),
             use_container_width=True,
             height=700,
-            column_order=p_detail_columns,
+            column_order=p_display_columns,
             column_config=p_detail_column_config,
             hide_index=True,
             key="shortage_p_table_v2",
         )
 
-    elif selected_shortage_view == "사출 생산 현황":
+    elif selected_shortage_view == "사출 현황":
         r_summary = build_rcode_summary(filtered)
 
         r1, r2, r3, r4 = st.columns(4)
@@ -2626,11 +2806,12 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
             "R기준 사출 생산 필요수량 합계",
             f"{r_summary['사출 생산 필요수량 합계'].sum():,.0f}" if not r_summary.empty else "0",
         )
-        r3.metric("R기준 사출창고 합계", f"{r_summary['사출창고 합계'].sum():,.0f}" if not r_summary.empty else "0")
-        r4.metric("R기준 분리창고 합계", f"{r_summary['분리창고 합계'].sum():,.0f}" if not r_summary.empty else "0")
-        r_summary_display = format_numeric_columns_for_display(r_summary)
+        r3.metric("R기준 사출 재고", f"{r_summary['사출창고 합계'].sum():,.0f}" if not r_summary.empty else "0")
+        r4.metric("R기준 분리 재고", f"{r_summary['분리창고 합계'].sum():,.0f}" if not r_summary.empty else "0")
+        r_summary_ui = add_production_status_column(r_summary)
+        r_summary_display = format_numeric_columns_for_display(r_summary_ui)
         r_summary_column_config = build_auto_column_config(
-            r_summary_display, r_summary_display.columns.tolist(), source_df=r_summary
+            r_summary_display, r_summary_display.columns.tolist(), source_df=r_summary_ui
         )
         st.download_button(
             "엑셀 다운로드",
@@ -2642,7 +2823,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         )
 
         st.dataframe(
-            r_summary_display,
+            style_operational_table(r_summary_display, r_summary_ui),
             use_container_width=True,
             height=700,
             column_config=r_summary_column_config,
@@ -2650,7 +2831,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
             key="shortage_r_table_v2",
         )
 
-    elif selected_shortage_view == "분리 생산 현황":
+    elif selected_shortage_view == "분리 현황":
         q_summary = build_qcode_summary(filtered)
         q1, q2, q3 = st.columns(3)
         q1.metric("Q코드 수", f"{len(q_summary):,}")
@@ -2660,8 +2841,10 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         q_sort_cols = ["Q코드5", "Q코드", "부족수량"] if {"Q코드5", "Q코드", "부족수량"}.issubset(filtered.columns) else ["Q코드", "부족수량"]
         q_sort_asc = [True, True, False] if len(q_sort_cols) == 3 else [True, False]
         q_table = filtered.sort_values(q_sort_cols, ascending=q_sort_asc)[detail_columns]
-        q_table_display = format_numeric_columns_for_display(q_table)
-        q_detail_column_config = build_auto_column_config(q_table_display, detail_columns, source_df=q_table)
+        q_table_ui = add_production_status_column(q_table)
+        q_display_columns = q_table_ui.columns.tolist()
+        q_table_display = format_numeric_columns_for_display(q_table_ui)
+        q_detail_column_config = build_auto_column_config(q_table_display, q_display_columns, source_df=q_table_ui)
         st.download_button(
             "엑셀 다운로드",
             data=dataframe_to_excel_bytes(q_table, sheet_name="분리생산현황"),
@@ -2671,10 +2854,10 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
             use_container_width=False,
         )
         st.dataframe(
-            q_table_display,
+            style_operational_table(q_table_display, q_table_ui),
             use_container_width=True,
             height=700,
-            column_order=detail_columns,
+            column_order=q_display_columns,
             column_config=q_detail_column_config,
             hide_index=True,
             key="shortage_q_table_v2",
@@ -2792,9 +2975,11 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
                 rq_detail_columns.insert(insert_idx, "사출부족수량")
 
             rq_table = rq_view.sort_values(rq_sort_cols, ascending=rq_sort_asc)[rq_detail_columns]
-            rq_table_display = format_numeric_columns_for_display(rq_table)
+            rq_table_ui = add_production_status_column(rq_table)
+            rq_display_columns = rq_table_ui.columns.tolist()
+            rq_table_display = format_numeric_columns_for_display(rq_table_ui)
             rq_detail_column_config = build_auto_column_config(
-                rq_table_display, rq_detail_columns, source_df=rq_table
+                rq_table_display, rq_display_columns, source_df=rq_table_ui
             )
             st.download_button(
                 "엑셀 다운로드",
@@ -2805,10 +2990,10 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
                 use_container_width=False,
             )
             st.dataframe(
-                rq_table_display,
+                style_operational_table(rq_table_display, rq_table_ui),
                 use_container_width=True,
                 height=700,
-                column_order=rq_detail_columns,
+                column_order=rq_display_columns,
                 column_config=rq_detail_column_config,
                 hide_index=True,
                 key="shortage_rq_table_v2",
@@ -3468,7 +3653,7 @@ def render_leadji_dashboard(
 def render_leadji_pcode5_dashboard(
     updated_at: str, shortage_df: pd.DataFrame, leadji_info: pd.DataFrame, leadji_stock: pd.DataFrame
 ) -> None:
-    st.subheader("생산코드 기준 리드지 현황")
+    st.subheader("생산코드별 리드지 현황")
     st.caption(f"업데이트: {updated_at}")
     st.caption(
         f"집계 기준: 품목코드별 ({LEADJI_REQUIRED_QTY_COL} - {LEADJI_COMPLETED_STOCK_COL})를 0 미만 0으로 만든 뒤 P코드 단위 합산(sum)"
@@ -3478,7 +3663,7 @@ def render_leadji_pcode5_dashboard(
 
     summary_df = build_pcode5_leadji_requirement_summary(shortage_df, leadji_info, leadji_stock)
     if summary_df.empty:
-        st.warning("생산코드 기준 리드지현황을 계산할 데이터가 없습니다.")
+        st.warning("생산코드별 리드지 현황을 계산할 데이터가 없습니다.")
         return
 
     qcol, _ = st.columns([3.0, 1.0])
@@ -3532,8 +3717,8 @@ def main() -> None:
     st.markdown(
         """
         <div class="dashboard-hero">
-            <div class="dashboard-hero-title">생산 진행 현황</div>
-            <p class="dashboard-hero-subtitle">부족 리스크, 공정 재고, 리드지 입고 상태를 한 화면에서 확인합니다.</p>
+            <div class="dashboard-hero-title">생산현황</div>
+            <p class="dashboard-hero-subtitle">생산 부족 리스크, 공정 재고, 자재 입고 현황을<br>실시간으로 모니터링합니다.</p>
         </div>
         """,
         unsafe_allow_html=True,
@@ -3552,16 +3737,36 @@ def main() -> None:
         st.error(f"데이터 로드 실패: {exc}")
         st.stop()
 
-    top_views = ["제품 부족수량 현황", "리드지 현황", "생산코드 기준 리드지"]
-    selected_top_view = st.segmented_control(
-        "메뉴",
-        options=top_views,
-        default=top_views[0],
-        key="top_view_selector",
-        width="stretch",
-    )
+    top_views = ["생산 부족 현황", "리드지 현황", "생산코드별 리드지"]
+    with st.sidebar:
+        st.markdown(
+            """
+            <div class="sidebar-brand">
+                <span class="sidebar-brand-icon">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path d="M4 19V5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        <path d="M4 19H20" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        <path d="M8 16V11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        <path d="M12 16V7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        <path d="M16 16V9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                    </svg>
+                </span>
+                <span class="sidebar-brand-title">생산현황</span>
+            </div>
+            <div class="sidebar-section-title">메뉴</div>
+            """,
+            unsafe_allow_html=True,
+        )
+        selected_top_view = st.radio(
+            "메뉴",
+            options=top_views,
+            index=0,
+            key="top_view_radio_v2",
+            label_visibility="collapsed",
+        )
+        st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
 
-    if selected_top_view == "제품 부족수량 현황":
+    if selected_top_view == "생산 부족 현황":
         render_shortage_dashboard(df, updated_at)
     elif selected_top_view == "리드지 현황":
         render_leadji_dashboard(updated_at, df, leadji_info, leadji_stock, leadji_order_df)
