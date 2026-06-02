@@ -2596,6 +2596,23 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         key="shortage_view_selector_v3",
         width="stretch",
     )
+    direct_search_cols = [
+        c for c in ["거래처", "이니셜", "품목코드", "R코드", "Q코드", "제품명", "R코드 제품명"] if c in filtered.columns
+    ]
+    search_col, result_col = st.columns([3.2, 1.0])
+    with search_col:
+        direct_query = st.text_input(
+            "직접 검색",
+            value="",
+            key="shortage_direct_query_v1",
+            placeholder="거래처, 이니셜, 품목코드, R코드, Q코드, 제품명으로 검색하세요",
+            help="콤마(,)로 여러 키워드를 입력하면 OR 조건으로 검색합니다.",
+        ).strip()
+    base_filtered_count = len(filtered)
+    if direct_query and direct_search_cols:
+        filtered = filter_with_terms_any(filtered, direct_search_cols, direct_query)
+    with result_col:
+        st.caption(f"표시 {len(filtered):,}건 / 전체 {base_filtered_count:,}건")
 
     if selected_shortage_view == "생산 현황":
         full_demand_summary = build_summary_group_totals_with_safe_split(filtered)
