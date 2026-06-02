@@ -2951,21 +2951,7 @@ def render_leadji_dashboard(
         st.warning("리드지재고현황을 계산할 데이터가 없습니다.")
     else:
         summary_df = merge_leadji_with_order_status(summary_df, leadji_order_df)
-        st.caption(f"생산필요수량: 수요 데이터의 {LEADJI_REQUIRED_QTY_COL} 컬럼 우선, 없으면 누수규격검사 기준 부족수량 반영")
-        st.caption(
-            f"완료 차감 기준: 품목코드별 {LEADJI_REQUIRED_QTY_COL} 합계에서 {LEADJI_COMPLETED_STOCK_COL} 재고를 1회 차감 후 0 미만은 0 처리"
-        )
-        st.caption(f"집계 기준: 동일 P코드가 여러 주문행에 있으면 위 기준 수량을 합산(sum)하여 리드지코드에 매핑")
-        st.caption("리드지필요수량 = 생산필요수량 × 1.3")
-        st.caption("리드지부족: 부족 시 이모지(🔴) 표시")
-        st.caption("리드지부족수량 = (L관창고(자재)+C관 공정부자재+S관 공정부자재+A관 공정부자재) - 리드지필요수량 (0 미만만 표시)")
-        st.caption(f"생산 최소 납기일: {LEADJI_REQUIRED_DUE_COL} 기준(없으면 누수규격검사 납기일 기준)")
-        st.caption(
-            "리드지 발주현황: 구매발주현황 J/O/X열(품목코드/미입고수량/납기일자) + "
-            "구매의뢰현황 G/U/Y열(품목코드/발주잔량/요청일)을 리드지코드 기준으로 합산"
-        )
-        st.caption("상태: 구매발주만 있으면 입고 예정, 구매의뢰만 있으면 구매의뢰, 둘 다 있으면 입고 예정+의뢰")
-        st.caption("창고 컬럼: 리드지 재고 시트에서 리드지코드별 재고가 존재하는 창고와 수량")
+        st.caption("입고 예상일자는 구매의뢰 기준 일자이므로 구매팀에 문의 필요")
 
         qcol, _ = st.columns([3.0, 1.0])
         with qcol:
