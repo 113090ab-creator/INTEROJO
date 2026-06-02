@@ -43,15 +43,14 @@ def inject_dashboard_theme() -> None:
     st.markdown(
         """
         <style>
-        @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
         .stApp {
             background: #FFFFFF;
             color: #111827;
-            font-family: Pretendard, Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         }
         [data-testid="stAppViewContainer"] > .main {
-            background: linear-gradient(180deg, #FFFFFF 0%, #F8FAFC 100%);
+            background: linear-gradient(180deg, #FFFFFF 0%, #F4F6F8 100%);
         }
         [data-testid="stHeader"] {
             background: rgba(255, 255, 255, 0.94);
@@ -63,11 +62,11 @@ def inject_dashboard_theme() -> None:
             padding-bottom: 44px;
         }
         [data-testid="stSidebar"] {
-            background: #F0F9FF;
-            border-right: 1px solid #D7E9F7;
+            background: #FFFFFF;
+            border-right: 1px solid #E5E7EB;
         }
         [data-testid="stSidebar"] * {
-            font-family: Pretendard, Inter, sans-serif;
+            font-family: Inter, sans-serif;
         }
         [data-testid="stSidebar"] label,
         [data-testid="stSidebar"] span,
@@ -87,15 +86,16 @@ def inject_dashboard_theme() -> None:
             font-weight: 800;
         }
         .dashboard-hero {
-            border: 1px solid #D7E9F7;
+            border: 1px solid #E5E7EB;
             border-radius: 14px;
-            background: linear-gradient(135deg, #FFFFFF 0%, #ECFEFF 55%, #F0F9FF 100%);
+            background: linear-gradient(135deg, #FFFFFF 0%, #F4F6F8 100%);
             box-shadow: 0 14px 40px rgba(15, 23, 42, 0.08);
             padding: 22px 24px;
             margin-bottom: 18px;
+            border-left: 5px solid #1A2B5E;
         }
         .dashboard-hero-title {
-            color: #0F172A;
+            color: #1A2B5E;
             font-size: 30px;
             font-weight: 850;
             line-height: 1.25;
@@ -107,11 +107,11 @@ def inject_dashboard_theme() -> None:
             margin: 0;
         }
         .sidebar-section-title {
-            color: #0F172A;
-            font-size: 16px;
+            color: #1A2B5E;
+            font-size: 14px;
             font-weight: 850;
             padding: 4px 0 9px;
-            border-bottom: 1px solid #BAE6FD;
+            border-bottom: 1px solid #E5E7EB;
             margin-bottom: 12px;
         }
         [data-testid="stCaptionContainer"] {
@@ -119,9 +119,9 @@ def inject_dashboard_theme() -> None:
         }
         [data-testid="stAlert"] {
             border-radius: 8px;
-            border: 1px solid #BAE6FD;
-            background: #F0F9FF;
-            box-shadow: 0 4px 14px rgba(14, 165, 233, 0.08);
+            border: 1px solid #D7DBE8;
+            background: #F7F8FB;
+            box-shadow: 0 4px 14px rgba(26, 43, 94, 0.06);
         }
         [data-testid="stDataFrame"] {
             border: 1px solid #E5E7EB;
@@ -143,14 +143,15 @@ def inject_dashboard_theme() -> None:
             color: #111827;
         }
         [data-testid="stTextInput"] input:focus {
-            border-color: #0EA5E9;
-            box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.12);
+            border-color: #1A2B5E;
+            box-shadow: 0 0 0 2px rgba(26, 43, 94, 0.10);
         }
         div[data-testid="stMetric"] {
             background: #FFFFFF;
             border: 1px solid #E5E7EB;
             border-radius: 14px;
             padding: 15px 16px;
+            border-left: 4px solid #1A2B5E;
             box-shadow: 0 10px 28px rgba(15, 23, 42, 0.07);
         }
         div[data-testid="stMetric"] label {
@@ -158,26 +159,26 @@ def inject_dashboard_theme() -> None:
             font-weight: 700;
         }
         div[data-testid="stMetric"] [data-testid="stMetricValue"] {
-            color: #0F172A;
+            color: #374151;
             font-weight: 850;
         }
         .stButton > button,
         [data-testid="stDownloadButton"] button {
             border-radius: 8px;
-            border: 1px solid #BAE6FD;
-            background: #ffffff;
-            color: #111827;
+            border: 1px solid #1A2B5E;
+            background: #1A2B5E;
+            color: #FFFFFF;
             font-weight: 700;
-            box-shadow: 0 5px 14px rgba(14, 165, 233, 0.08);
+            box-shadow: 0 6px 16px rgba(26, 43, 94, 0.16);
         }
         .stButton > button:hover,
         [data-testid="stDownloadButton"] button:hover {
-            border-color: #0EA5E9;
-            color: #0284C7;
-            background: #F0F9FF;
+            border-color: #233A7A;
+            color: #FFFFFF;
+            background: #233A7A;
         }
         [data-testid="stSegmentedControl"] {
-            background: #F8FAFC;
+            background: #F4F6F8;
             border: 1px solid #E5E7EB;
             border-radius: 10px;
             padding: 4px;
@@ -197,8 +198,8 @@ def inject_dashboard_theme() -> None:
             display: inline-flex;
             align-items: center;
             border-radius: 999px;
-            background: #E0F2FE;
-            color: #0284C7;
+            background: #EEF2FF;
+            color: #1A2B5E;
             padding: 4px 9px;
             font-size: 12px;
             font-weight: 800;
@@ -1444,7 +1445,7 @@ def style_leadji_shortage_table(display_df: pd.DataFrame, source_df: pd.DataFram
     if "리드지부족수량" in display_df.columns and "리드지부족수량" in source_df.columns:
         shortage_numeric = parse_mixed_numeric(source_df["리드지부족수량"])
         shortage_style = shortage_numeric.map(
-            lambda v: "color: #EF4444; font-weight: 850;" if pd.notna(v) and v < 0 else "color: #94A3B8;"
+            lambda v: "color: #DC2626; font-weight: 850;" if pd.notna(v) and v < 0 else "color: #6B7280;"
         )
         styler = styler.apply(lambda _: shortage_style, axis=0, subset=["리드지부족수량"])
     if "상태" in display_df.columns:
@@ -1455,7 +1456,7 @@ def style_leadji_shortage_table(display_df: pd.DataFrame, source_df: pd.DataFram
                 if str(v).strip() == "입고일 미확인"
                 else "background-color: #FEF3C7; color: #92400E; font-weight: 800;"
                 if str(v).strip() == "발주부족"
-                else "background-color: #E0F2FE; color: #0369A1; font-weight: 800;"
+                else "background-color: #EEF2FF; color: #1A2B5E; font-weight: 800;"
                 if str(v).strip() in {"입고 예정", "입고 예정+의뢰"}
                 else "background-color: #D1FAE5; color: #047857; font-weight: 800;"
                 if str(v).strip() == "구매의뢰"
@@ -3281,11 +3282,12 @@ def render_leadji_dashboard(
             }}
             .leadji-kpi-card {{
                 border: 1px solid #E5E7EB;
+                border-left: 4px solid #1A2B5E;
                 border-radius: 12px;
                 background: #FFFFFF;
                 padding: 16px 18px;
                 min-height: 104px;
-                box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
+                box-shadow: 0 8px 22px rgba(15, 23, 42, 0.06);
             }}
             .leadji-kpi-card strong {{
                 display: block;
@@ -3296,25 +3298,27 @@ def render_leadji_dashboard(
             }}
             .leadji-kpi-card span {{
                 display: block;
-                color: #0F172A;
+                color: #374151;
                 font-size: 30px;
                 font-weight: 850;
                 line-height: 1.15;
             }}
             .leadji-kpi-card.risk {{
-                background: #FFF7F7;
-                border-color: #FECACA;
+                background: #FFFFFF;
+                border-color: #E5E7EB;
+                border-left-color: #DC2626;
             }}
             .leadji-kpi-card.risk strong,
             .leadji-kpi-card.risk span {{
-                color: #EF4444;
+                color: #DC2626;
             }}
             .leadji-kpi-card.inbound {{
-                background: #F0F9FF;
-                border-color: #BAE6FD;
+                background: #FFFFFF;
+                border-color: #E5E7EB;
+                border-left-color: #1A2B5E;
             }}
             .leadji-kpi-card.inbound span {{
-                color: #0284C7;
+                color: #1A2B5E;
             }}
             @media (max-width: 900px) {{
                 .leadji-kpi-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
