@@ -3533,42 +3533,45 @@ def render_leadji_dashboard(
         filtered_visible = filter_with_terms_any(summary_visible, summary_search_cols, summary_query)
         filtered_summary = summary_df.loc[filtered_visible.index].copy()
 
-        priority_columns = [
+        ordered_columns = [
             "리드지코드",
             "리드지명",
-            "리드지부족수량",
             "발주수량",
+            "구매발주수량",
+            "구매의뢰수량",
             "입고예상일자",
+            "리드지부족수량",
             "생산 최소 납기일",
         ]
-        priority_rows = (
-            filtered_summary[filtered_summary["우선순위"].isin(["긴급", "확인필요"])]
-            .sort_values("부족수량_abs", ascending=False)
-            .head(10)
+        ordered_rows = filtered_summary[parse_mixed_numeric(filtered_summary["발주수량"]) > 0].copy()
+        ordered_rows = ordered_rows.sort_values(
+            ["입고예상일자_dt", "부족수량_abs", "리드지코드"],
+            ascending=[True, False, True],
+            na_position="last",
         )
         st.markdown(
             f"""
             <div class="dashboard-section-header">
-                <h3>우선 확인 필요 리스트</h3>
-                <span class="dashboard-count-badge">최대 {min(len(priority_rows), 10):,}건</span>
+                <h3>발주 반영 품목 리스트</h3>
+                <span class="dashboard-count-badge">전체 {len(ordered_rows):,}건</span>
             </div>
             """,
             unsafe_allow_html=True,
         )
-        if priority_rows.empty:
-            st.info("우선 확인이 필요한 리드지가 없습니다.")
+        if ordered_rows.empty:
+            st.info("발주 또는 구매의뢰가 반영된 리드지가 없습니다.")
         else:
-            priority_table = priority_rows[[c for c in priority_columns if c in priority_rows.columns]]
-            priority_display = format_numeric_columns_for_display(priority_table)
-            priority_column_config = build_auto_column_config(
-                priority_display, priority_display.columns.tolist(), source_df=priority_table
+            ordered_table = ordered_rows[[c for c in ordered_columns if c in ordered_rows.columns]]
+            ordered_display = format_numeric_columns_for_display(ordered_table)
+            ordered_column_config = build_auto_column_config(
+                ordered_display, ordered_display.columns.tolist(), source_df=ordered_table
             )
-            priority_styled = style_leadji_shortage_table(priority_display, priority_table)
+            ordered_styled = style_leadji_shortage_table(ordered_display, ordered_table)
             st.dataframe(
-                priority_styled,
+                ordered_styled,
                 use_container_width=True,
-                height=min(430, 78 + len(priority_table) * 38),
-                column_config=priority_column_config,
+                height=min(520, 78 + len(ordered_table) * 38),
+                column_config=ordered_column_config,
                 hide_index=True,
             )
 
