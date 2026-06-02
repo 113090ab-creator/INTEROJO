@@ -3524,10 +3524,10 @@ def render_leadji_dashboard(
                 "검색",
                 value="",
                 key="leadji_summary_query",
-                placeholder="리드지코드, 리드지명, 창고, 상태로 검색하세요",
+                placeholder="리드지코드, 리드지명, 창고로 검색하세요",
             ).strip()
 
-        hidden_cols = ["입고예상일자_dt", "우선순위정렬", "부족수량_abs", "최소납기일"]
+        hidden_cols = ["입고예상일자_dt", "우선순위정렬", "부족수량_abs", "최소납기일", "상태"]
         summary_visible = summary_df.drop(columns=hidden_cols, errors="ignore")
         summary_search_cols = [c for c in summary_visible.columns if c not in ["생산필요수량"]]
         filtered_visible = filter_with_terms_any(summary_visible, summary_search_cols, summary_query)
@@ -3588,7 +3588,6 @@ def render_leadji_dashboard(
         basic_columns = [
             "리드지코드",
             "리드지명",
-            "상태",
             "리드지필요수량",
             "재고합계",
             "리드지부족수량",
@@ -3597,6 +3596,7 @@ def render_leadji_dashboard(
             "생산 최소 납기일",
         ]
         table_df = filtered_summary[[c for c in basic_columns if c in filtered_summary.columns]]
+        table_df = table_df.drop(columns=["상태"], errors="ignore")
 
         download_df = filtered_summary.drop(columns=hidden_cols, errors="ignore")
         st.download_button(
