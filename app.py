@@ -3045,7 +3045,7 @@ def render_leadji_dashboard(
         st.warning("리드지재고현황을 계산할 데이터가 없습니다.")
     else:
         summary_df = merge_leadji_with_order_status(summary_df, leadji_order_df)
-        st.caption("입고 예상일자는 구매의뢰 기준 일자이므로 구매팀에 문의 필요")
+        st.warning("입고 예상일자는 구매의뢰 기준 일자이므로 구매팀에 문의 필요", icon="⚠️")
 
         qcol, _ = st.columns([3.0, 1.0])
         with qcol:
