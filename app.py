@@ -1328,7 +1328,27 @@ def load_reference_maps_bundle(
     leadji_q_map: dict[str, str] = {}
 
     # 1) 제품명/분류 맵 + R코드명 fallback 기반 시트
-    sheet0 = parse_sheet(sheet_names[0])
+    try:
+        sheet0_preview = xls.parse(sheet_name=sheet_names[0], nrows=0)
+        sheet0_cols = [str(c).strip() for c in sheet0_preview.columns]
+    except Exception:
+        sheet0_cols = []
+
+    if sheet0_cols:
+        code_col = "제품명코드" if "제품명코드" in sheet0_cols else sheet0_cols[0]
+        name_col = "제품명" if "제품명" in sheet0_cols else (sheet0_cols[1] if len(sheet0_cols) > 1 else sheet0_cols[0])
+        group_col = "분류요약" if "분류요약" in sheet0_cols else None
+        if group_col is None and "판매제품군" in sheet0_cols:
+            group_col = "판매제품군"
+        if group_col is None and "생산제품군" in sheet0_cols:
+            group_col = "생산제품군"
+        sheet0_selected_cols = {code_col, name_col}
+        if group_col is not None:
+            sheet0_selected_cols.add(group_col)
+        sheet0 = parse_sheet(sheet_names[0], usecols=lambda c: str(c).strip() in sheet0_selected_cols)
+    else:
+        sheet0 = pd.DataFrame()
+
     if not sheet0.empty and len(sheet0.columns) >= 2:
         code_col = "제품명코드" if "제품명코드" in sheet0.columns else sheet0.columns[0]
         name_col = "제품명" if "제품명" in sheet0.columns else sheet0.columns[1]
@@ -1496,7 +1516,31 @@ def load_reference_maps_bundle(
     # 4) 리드지 공정 맵
     if len(sheet_names) >= 3:
         leadji_sheet = next((s for s in sheet_names if s.replace(" ", "") == "리드지정보"), sheet_names[2])
-        leadji = parse_sheet(leadji_sheet)
+        try:
+            leadji_preview = xls.parse(sheet_name=leadji_sheet, nrows=0)
+            leadji_cols = [str(c).strip() for c in leadji_preview.columns]
+        except Exception:
+            leadji_cols = []
+        if leadji_cols:
+            prod_col = "생산" if "생산" in leadji_cols else (leadji_cols[3] if len(leadji_cols) > 3 else None)
+            q_col = "분리" if "분리" in leadji_cols else (leadji_cols[9] if len(leadji_cols) > 9 else None)
+            r_col = "사출" if "사출" in leadji_cols else (leadji_cols[21] if len(leadji_cols) > 21 else None)
+            selected_cols = {c for c in [prod_col, q_col, r_col] if c is not None}
+            leadji = (
+                parse_sheet(leadji_sheet, usecols=lambda c: str(c).strip() in selected_cols)
+                if selected_cols
+                else pd.DataFrame()
+            )
+            if not leadji.empty:
+                leadji = leadji.rename(
+                    columns={
+                        prod_col: "생산",
+                        q_col: "분리",
+                        r_col: "사출",
+                    }
+                )
+        else:
+            leadji = pd.DataFrame()
         if not leadji.empty:
             prod_col = "생산" if "생산" in leadji.columns else (leadji.columns[3] if len(leadji.columns) > 3 else None)
             q_col = "분리" if "분리" in leadji.columns else (leadji.columns[9] if len(leadji.columns) > 9 else None)
@@ -2672,12 +2716,57 @@ def load_leadji_data(refresh_key: str, base_dir_str: str | None = None) -> tuple
     if ref_path is None:
         return pd.DataFrame(), pd.DataFrame()
 
-    sheet_names = pd.ExcelFile(ref_path).sheet_names
+    xls = pd.ExcelFile(ref_path)
+    sheet_names = xls.sheet_names
     leadji_info_sheet = next((s for s in sheet_names if s.replace(" ", "") == "리드지정보"), None)
     leadji_stock_sheet = next((s for s in sheet_names if s.replace(" ", "") == "리드지재고"), None)
 
-    leadji_info = pd.read_excel(ref_path, sheet_name=leadji_info_sheet) if leadji_info_sheet else pd.DataFrame()
-    leadji_stock = pd.read_excel(ref_path, sheet_name=leadji_stock_sheet) if leadji_stock_sheet else pd.DataFrame()
+    leadji_info = pd.DataFrame()
+    if leadji_info_sheet:
+        preview = xls.parse(sheet_name=leadji_info_sheet, nrows=0)
+        preview_cols = [str(c).strip() for c in preview.columns]
+        prod_col = pick_first_existing_column(preview_cols, ["생산"]) or (preview_cols[3] if len(preview_cols) > 3 else None)
+        b1_col = pick_first_existing_column(preview_cols, ["B1코드"]) or (preview_cols[12] if len(preview_cols) > 12 else None)
+        b1_name_col = pick_first_existing_column(preview_cols, ["B1코드명"]) or (
+            preview_cols[13] if len(preview_cols) > 13 else None
+        )
+        selected_cols = [c for c in [prod_col, b1_col, b1_name_col] if c is not None]
+        if selected_cols:
+            leadji_info = xls.parse(
+                sheet_name=leadji_info_sheet,
+                usecols=lambda c: str(c).strip() in set(selected_cols),
+            )
+            leadji_info.columns = [str(c).strip() for c in leadji_info.columns]
+            rename_map = {}
+            if prod_col is not None:
+                rename_map[prod_col] = "생산"
+            if b1_col is not None:
+                rename_map[b1_col] = "B1코드"
+            if b1_name_col is not None:
+                rename_map[b1_name_col] = "B1코드명"
+            leadji_info = leadji_info.rename(columns=rename_map)
+
+    leadji_stock = pd.DataFrame()
+    if leadji_stock_sheet:
+        preview = xls.parse(sheet_name=leadji_stock_sheet, nrows=0)
+        preview_cols = [str(c).strip() for c in preview.columns]
+        code_col = pick_first_existing_column(preview_cols, ["품목코드"])
+        warehouse_col = pick_first_existing_column(preview_cols, ["창고"])
+        qty_col = pick_first_existing_column(preview_cols, ["재고"])
+        selected_cols = [c for c in [code_col, warehouse_col, qty_col] if c is not None]
+        if selected_cols:
+            leadji_stock = xls.parse(
+                sheet_name=leadji_stock_sheet,
+                usecols=lambda c: str(c).strip() in set(selected_cols),
+            )
+            leadji_stock.columns = [str(c).strip() for c in leadji_stock.columns]
+            leadji_stock = leadji_stock.rename(
+                columns={
+                    code_col: "품목코드",
+                    warehouse_col: "창고",
+                    qty_col: "재고",
+                }
+            )
 
     if not leadji_info.empty:
         leadji_info.columns = [str(c).strip() for c in leadji_info.columns]
@@ -3262,6 +3351,82 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
 
 
 @st.cache_data(show_spinner=False, max_entries=CACHE_MAX_ENTRIES)
+def build_leadji_code_mapping(leadji_info: pd.DataFrame) -> pd.DataFrame:
+    columns = ["P코드5", "리드지코드", "리드지명"]
+    if leadji_info.empty:
+        return pd.DataFrame(columns=columns)
+
+    info_cols = leadji_info.columns.tolist()
+    prod_col = pick_first_existing_column(info_cols, ["생산"])
+    b1_col = pick_first_existing_column(info_cols, ["B1코드"])
+    b1_name_col = pick_first_existing_column(info_cols, ["B1코드명"])
+
+    if prod_col is None and len(info_cols) > 3:
+        prod_col = info_cols[3]
+    if b1_col is None and len(info_cols) > 12:
+        b1_col = info_cols[12]
+    if b1_name_col is None and len(info_cols) > 13:
+        b1_name_col = info_cols[13]
+    if prod_col is None or b1_col is None:
+        return pd.DataFrame(columns=columns)
+
+    selected_cols = [prod_col, b1_col] + ([b1_name_col] if b1_name_col is not None else [])
+    mapping = leadji_info[selected_cols].copy()
+    for col in selected_cols:
+        mapping[col] = mapping[col].astype(str).str.strip().replace({"nan": "", "None": ""})
+
+    mapping["P코드5"] = mapping[prod_col].str.upper().str[:5]
+    mapping = mapping[(mapping["P코드5"].str.startswith("P")) & (mapping[b1_col] != "")]
+    mapping = mapping.rename(columns={b1_col: "리드지코드"})
+    if b1_name_col is not None:
+        mapping = mapping.rename(columns={b1_name_col: "리드지명"})
+    else:
+        mapping["리드지명"] = "-"
+    return mapping[columns].drop_duplicates(subset=["P코드5", "리드지코드"], keep="first")
+
+
+@st.cache_data(show_spinner=False, max_entries=CACHE_MAX_ENTRIES)
+def build_leadji_stock_pivot(leadji_stock: pd.DataFrame) -> pd.DataFrame:
+    if leadji_stock.empty:
+        return pd.DataFrame(columns=["리드지코드"])
+
+    stock_cols = leadji_stock.columns.tolist()
+    code_col = pick_first_existing_column(stock_cols, ["품목코드"])
+    warehouse_col = pick_first_existing_column(stock_cols, ["창고"])
+    qty_col = pick_first_existing_column(stock_cols, ["재고"])
+    if not code_col or not warehouse_col or not qty_col:
+        return pd.DataFrame(columns=["리드지코드"])
+
+    stock = leadji_stock[[code_col, warehouse_col, qty_col]].copy()
+    stock[code_col] = stock[code_col].astype(str).str.strip()
+    stock[warehouse_col] = stock[warehouse_col].astype(str).str.strip()
+    stock[qty_col] = parse_mixed_numeric(stock[qty_col])
+    stock = stock[(stock[code_col] != "") & (stock[warehouse_col] != "") & (stock[qty_col] > 0)]
+    if stock.empty:
+        return pd.DataFrame(columns=["리드지코드"])
+
+    stock = stock.groupby([code_col, warehouse_col], as_index=False)[qty_col].sum()
+    pivot = stock.pivot_table(
+        index=code_col,
+        columns=warehouse_col,
+        values=qty_col,
+        aggfunc="sum",
+        fill_value=0,
+    )
+    if pivot.empty:
+        return pd.DataFrame(columns=["리드지코드"])
+
+    excluded_warehouse_columns = {"L관창고(자재불량)"}
+    warehouse_columns = [
+        str(c) for c in pivot.sum(axis=0).sort_values(ascending=False).index.tolist() if str(c) not in excluded_warehouse_columns
+    ]
+    pivot = pivot.reindex(columns=warehouse_columns).reset_index().rename(columns={code_col: "리드지코드"})
+    for w_col in warehouse_columns:
+        pivot[w_col] = parse_mixed_numeric(pivot[w_col])
+    return pivot
+
+
+@st.cache_data(show_spinner=False, max_entries=CACHE_MAX_ENTRIES)
 def build_leadji_requirement_summary(
     shortage_df: pd.DataFrame, leadji_info: pd.DataFrame, leadji_stock: pd.DataFrame
 ) -> pd.DataFrame:
@@ -3281,37 +3446,9 @@ def build_leadji_requirement_summary(
     if p_shortage.empty:
         return pd.DataFrame(columns=fixed_columns)
 
-    if leadji_info.empty:
+    mapping = build_leadji_code_mapping(leadji_info)
+    if mapping.empty:
         return pd.DataFrame(columns=fixed_columns)
-
-    info_cols = leadji_info.columns.tolist()
-    prod_col = pick_first_existing_column(info_cols, ["생산"])
-    b1_col = pick_first_existing_column(info_cols, ["B1코드"])
-    b1_name_col = pick_first_existing_column(info_cols, ["B1코드명"])
-
-    if prod_col is None and len(info_cols) > 3:
-        prod_col = info_cols[3]
-    if b1_col is None and len(info_cols) > 12:
-        b1_col = info_cols[12]
-    if b1_name_col is None and len(info_cols) > 13:
-        b1_name_col = info_cols[13]
-
-    if prod_col is None or b1_col is None:
-        return pd.DataFrame(columns=fixed_columns)
-
-    selected_cols = [prod_col, b1_col] + ([b1_name_col] if b1_name_col is not None else [])
-    mapping = leadji_info[selected_cols].copy()
-    for col in selected_cols:
-        mapping[col] = mapping[col].astype(str).str.strip().replace({"nan": "", "None": ""})
-
-    mapping["P코드5"] = mapping[prod_col].str.upper().str[:5]
-    mapping = mapping[(mapping["P코드5"].str.startswith("P")) & (mapping[b1_col] != "")]
-    mapping = mapping.rename(columns={b1_col: "리드지코드"})
-    if b1_name_col is not None:
-        mapping = mapping.rename(columns={b1_name_col: "리드지명"})
-    else:
-        mapping["리드지명"] = "-"
-    mapping = mapping[["P코드5", "리드지코드", "리드지명"]].drop_duplicates(subset=["P코드5", "리드지코드"], keep="first")
 
     bs_base = p_shortage.merge(mapping, on="P코드5", how="left")
     unmatched_map = bs_base["리드지코드"].isna() | (bs_base["리드지코드"].astype(str).str.strip() == "")
@@ -3326,36 +3463,12 @@ def build_leadji_requirement_summary(
         .sort_values(["생산필요수량", "리드지코드"], ascending=[False, True])
     )
     warehouse_columns: list[str] = []
-    if not leadji_stock.empty:
-        stock_cols = leadji_stock.columns.tolist()
-        code_col = pick_first_existing_column(stock_cols, ["품목코드"])
-        warehouse_col = pick_first_existing_column(stock_cols, ["창고"])
-        qty_col = pick_first_existing_column(stock_cols, ["재고"])
-        if code_col and warehouse_col and qty_col:
-            stock = leadji_stock[[code_col, warehouse_col, qty_col]].copy()
-            stock[code_col] = stock[code_col].astype(str).str.strip()
-            stock[warehouse_col] = stock[warehouse_col].astype(str).str.strip()
-            stock[qty_col] = parse_mixed_numeric(stock[qty_col])
-            stock = stock[(stock[code_col] != "") & (stock[warehouse_col] != "") & (stock[qty_col] > 0)]
-            if not stock.empty:
-                stock = stock.groupby([code_col, warehouse_col], as_index=False)[qty_col].sum()
-                pivot = stock.pivot_table(
-                    index=code_col,
-                    columns=warehouse_col,
-                    values=qty_col,
-                    aggfunc="sum",
-                    fill_value=0,
-                )
-                if not pivot.empty:
-                    warehouse_totals = pivot.sum(axis=0).sort_values(ascending=False)
-                    excluded_warehouse_columns = {"L관창고(자재불량)"}
-                    warehouse_columns = [
-                        str(c) for c in warehouse_totals.index.tolist() if str(c) not in excluded_warehouse_columns
-                    ]
-                    pivot = pivot.reindex(columns=warehouse_columns).reset_index().rename(columns={code_col: "리드지코드"})
-                    summary = summary.merge(pivot, on="리드지코드", how="left")
-                    for w_col in warehouse_columns:
-                        summary[w_col] = parse_mixed_numeric(summary[w_col])
+    stock_pivot = build_leadji_stock_pivot(leadji_stock)
+    if not stock_pivot.empty:
+        warehouse_columns = [c for c in stock_pivot.columns if c != "리드지코드"]
+        summary = summary.merge(stock_pivot, on="리드지코드", how="left")
+        for w_col in warehouse_columns:
+            summary[w_col] = parse_mixed_numeric(summary[w_col])
 
     active_warehouse_columns: list[str] = []
     for w_col in warehouse_columns:
@@ -3456,31 +3569,8 @@ def build_pcode5_leadji_requirement_summary(
     if p_shortage.empty:
         return pd.DataFrame(columns=fixed_columns)
 
-    info_cols = leadji_info.columns.tolist() if not leadji_info.empty else []
-    prod_col = pick_first_existing_column(info_cols, ["생산"])
-    b1_col = pick_first_existing_column(info_cols, ["B1코드"])
-    b1_name_col = pick_first_existing_column(info_cols, ["B1코드명"])
-
-    if prod_col is None and len(info_cols) > 3:
-        prod_col = info_cols[3]
-    if b1_col is None and len(info_cols) > 12:
-        b1_col = info_cols[12]
-    if b1_name_col is None and len(info_cols) > 13:
-        b1_name_col = info_cols[13]
-
-    if prod_col is not None and b1_col is not None:
-        selected_cols = [prod_col, b1_col] + ([b1_name_col] if b1_name_col is not None else [])
-        mapping = leadji_info[selected_cols].copy()
-        for col in selected_cols:
-            mapping[col] = mapping[col].astype(str).str.strip().replace({"nan": "", "None": ""})
-        mapping["P코드5"] = mapping[prod_col].str.upper().str[:5]
-        mapping = mapping[(mapping["P코드5"].str.startswith("P")) & (mapping[b1_col] != "")]
-        mapping = mapping.rename(columns={b1_col: "리드지코드"})
-        if b1_name_col is not None:
-            mapping = mapping.rename(columns={b1_name_col: "리드지명"})
-        else:
-            mapping["리드지명"] = "-"
-        mapping = mapping[["P코드5", "리드지코드", "리드지명"]].drop_duplicates(subset=["P코드5", "리드지코드"], keep="first")
+    mapping = build_leadji_code_mapping(leadji_info)
+    if not mapping.empty:
         detail = p_shortage.merge(mapping, on="P코드5", how="left")
     else:
         detail = p_shortage.copy()
@@ -3497,36 +3587,12 @@ def build_pcode5_leadji_requirement_summary(
     )
 
     warehouse_columns: list[str] = []
-    if not leadji_stock.empty:
-        stock_cols = leadji_stock.columns.tolist()
-        code_col = pick_first_existing_column(stock_cols, ["품목코드"])
-        warehouse_col = pick_first_existing_column(stock_cols, ["창고"])
-        qty_col = pick_first_existing_column(stock_cols, ["재고"])
-        if code_col and warehouse_col and qty_col:
-            stock = leadji_stock[[code_col, warehouse_col, qty_col]].copy()
-            stock[code_col] = stock[code_col].astype(str).str.strip()
-            stock[warehouse_col] = stock[warehouse_col].astype(str).str.strip()
-            stock[qty_col] = parse_mixed_numeric(stock[qty_col])
-            stock = stock[(stock[code_col] != "") & (stock[warehouse_col] != "") & (stock[qty_col] > 0)]
-            if not stock.empty:
-                stock = stock.groupby([code_col, warehouse_col], as_index=False)[qty_col].sum()
-                pivot = stock.pivot_table(
-                    index=code_col,
-                    columns=warehouse_col,
-                    values=qty_col,
-                    aggfunc="sum",
-                    fill_value=0,
-                )
-                if not pivot.empty:
-                    warehouse_totals = pivot.sum(axis=0).sort_values(ascending=False)
-                    excluded_warehouse_columns = {"L관창고(자재불량)"}
-                    warehouse_columns = [
-                        str(c) for c in warehouse_totals.index.tolist() if str(c) not in excluded_warehouse_columns
-                    ]
-                    pivot = pivot.reindex(columns=warehouse_columns).reset_index().rename(columns={code_col: "리드지코드"})
-                    summary = summary.merge(pivot, on="리드지코드", how="left")
-                    for w_col in warehouse_columns:
-                        summary[w_col] = parse_mixed_numeric(summary[w_col])
+    stock_pivot = build_leadji_stock_pivot(leadji_stock)
+    if not stock_pivot.empty:
+        warehouse_columns = [c for c in stock_pivot.columns if c != "리드지코드"]
+        summary = summary.merge(stock_pivot, on="리드지코드", how="left")
+        for w_col in warehouse_columns:
+            summary[w_col] = parse_mixed_numeric(summary[w_col])
 
     active_warehouse_columns: list[str] = []
     for w_col in warehouse_columns:
