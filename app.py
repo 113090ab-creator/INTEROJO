@@ -181,6 +181,17 @@ def inject_dashboard_theme() -> None:
             background: #ffffff;
             box-shadow: 0 8px 22px rgba(15, 23, 42, 0.05);
         }
+        [data-testid="stExpanderToggleIcon"],
+        [data-testid="stExpander"] summary [data-testid="stIconMaterial"],
+        [data-testid="stExpander"] summary .material-icons,
+        [data-testid="stExpander"] summary .material-icons-outlined,
+        [data-testid="stExpander"] summary .material-symbols-rounded {
+            font-size: 0 !important;
+            width: 0 !important;
+            min-width: 0 !important;
+            margin: 0 !important;
+            overflow: hidden !important;
+        }
         [data-testid="stTextInput"] input {
             border-radius: 8px;
             border-color: #D1D5DB;
@@ -484,20 +495,21 @@ def stage_uploaded_data_files(
 
 def select_data_source(base_dir: Path) -> tuple[Path, str, str]:
     st.subheader("데이터 소스")
-    with st.expander("업로드 설정", expanded=False):
-        use_uploaded = st.toggle("업로드 파일 사용", value=False, key="use_uploaded_data_mode")
-        inv_file = st.file_uploader("재고 파일(.xlsx)", type=["xlsx"], key="upload_inventory_xlsx", disabled=not use_uploaded)
-        dem_file = st.file_uploader("수요 파일(.xlsx)", type=["xlsx"], key="upload_demand_xlsx", disabled=not use_uploaded)
+    use_uploaded = st.toggle("업로드 파일 사용", value=False, key="use_uploaded_data_mode")
+    inv_file = None
+    dem_file = None
+    ref_file = None
+    if use_uploaded:
+        inv_file = st.file_uploader("재고 파일(.xlsx)", type=["xlsx"], key="upload_inventory_xlsx")
+        dem_file = st.file_uploader("수요 파일(.xlsx)", type=["xlsx"], key="upload_demand_xlsx")
         ref_file = st.file_uploader(
             "기준정보 파일(.xlsx, 선택)",
             type=["xlsx"],
             key="upload_reference_xlsx",
-            disabled=not use_uploaded,
             help="미업로드 시 로컬의 '제품명 기준 정보.xlsx'를 사용합니다.",
         )
-
-        if not use_uploaded:
-            st.caption("현재 설정: 로컬 폴더의 파일 사용")
+    else:
+        st.caption("현재 설정: 로컬 폴더의 파일 사용")
 
     if not use_uploaded:
         return base_dir, "로컬 파일", get_data_updated_at(base_dir)
