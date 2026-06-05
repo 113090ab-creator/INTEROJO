@@ -30,6 +30,35 @@ TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 DATAFRAME_DISPLAY_ROW_LIMIT = 1000
 CACHE_MAX_ENTRIES = 64
 POWER_VALUE_PATTERN = re.compile(r"([+-]\d{1,2}(?:\.\d{1,2})?)")
+UNCLASSIFIED_SHEET_CATEGORY = "미분류"
+INVALID_CATEGORY_VALUES = {"", "-", "nan", "none", "nat", "null", "na", "<na>"}
+
+CATEGORY_RULES = {
+    "피피비(HAPA)": ["HAPA"],
+    "Sincere_2Week": ["Sincere 2Week", "Sincere_2Week", "2Week"],
+    "T-Garden": ["T-Garden"],
+    "Feel Good": ["Feel Good", "FGC", "comfi"],
+    "Freedom수출": ["Freedom", "Freedom380", "ALENSA_1-DAY BL Metha"],
+    "1-DAY_Metha": ["Metha_Daily", "1-DAY Metha"],
+    "1-DAY_58": ["1-DAY_58", "1DAY58", "1-Day_Contakt", "1-Day Contakt"],
+    "중국(IRIS)": ["^IRIS_", "INTEROJO CHINA"],
+    "Layala": ["Layala"],
+    "ANW": ["ANW"],
+    "Sincere": ["Sincere"],
+    "O2O2_국내": ["O2O2", "Clalen O2O2"],
+    "렌즈미": ["렌즈미", "AKMA"],
+    "PIA 종합": ["PIA", "feliamo", "Lilmoon", "MOLAK"],
+}
+
+CUSTOMER_CATEGORY_RULES = {
+    "중국(IRIS)": ["INTEROJO CHINA"],
+    "Feel Good": ["Feel Good Contacts", "CROSSBIRD"],
+    "Freedom수출": ["ESSILOR", "Alensa"],
+    "T-Garden": ["T-garden"],
+    "Sincere": ["SINCERE Co"],
+    "1-DAY_58": ["KODANO", "Future Medical Lab"],
+    "PIA 종합": ["PIA Co"],
+}
 
 COLUMN_LABEL_ALIASES = {
     "사출창고": "사출 재고",
@@ -868,6 +897,178 @@ def extract_power_from_code(item_code: str) -> str:
     return format_power_value(match.group(1)) if match else "-"
 
 
+def clean_text_value(value: object) -> str:
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+
+    text = str(value).strip()
+    return "" if text.lower() in INVALID_CATEGORY_VALUES else text
+
+
+def clean_sheet_category(value: object) -> str:
+    text = clean_text_value(value)
+    if text == UNCLASSIFIED_SHEET_CATEGORY:
+        return ""
+    return text
+
+
+def normalize_lookup_key(value: object) -> str:
+    text = clean_text_value(value).lower()
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def normalize_keyword_key(value: object) -> str:
+    text = clean_text_value(value).lower()
+    return re.sub(r"[\s_\-./()]+", "", text)
+
+
+def extract_code_prefix(value: object) -> str:
+    code = clean_text_value(value).upper()
+    if not code:
+        return ""
+    compact = re.sub(r"\s+", "", code)
+    return compact[:5] if len(compact) >= 5 else ""
+
+
+def build_unique_category_lookup(keys: pd.Series, categories: pd.Series) -> dict[str, str]:
+    lookup_df = pd.DataFrame(
+        {
+            "key": keys.map(normalize_lookup_key),
+            "category": categories.map(clean_sheet_category),
+        }
+    )
+    lookup_df = lookup_df[(lookup_df["key"] != "") & (lookup_df["category"] != "")]
+    if lookup_df.empty:
+        return {}
+
+    category_counts = lookup_df.groupby("key")["category"].nunique()
+    unique_keys = category_counts[category_counts == 1].index
+    unique_df = lookup_df[lookup_df["key"].isin(unique_keys)].drop_duplicates(subset=["key"], keep="first")
+    return unique_df.set_index("key")["category"].to_dict()
+
+
+def build_unique_prefix_lookup(prefixes: pd.Series, categories: pd.Series) -> dict[str, str]:
+    lookup_df = pd.DataFrame(
+        {
+            "key": prefixes.map(extract_code_prefix),
+            "category": categories.map(clean_sheet_category),
+        }
+    )
+    lookup_df = lookup_df[(lookup_df["key"] != "") & (lookup_df["category"] != "")]
+    if lookup_df.empty:
+        return {}
+
+    category_counts = lookup_df.groupby("key")["category"].nunique()
+    unique_keys = category_counts[category_counts == 1].index
+    unique_df = lookup_df[lookup_df["key"].isin(unique_keys)].drop_duplicates(subset=["key"], keep="first")
+    return unique_df.set_index("key")["category"].to_dict()
+
+
+def build_sheet_classification_context(
+    df: pd.DataFrame, manual_category_col: str = "수동시트분류"
+) -> dict[str, dict[str, str]]:
+    if df.empty or manual_category_col not in df.columns:
+        return {"product_name": {}, "initial": {}, "prefix": {}}
+
+    manual_categories = df[manual_category_col].map(clean_sheet_category)
+    valid_manual = manual_categories != ""
+    source = df[valid_manual].copy()
+    source_categories = manual_categories[valid_manual]
+    if source.empty:
+        return {"product_name": {}, "initial": {}, "prefix": {}}
+
+    product_lookup = (
+        build_unique_category_lookup(source["제품명"], source_categories)
+        if "제품명" in source.columns
+        else {}
+    )
+    initial_lookup = (
+        build_unique_category_lookup(source["이니셜"], source_categories)
+        if "이니셜" in source.columns
+        else {}
+    )
+
+    prefix_parts = []
+    for col in ["품목코드", "R코드", "Q코드"]:
+        if col in source.columns:
+            prefix_parts.append(pd.DataFrame({"prefix": source[col], "category": source_categories}))
+    if prefix_parts:
+        prefix_df = pd.concat(prefix_parts, ignore_index=True)
+        prefix_lookup = build_unique_prefix_lookup(prefix_df["prefix"], prefix_df["category"])
+    else:
+        prefix_lookup = {}
+
+    return {"product_name": product_lookup, "initial": initial_lookup, "prefix": prefix_lookup}
+
+
+def match_keyword_category(text: object, rules: dict[str, list[str]]) -> tuple[str, str]:
+    normalized_text = normalize_keyword_key(text)
+    if not normalized_text:
+        return UNCLASSIFIED_SHEET_CATEGORY, "분류 기준 없음"
+
+    for category, keywords in rules.items():
+        for keyword in keywords:
+            raw_keyword = clean_text_value(keyword)
+            startswith_match = raw_keyword.startswith("^")
+            keyword_body = raw_keyword[1:] if startswith_match else raw_keyword
+            normalized_keyword = normalize_keyword_key(keyword_body)
+            if not normalized_keyword:
+                continue
+            matched = (
+                normalized_text.startswith(normalized_keyword)
+                if startswith_match
+                else normalized_keyword in normalized_text
+            )
+            if matched:
+                return category, keyword_body
+
+    return UNCLASSIFIED_SHEET_CATEGORY, "분류 기준 없음"
+
+
+def classify_sheet_with_reason(
+    row: pd.Series, context: dict[str, dict[str, str]] | None = None
+) -> tuple[str, str]:
+    context = context or {"product_name": {}, "initial": {}, "prefix": {}}
+
+    product_name = row.get("제품명", "")
+    product_key = normalize_lookup_key(product_name)
+    if product_key and product_key in context.get("product_name", {}):
+        return context["product_name"][product_key], "기존 동일 제품명 기준 매칭"
+
+    initial = row.get("이니셜", "")
+    initial_key = normalize_lookup_key(initial)
+    if initial_key and initial_key in context.get("initial", {}):
+        return context["initial"][initial_key], "기존 동일 이니셜 기준 매칭"
+
+    for col, reason in [
+        ("품목코드", "기존 동일 품목코드 prefix 기준 매칭"),
+        ("R코드", "기존 동일 R코드 prefix 기준 매칭"),
+        ("Q코드", "기존 동일 Q코드 prefix 기준 매칭"),
+    ]:
+        prefix = extract_code_prefix(row.get(col, ""))
+        if prefix and prefix in context.get("prefix", {}):
+            return context["prefix"][prefix], reason
+
+    category, keyword = match_keyword_category(product_name, CATEGORY_RULES)
+    if category != UNCLASSIFIED_SHEET_CATEGORY:
+        return category, f"제품명에 {keyword} 포함"
+
+    customer = row.get("거래처", "")
+    category, keyword = match_keyword_category(customer, CUSTOMER_CATEGORY_RULES)
+    if category != UNCLASSIFIED_SHEET_CATEGORY:
+        return category, f"거래처에 {keyword} 포함"
+
+    return UNCLASSIFIED_SHEET_CATEGORY, "분류 기준 없음"
+
+
+def classify_sheet(row: pd.Series) -> str:
+    category, _ = classify_sheet_with_reason(row)
+    return category
+
+
 def find_product_name_reference_file(base_dir: Path) -> Path | None:
     candidates = [
         p
@@ -1688,7 +1889,7 @@ def pick_fixed_column_width_px(column_name: str, max_length: int, numeric_like: 
     if numeric_like:
         return int(max(90, min(145, 24 + max_length * 7)))
 
-    long_text_columns = {"제품명", "R코드 제품명", "리드지명", "제품명 예시"}
+    long_text_columns = {"제품명", "R코드 제품명", "리드지명", "제품명 예시", "분류 판단 근거"}
     medium_text_columns = {"품목코드", "R코드", "Q코드", "생산코드", "리드지코드", "P코드 예시"}
     status_columns = {"상태"}
     date_columns = {"납기일", "입고예상일자", "생산 최소 납기일", "최소납기일"}
@@ -2440,7 +2641,7 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
     grouped_demand["R코드 제품명"] = grouped_demand["R코드 제품명"].fillna(grouped_demand["R코드5"])
     grouped_demand["R코드 제품명"] = grouped_demand["R코드 제품명"].replace({"": "-", "nan": "-", "None": "-"}).fillna("-")
     grouped_demand["분류별요약"] = grouped_demand["코드5"].map(product_group_map).fillna("기타")
-    grouped_demand["시트분류"] = grouped_demand["코드5"].map(sheet2_group_map).fillna("기타 해외")
+    grouped_demand["시트분류"] = grouped_demand["코드5"].map(sheet2_group_map)
     grouped_demand = grouped_demand.drop(columns=["코드5", "R코드5"])
 
     target_inv = inv_df[inv_df["창고"].isin(TARGET_WAREHOUSES)].copy()
@@ -2544,9 +2745,28 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
         result.loc[non_p_mask, "R코드5"].map(r_to_group)
     )
 
-    result["시트분류"] = result["시트분류"].astype(str).str.strip()
+    result["수동시트분류"] = result["시트분류"].map(clean_sheet_category)
+    classification_context = build_sheet_classification_context(result, "수동시트분류")
+    if result.empty:
+        result["자동분류결과"] = pd.Series(dtype="object")
+        result["분류 판단 근거"] = pd.Series(dtype="object")
+    else:
+        auto_classification = result.apply(
+            lambda row: classify_sheet_with_reason(row, classification_context),
+            axis=1,
+            result_type="expand",
+        )
+        result["자동분류결과"] = auto_classification[0]
+        result["분류 판단 근거"] = auto_classification[1]
+
+    manual_mask = result["수동시트분류"].map(clean_sheet_category) != ""
+    result["시트분류"] = result["자동분류결과"]
+    result.loc[manual_mask, "시트분류"] = result.loc[manual_mask, "수동시트분류"]
+    result.loc[manual_mask, "분류 판단 근거"] = "수동 분류값 사용"
+
+    result["시트분류"] = result["시트분류"].map(clean_text_value)
+    result.loc[result["시트분류"].str.lower().isin(INVALID_CATEGORY_VALUES), "시트분류"] = UNCLASSIFIED_SHEET_CATEGORY
     result["분류별요약"] = result["분류별요약"].astype(str).str.strip()
-    result.loc[result["시트분류"].str.lower().isin({"", "nan", "none"}), "시트분류"] = "기타 해외"
     result.loc[result["분류별요약"].str.lower().isin({"", "nan", "none"}), "분류별요약"] = "기타"
     result = result.drop(columns=["코드5"], errors="ignore")
 
@@ -2912,6 +3132,47 @@ def load_leadji_order_data(refresh_key: str, base_dir_str: str | None = None) ->
     ]
 
 
+def render_unclassified_products_section(df: pd.DataFrame, download_stamp: str) -> None:
+    columns = ["거래처", "이니셜", "품목코드", "제품명", "자동분류결과", "분류 판단 근거"]
+    if df.empty or "시트분류" not in df.columns:
+        return
+
+    sheet_category = df["시트분류"].astype(str).str.strip()
+    unclassified = df[sheet_category == UNCLASSIFIED_SHEET_CATEGORY].copy()
+    table = unclassified[[c for c in columns if c in unclassified.columns]].drop_duplicates()
+    if not table.empty:
+        sort_cols = [c for c in ["거래처", "이니셜", "품목코드"] if c in table.columns]
+        if sort_cols:
+            table = table.sort_values(sort_cols, ascending=True)
+
+    with st.expander(f"미분류 제품 목록 ({len(table):,}건)", expanded=not table.empty):
+        if table.empty:
+            st.info("미분류 제품이 없습니다.")
+            return
+
+        st.download_button(
+            "미분류 엑셀 다운로드",
+            data=dataframe_to_excel_bytes(table, sheet_name="미분류제품"),
+            file_name=f"unclassified_products_{download_stamp}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_unclassified_products",
+            use_container_width=False,
+        )
+        table_display_source, _ = limit_dataframe_for_display(table)
+        caption_limited_rows(len(table), len(table_display_source))
+        table_display = format_numeric_columns_for_display(table_display_source)
+        table_column_config = build_auto_column_config(
+            table_display, table_display.columns.tolist(), source_df=table_display_source
+        )
+        st.dataframe(
+            table_display,
+            use_container_width=True,
+            height=min(520, 78 + len(table_display_source) * 38),
+            column_config=table_column_config,
+            hide_index=True,
+        )
+
+
 def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
     enriched_df = add_rq_group_columns(df)
     filtered = apply_filters(enriched_df, updated_at)
@@ -2959,6 +3220,8 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         filtered = filter_with_terms_any(filtered, direct_search_cols, direct_query)
     with result_col:
         st.caption(f"표시 {len(filtered):,}건 / 전체 {base_filtered_count:,}건")
+
+    render_unclassified_products_section(filtered, download_stamp)
 
     if selected_shortage_view == "생산 현황":
         full_demand_summary = build_summary_group_totals_with_safe_split(filtered)
