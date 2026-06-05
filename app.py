@@ -33,31 +33,52 @@ POWER_VALUE_PATTERN = re.compile(r"([+-]\d{1,2}(?:\.\d{1,2})?)")
 UNCLASSIFIED_SHEET_CATEGORY = "미분류"
 INVALID_CATEGORY_VALUES = {"", "-", "nan", "none", "nat", "null", "na", "<na>"}
 
-CATEGORY_RULES = {
-    "피피비(HAPA)": ["HAPA"],
-    "Sincere_2Week": ["Sincere 2Week", "Sincere_2Week", "2Week"],
-    "T-Garden": ["T-Garden"],
-    "Feel Good": ["Feel Good", "FGC", "comfi"],
-    "Freedom수출": ["Freedom", "Freedom380", "ALENSA_1-DAY BL Metha"],
-    "1-DAY_Metha": ["Metha_Daily", "1-DAY Metha"],
-    "1-DAY_58": ["1-DAY_58", "1DAY58", "1-Day_Contakt", "1-Day Contakt"],
-    "중국(IRIS)": ["^IRIS_", "INTEROJO CHINA"],
-    "Layala": ["Layala"],
-    "ANW": ["ANW"],
-    "Sincere": ["Sincere"],
-    "O2O2_국내": ["O2O2", "Clalen O2O2"],
-    "렌즈미": ["렌즈미", "AKMA"],
-    "PIA 종합": ["PIA", "feliamo", "Lilmoon", "MOLAK"],
+CUSTOMER_EXACT_CATEGORY_RULES = {
+    "PIA Co.,Ltd.": "PIA 종합",
+    "PIA Corporation": "PIA 종합",
+    "INTEROJO CHINA CO., LTD": "중국(IRIS)",
+    "MG Medical Group": "MG MEDICAL",
+    "SINCERE Co.,Ltd": "Sincere",
+    "T-garden": "T-Garden",
+    "CROSSBIRD LIMITED (Feel Good Contacts)": "Feel Good",
+    "(주)피피비스튜디오스": "피피비(HAPA)",
 }
 
 CUSTOMER_CATEGORY_RULES = {
-    "중국(IRIS)": ["INTEROJO CHINA"],
-    "Feel Good": ["Feel Good Contacts", "CROSSBIRD"],
-    "Freedom수출": ["ESSILOR", "Alensa"],
-    "T-Garden": ["T-garden"],
-    "Sincere": ["SINCERE Co"],
-    "1-DAY_58": ["KODANO", "Future Medical Lab"],
-    "PIA 종합": ["PIA Co"],
+    "PIA 종합": ["PIA", "PIA CO", "PIA CO.,LTD", "PIA CORPORATION"],
+    "중국(IRIS)": ["IRIS", "CHINA", "중국"],
+    "Freedom수출": ["FREEDOM"],
+    "렌즈미": ["렌즈미", "LENSME", "LENS ME"],
+    "피피비(HAPA)": ["HAPA", "피피비", "PPB"],
+    "Layala": ["LAYALA"],
+    "ANW": ["ANW"],
+    "T-Garden": ["T-GARDEN", "TGARDEN", "T GARDEN"],
+    "Sincere": ["SINCERE"],
+    "Feel Good": ["FEEL GOOD", "FEELGOOD"],
+    "국내": ["국내", "KOREA", "인터로조", "클라렌", "CLALEN", "LENSVERY", "LENS VERY"],
+    "MG MEDICAL": ["MG MEDICAL", "MG MEDICAL GROUP"],
+}
+
+PRODUCT_CATEGORY_RULES = {
+    "피피비(HAPA)": ["HAPA", "PPB"],
+    "Sincere_2Week": ["SINCERE 2WEEK", "SINCERE_2WEEK", "2WEEK", "2-WEEK"],
+    "T-Garden": ["T-Garden", "TGarden", "T Garden"],
+    "Feel Good": ["Feel Good", "FEELGOOD", "FGC", "comfi"],
+    "Freedom수출": ["Freedom", "Freedom380"],
+    "1-DAY_Metha": ["Metha_Daily", "1-DAY Metha", "BL Metha"],
+    "1-DAY_58": ["1-DAY_58", "1DAY58", "1-Day_Contakt", "1-Day Contakt"],
+    "중국(IRIS)": ["^IRIS_"],
+    "Layala": ["Layala"],
+    "ANW": ["ANW"],
+    "Sincere": ["Sincere"],
+    "렌즈미": ["렌즈미", "LENSME", "AKMA"],
+    "국내": ["Clalen", "클라렌", "Lensvery", "Lens Very"],
+    "MG MEDICAL": ["MG M_"],
+    "PIA 종합": ["PIA", "feliamo", "Lilmoon", "MOLAK"],
+}
+
+SINCERE_2WEEK_RULES = {
+    "Sincere_2Week": ["SINCERE 2WEEK", "SINCERE_2WEEK", "2WEEK", "2-WEEK"]
 }
 
 COLUMN_LABEL_ALIASES = {
@@ -925,85 +946,6 @@ def normalize_keyword_key(value: object) -> str:
     return re.sub(r"[\s_\-./()]+", "", text)
 
 
-def extract_code_prefix(value: object) -> str:
-    code = clean_text_value(value).upper()
-    if not code:
-        return ""
-    compact = re.sub(r"\s+", "", code)
-    return compact[:5] if len(compact) >= 5 else ""
-
-
-def build_unique_category_lookup(keys: pd.Series, categories: pd.Series) -> dict[str, str]:
-    lookup_df = pd.DataFrame(
-        {
-            "key": keys.map(normalize_lookup_key),
-            "category": categories.map(clean_sheet_category),
-        }
-    )
-    lookup_df = lookup_df[(lookup_df["key"] != "") & (lookup_df["category"] != "")]
-    if lookup_df.empty:
-        return {}
-
-    category_counts = lookup_df.groupby("key")["category"].nunique()
-    unique_keys = category_counts[category_counts == 1].index
-    unique_df = lookup_df[lookup_df["key"].isin(unique_keys)].drop_duplicates(subset=["key"], keep="first")
-    return unique_df.set_index("key")["category"].to_dict()
-
-
-def build_unique_prefix_lookup(prefixes: pd.Series, categories: pd.Series) -> dict[str, str]:
-    lookup_df = pd.DataFrame(
-        {
-            "key": prefixes.map(extract_code_prefix),
-            "category": categories.map(clean_sheet_category),
-        }
-    )
-    lookup_df = lookup_df[(lookup_df["key"] != "") & (lookup_df["category"] != "")]
-    if lookup_df.empty:
-        return {}
-
-    category_counts = lookup_df.groupby("key")["category"].nunique()
-    unique_keys = category_counts[category_counts == 1].index
-    unique_df = lookup_df[lookup_df["key"].isin(unique_keys)].drop_duplicates(subset=["key"], keep="first")
-    return unique_df.set_index("key")["category"].to_dict()
-
-
-def build_sheet_classification_context(
-    df: pd.DataFrame, manual_category_col: str = "수동시트분류"
-) -> dict[str, dict[str, str]]:
-    if df.empty or manual_category_col not in df.columns:
-        return {"product_name": {}, "initial": {}, "prefix": {}}
-
-    manual_categories = df[manual_category_col].map(clean_sheet_category)
-    valid_manual = manual_categories != ""
-    source = df[valid_manual].copy()
-    source_categories = manual_categories[valid_manual]
-    if source.empty:
-        return {"product_name": {}, "initial": {}, "prefix": {}}
-
-    product_lookup = (
-        build_unique_category_lookup(source["제품명"], source_categories)
-        if "제품명" in source.columns
-        else {}
-    )
-    initial_lookup = (
-        build_unique_category_lookup(source["이니셜"], source_categories)
-        if "이니셜" in source.columns
-        else {}
-    )
-
-    prefix_parts = []
-    for col in ["품목코드", "R코드", "Q코드"]:
-        if col in source.columns:
-            prefix_parts.append(pd.DataFrame({"prefix": source[col], "category": source_categories}))
-    if prefix_parts:
-        prefix_df = pd.concat(prefix_parts, ignore_index=True)
-        prefix_lookup = build_unique_prefix_lookup(prefix_df["prefix"], prefix_df["category"])
-    else:
-        prefix_lookup = {}
-
-    return {"product_name": product_lookup, "initial": initial_lookup, "prefix": prefix_lookup}
-
-
 def match_keyword_category(text: object, rules: dict[str, list[str]]) -> tuple[str, str]:
     normalized_text = normalize_keyword_key(text)
     if not normalized_text:
@@ -1028,40 +970,50 @@ def match_keyword_category(text: object, rules: dict[str, list[str]]) -> tuple[s
     return UNCLASSIFIED_SHEET_CATEGORY, "분류 기준 없음"
 
 
-def classify_sheet_with_reason(
-    row: pd.Series, context: dict[str, dict[str, str]] | None = None
-) -> tuple[str, str]:
-    context = context or {"product_name": {}, "initial": {}, "prefix": {}}
+def match_exact_customer_category(customer: object) -> tuple[str, str]:
+    customer_key = normalize_lookup_key(customer)
+    if not customer_key:
+        return UNCLASSIFIED_SHEET_CATEGORY, "분류 기준 없음"
 
-    product_name = row.get("제품명", "")
-    product_key = normalize_lookup_key(product_name)
-    if product_key and product_key in context.get("product_name", {}):
-        return context["product_name"][product_key], "기존 동일 제품명 기준 매칭"
-
-    initial = row.get("이니셜", "")
-    initial_key = normalize_lookup_key(initial)
-    if initial_key and initial_key in context.get("initial", {}):
-        return context["initial"][initial_key], "기존 동일 이니셜 기준 매칭"
-
-    for col, reason in [
-        ("품목코드", "기존 동일 품목코드 prefix 기준 매칭"),
-        ("R코드", "기존 동일 R코드 prefix 기준 매칭"),
-        ("Q코드", "기존 동일 Q코드 prefix 기준 매칭"),
-    ]:
-        prefix = extract_code_prefix(row.get(col, ""))
-        if prefix and prefix in context.get("prefix", {}):
-            return context["prefix"][prefix], reason
-
-    category, keyword = match_keyword_category(product_name, CATEGORY_RULES)
-    if category != UNCLASSIFIED_SHEET_CATEGORY:
-        return category, f"제품명에 {keyword} 포함"
-
-    customer = row.get("거래처", "")
-    category, keyword = match_keyword_category(customer, CUSTOMER_CATEGORY_RULES)
-    if category != UNCLASSIFIED_SHEET_CATEGORY:
-        return category, f"거래처에 {keyword} 포함"
+    for rule_customer, category in CUSTOMER_EXACT_CATEGORY_RULES.items():
+        if customer_key == normalize_lookup_key(rule_customer):
+            return category, rule_customer
 
     return UNCLASSIFIED_SHEET_CATEGORY, "분류 기준 없음"
+
+
+def is_english_customer_name(customer: object) -> bool:
+    text = clean_text_value(customer)
+    if not text:
+        return False
+    return text.isascii() and bool(re.search(r"[A-Za-z]", text))
+
+
+def classify_sheet_with_reason(row: pd.Series) -> tuple[str, str]:
+    customer = row.get("거래처", "")
+    product_name = row.get("제품명", "")
+    combined_text = f"{clean_text_value(customer)} {clean_text_value(product_name)}"
+
+    category, keyword = match_keyword_category(combined_text, SINCERE_2WEEK_RULES)
+    if category != UNCLASSIFIED_SHEET_CATEGORY:
+        return category, f"거래처/제품명에 {keyword} 포함"
+
+    category, matched_customer = match_exact_customer_category(customer)
+    if category != UNCLASSIFIED_SHEET_CATEGORY:
+        return category, f"거래처명 완전 일치: {matched_customer}"
+
+    category, keyword = match_keyword_category(customer, CUSTOMER_CATEGORY_RULES)
+    if category != UNCLASSIFIED_SHEET_CATEGORY:
+        return category, f"거래처명 키워드 매칭: {keyword}"
+
+    category, keyword = match_keyword_category(product_name, PRODUCT_CATEGORY_RULES)
+    if category != UNCLASSIFIED_SHEET_CATEGORY:
+        return category, f"제품명 보조 키워드 매칭: {keyword}"
+
+    if is_english_customer_name(customer):
+        return "기타 해외", "영문 거래처명 기준 기타 해외 분류"
+
+    return UNCLASSIFIED_SHEET_CATEGORY, "거래처명 기준 분류 불가"
 
 
 def classify_sheet(row: pd.Series) -> str:
@@ -2746,13 +2698,12 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
     )
 
     result["수동시트분류"] = result["시트분류"].map(clean_sheet_category)
-    classification_context = build_sheet_classification_context(result, "수동시트분류")
     if result.empty:
         result["자동분류결과"] = pd.Series(dtype="object")
         result["분류 판단 근거"] = pd.Series(dtype="object")
     else:
         auto_classification = result.apply(
-            lambda row: classify_sheet_with_reason(row, classification_context),
+            lambda row: classify_sheet_with_reason(row),
             axis=1,
             result_type="expand",
         )
@@ -2762,7 +2713,7 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
     manual_mask = result["수동시트분류"].map(clean_sheet_category) != ""
     result["시트분류"] = result["자동분류결과"]
     result.loc[manual_mask, "시트분류"] = result.loc[manual_mask, "수동시트분류"]
-    result.loc[manual_mask, "분류 판단 근거"] = "수동 분류값 사용"
+    result.loc[manual_mask, "분류 판단 근거"] = "수동 분류값 적용"
 
     result["시트분류"] = result["시트분류"].map(clean_text_value)
     result.loc[result["시트분류"].str.lower().isin(INVALID_CATEGORY_VALUES), "시트분류"] = UNCLASSIFIED_SHEET_CATEGORY
