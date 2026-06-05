@@ -29,6 +29,7 @@ WAREHOUSE_MAP = {
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 DATAFRAME_DISPLAY_ROW_LIMIT = 1000
 CACHE_MAX_ENTRIES = 64
+POWER_VALUE_PATTERN = re.compile(r"([+-]\d{1,2}(?:\.\d{1,2})?)")
 
 COLUMN_LABEL_ALIASES = {
     "사출창고": "사출 재고",
@@ -841,10 +842,30 @@ def map_demand_code_to_process_code(demand_code: str, process_prefix: str) -> st
     return code
 
 
+def is_power_column(column_name: str) -> bool:
+    return "파워" in str(column_name) or str(column_name).strip().lower() == "power"
+
+
+def format_power_value(value: object) -> str:
+    text = str(value).strip()
+    if not text or text.lower() in {"nan", "none", "nat", "-"}:
+        return "-"
+
+    match = POWER_VALUE_PATTERN.search(text)
+    numeric_text = match.group(1) if match else text.replace(",", "")
+    try:
+        numeric_value = float(numeric_text)
+    except (TypeError, ValueError):
+        return "-"
+
+    sign = "+" if numeric_value > 0 else "-"
+    return f"{sign}{abs(numeric_value):05.2f}"
+
+
 def extract_power_from_code(item_code: str) -> str:
     code = str(item_code).strip()
-    match = re.search(r"([+-]\d{1,2}\.\d{2})", code)
-    return match.group(1) if match else "-"
+    match = POWER_VALUE_PATTERN.search(code)
+    return format_power_value(match.group(1)) if match else "-"
 
 
 def find_product_name_reference_file(base_dir: Path) -> Path | None:
@@ -1617,6 +1638,10 @@ def format_numeric_columns_for_display(df: pd.DataFrame) -> pd.DataFrame:
     display_df = df.copy()
 
     for col in display_df.columns:
+        if is_power_column(col):
+            display_df[col] = display_df[col].map(format_power_value)
+            continue
+
         force_integer_display = any(token in str(col) for token in ["수량", "부족", "재고", "창고", "발주", "합계"])
         numeric_dtype = pd.api.types.is_numeric_dtype(display_df[col])
         numeric_like = numeric_dtype or force_integer_display or infer_numeric_like_series(display_df[col])
