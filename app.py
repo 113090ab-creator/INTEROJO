@@ -30,6 +30,7 @@ WAREHOUSE_MAP = {
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 DATAFRAME_DISPLAY_ROW_LIMIT = 500
 CACHE_MAX_ENTRIES = 64
+APP_CACHE_VERSION = "20260608-rework-indicator-only"
 POWER_VALUE_PATTERN = re.compile(r"([+-]\d{1,2}(?:\.\d{1,2})?)")
 UNCLASSIFIED_SHEET_CATEGORY = "미분류"
 INVALID_CATEGORY_VALUES = {"", "-", "nan", "none", "nat", "null", "na", "<na>"}
@@ -1562,7 +1563,7 @@ def build_data_refresh_key(base_dir: Path) -> str:
     if ref_path is not None:
         paths.append(ref_path)
 
-    parts = []
+    parts = [f"app:{APP_CACHE_VERSION}"]
     for p in paths:
         stat = p.stat()
         parts.append(f"{p.name}:{stat.st_size}:{stat.st_mtime_ns}")
