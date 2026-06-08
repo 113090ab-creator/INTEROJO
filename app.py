@@ -3254,7 +3254,7 @@ def render_unclassified_products_section(df: pd.DataFrame, download_stamp: str) 
         if sort_cols:
             table = table.sort_values(sort_cols, ascending=True)
 
-    with st.expander(f"미분류 제품 목록 ({len(table):,}건)", expanded=not table.empty):
+    with st.expander(f"미분류 제품 목록 ({len(table):,}건)", expanded=False):
         if table.empty:
             st.info("미분류 제품이 없습니다.")
             return
