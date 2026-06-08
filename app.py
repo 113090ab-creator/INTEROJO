@@ -2104,11 +2104,6 @@ def style_operational_table(display_df: pd.DataFrame, source_df: pd.DataFrame | 
             ),
             subset=["재작업"],
         )
-    if "재작업수량" in display_df.columns and "재작업수량" in source.columns:
-        rework_qty_style = parse_mixed_numeric(source["재작업수량"]).map(
-            lambda v: "background-color: #FFF7ED; color: #C2410C; font-weight: 850;" if v > 0 else ""
-        )
-        styler = styler.apply(lambda _: rework_qty_style, axis=0, subset=["재작업수량"])
 
     return styler
 
@@ -3039,13 +3034,7 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
             ],
             "재작업 시트 컬럼": [", ".join(rework_meta.get("sheet_columns", []))],
             "재작업 리스트 품목 수": [len(rework_request_df)],
-            "재작업 리스트 수량 합계": [
-                float(rework_request_df["재작업수량"].sum()) if "재작업수량" in rework_request_df.columns else 0
-            ],
             "재작업 매칭 품목 수": [len(rework_matched_pairs)],
-            "재작업 매칭 수량 합계": [
-                float(rework_matched_pairs["재작업수량"].sum()) if "재작업수량" in rework_matched_pairs.columns else 0
-            ],
             "재작업 매칭 샘플": [", ".join(rework_matched_samples)],
         }
     )
@@ -3450,8 +3439,6 @@ def render_rework_match_debug(file_info_df: pd.DataFrame | None) -> None:
     row = file_info_df.iloc[0]
     source_count = int(row.get("재작업 리스트 품목 수", 0) or 0)
     matched_count = int(row.get("재작업 매칭 품목 수", 0) or 0)
-    source_qty = float(row.get("재작업 리스트 수량 합계", 0) or 0)
-    matched_qty = float(row.get("재작업 매칭 수량 합계", 0) or 0)
     sample_text = str(row.get("재작업 매칭 샘플", "") or "").strip()
     sample_codes = [code.strip() for code in sample_text.split(",") if code.strip()]
     rework_sheet = str(row.get("재작업 시트명", "-") or "-")
@@ -3459,11 +3446,9 @@ def render_rework_match_debug(file_info_df: pd.DataFrame | None) -> None:
     sheet_columns = str(row.get("재작업 시트 컬럼", "") or "").strip()
 
     with st.expander("재작업 매칭 디버그", expanded=False):
-        d1, d2, d3, d4 = st.columns(4)
+        d1, d2 = st.columns(2)
         d1.metric("재작업 리스트 품목 수", f"{source_count:,}")
         d2.metric("생산현황 매칭 품목 수", f"{matched_count:,}")
-        d3.metric("재작업 리스트 수량", f"{source_qty:,.0f}")
-        d4.metric("매칭 재작업수량", f"{matched_qty:,.0f}")
         st.caption(f"재작업 시트: {rework_sheet}")
         st.caption(f"매칭 기준 컬럼: {basis_columns if basis_columns else '없음'}")
         if sheet_columns:
@@ -3496,7 +3481,6 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
         "누수규격검사 창고",
         "공정재고 합계",
         "재작업",
-        "재작업수량",
     ]
 
     shortage_views = ["생산 현황", "사출 현황", "분리 현황", "공용 품목 현황"]
@@ -3559,18 +3543,12 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
             if "사출생산필요수량" in filtered.columns
             else 0
         )
-        c1, c2, c3, c4 = st.columns(4, gap="medium")
+        c1, c2, c3 = st.columns(3, gap="medium")
         with c1:
             render_dashboard_kpi("부족수량 합계", f"{filtered['부족수량'].sum():,.0f}", "risk")
         with c2:
             render_dashboard_kpi("사출부족수량 합계", f"{inj_shortage_total:,.0f}", "risk")
         with c3:
-            render_dashboard_kpi(
-                "재작업수량 합계",
-                f"{parse_mixed_numeric(filtered['재작업수량']).sum():,.0f}" if "재작업수량" in filtered.columns else "0",
-                "risk",
-            )
-        with c4:
             render_dashboard_kpi("공정재고 합계", f"{filtered['공정재고 합계'].sum():,.0f}", "stock")
 
         c1, c2, c3, c4, c5 = st.columns(5, gap="medium")
