@@ -481,6 +481,41 @@ def get_data_updated_at_cached(refresh_key: str, base_dir_str: str) -> str:
     return latest_dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def get_leadji_order_updated_at(base_dir: Path) -> str:
+    order_path = find_leadji_order_status_file(base_dir)
+    if order_path is None:
+        return "-"
+    stat = order_path.stat()
+    refresh_key = f"{order_path.name}:{stat.st_size}:{stat.st_mtime_ns}"
+    return get_leadji_order_updated_at_cached(refresh_key, str(order_path))
+
+
+@st.cache_data(show_spinner=False)
+def get_leadji_order_updated_at_cached(refresh_key: str, order_path_str: str) -> str:
+    _ = refresh_key
+    order_path = Path(order_path_str)
+    if not order_path.exists():
+        return "-"
+
+    latest_dt: datetime | None = None
+    try:
+        wb = openpyxl.load_workbook(order_path, read_only=True, data_only=True)
+        modified = wb.properties.modified
+        wb.close()
+        if isinstance(modified, datetime):
+            if modified.tzinfo is None:
+                latest_dt = modified.replace(tzinfo=ZoneInfo("UTC")).astimezone(DISPLAY_TZ)
+            else:
+                latest_dt = modified.astimezone(DISPLAY_TZ)
+    except Exception:
+        latest_dt = None
+
+    if latest_dt is None:
+        latest_dt = datetime.fromtimestamp(order_path.stat().st_mtime, tz=DISPLAY_TZ)
+
+    return latest_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
 def get_or_create_upload_session_id() -> str:
     key = "upload_session_id"
     if key not in st.session_state:
@@ -622,6 +657,20 @@ def parse_mixed_numeric(series: pd.Series) -> pd.Series:
     normalized = normalized.str.replace("\u00a0", "", regex=False).str.replace(" ", "", regex=False)
 
     return pd.to_numeric(normalized, errors="coerce").fillna(0)
+
+
+def join_unique_text_values(series: pd.Series) -> str:
+    values: list[str] = []
+    seen: set[str] = set()
+    for value in series:
+        for item in str(value).split(","):
+            text = item.strip()
+            if not text or text.lower() in {"nan", "none", "null", "nat", "<na>"}:
+                continue
+            if text not in seen:
+                seen.add(text)
+                values.append(text)
+    return ", ".join(values) if values else "-"
 
 
 def canonicalize_warehouse_label(raw_label: str) -> str:
@@ -3142,6 +3191,23 @@ def load_leadji_order_data(refresh_key: str, base_dir_str: str | None = None) ->
     ]
 
 
+@st.cache_data(show_spinner=False, persist="disk")
+def load_leadji_status_snapshot(
+    leadji_status_refresh_key: str, base_dir_str: str | None = None
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    _ = leadji_status_refresh_key
+    data_base_dir = Path(base_dir_str) if base_dir_str else BASE_DIR
+
+    data_refresh_key = build_data_refresh_key(data_base_dir)
+    reference_refresh_key = build_reference_refresh_key(data_base_dir)
+    leadji_order_refresh_key = build_leadji_order_refresh_key(data_base_dir)
+
+    shortage_df, _, _ = load_data(data_refresh_key, str(data_base_dir))
+    leadji_info, leadji_stock = load_leadji_data(reference_refresh_key, str(data_base_dir))
+    leadji_order_df = load_leadji_order_data(leadji_order_refresh_key, str(data_base_dir))
+    return shortage_df, leadji_info, leadji_stock, leadji_order_df
+
+
 def render_unclassified_products_section(df: pd.DataFrame, download_stamp: str) -> None:
     columns = ["거래처", "이니셜", "품목코드", "제품명", "자동분류결과", "분류 판단 근거"]
     if df.empty or "시트분류" not in df.columns:
@@ -3731,6 +3797,7 @@ def build_leadji_requirement_summary(
     fixed_columns = [
         "리드지코드",
         "리드지명",
+        "수요사이트",
         "생산필요수량",
         "리드지필요수량",
         "리드지부족",
@@ -3757,7 +3824,7 @@ def build_leadji_requirement_summary(
 
     summary = (
         bs_base.groupby(["리드지코드", "리드지명"], as_index=False)
-        .agg({"생산필요수량": "sum", "최소납기일": "min"})
+        .agg({"수요사이트": join_unique_text_values, "생산필요수량": "sum", "최소납기일": "min"})
         .sort_values(["생산필요수량", "리드지코드"], ascending=[False, True])
     )
     warehouse_columns: list[str] = []
@@ -3792,6 +3859,7 @@ def build_leadji_requirement_summary(
         [
             "리드지코드",
             "리드지명",
+            "수요사이트",
             "생산필요수량",
             "리드지필요수량",
             "리드지부족",
@@ -3813,11 +3881,11 @@ def compute_leadji_source_total(shortage_df: pd.DataFrame) -> float:
 @st.cache_data(show_spinner=False, max_entries=CACHE_MAX_ENTRIES)
 def build_leadji_p_shortage(shortage_df: pd.DataFrame) -> pd.DataFrame:
     if shortage_df.empty or "품목코드" not in shortage_df.columns:
-        return pd.DataFrame(columns=["P코드5", "생산필요수량", "최소납기일"])
+        return pd.DataFrame(columns=["P코드5", "수요사이트", "생산필요수량", "최소납기일"])
 
     qty_source_col = LEADJI_REQUIRED_QTY_COL if LEADJI_REQUIRED_QTY_COL in shortage_df.columns else "부족수량"
     if qty_source_col not in shortage_df.columns:
-        return pd.DataFrame(columns=["P코드5", "생산필요수량", "최소납기일"])
+        return pd.DataFrame(columns=["P코드5", "수요사이트", "생산필요수량", "최소납기일"])
 
     if qty_source_col == LEADJI_REQUIRED_QTY_COL and LEADJI_REQUIRED_DUE_COL in shortage_df.columns:
         due_source_col = LEADJI_REQUIRED_DUE_COL
@@ -3828,6 +3896,14 @@ def build_leadji_p_shortage(shortage_df: pd.DataFrame) -> pd.DataFrame:
     base["품목코드"] = base["품목코드"].astype(str).str.strip().str.upper()
     base["P코드5"] = base["품목코드"].str[:5]
     base = base[base["P코드5"].str.startswith("P")]
+    if "사이트코드" in base.columns:
+        base["수요사이트"] = base["사이트코드"].astype(str).str.strip()
+        base["수요사이트"] = base["수요사이트"].where(
+            ~base["수요사이트"].str.lower().isin({"", "nan", "none", "null", "nat", "<na>"}),
+            "(미지정)",
+        )
+    else:
+        base["수요사이트"] = "(미지정)"
     base["생산필요수량"] = parse_mixed_numeric(base[qty_source_col])
     base["완료재고수량"] = (
         parse_mixed_numeric(base[LEADJI_COMPLETED_STOCK_COL])
@@ -3841,7 +3917,15 @@ def build_leadji_p_shortage(shortage_df: pd.DataFrame) -> pd.DataFrame:
 
     item_shortage = (
         base.groupby("품목코드", as_index=False)
-        .agg({"P코드5": "first", "생산필요수량": "sum", "완료재고수량": "max", "납기일_dt": "min"})
+        .agg(
+            {
+                "P코드5": "first",
+                "수요사이트": join_unique_text_values,
+                "생산필요수량": "sum",
+                "완료재고수량": "max",
+                "납기일_dt": "min",
+            }
+        )
     )
     # 품목코드 단위로 필요수량 합산 후 완료재고(누수규격검사 창고)를 1회 차감한다.
     item_shortage["생산필요수량"] = (item_shortage["생산필요수량"] - item_shortage["완료재고수량"]).clip(lower=0)
@@ -3849,7 +3933,7 @@ def build_leadji_p_shortage(shortage_df: pd.DataFrame) -> pd.DataFrame:
 
     p_shortage = (
         item_shortage.groupby("P코드5", as_index=False)
-        .agg({"생산필요수량": "sum", "납기일_dt": "min"})
+        .agg({"수요사이트": join_unique_text_values, "생산필요수량": "sum", "납기일_dt": "min"})
         .rename(columns={"납기일_dt": "최소납기일"})
     )
     return p_shortage
@@ -3859,7 +3943,7 @@ def build_leadji_p_shortage(shortage_df: pd.DataFrame) -> pd.DataFrame:
 def build_pcode5_leadji_requirement_summary(
     shortage_df: pd.DataFrame, leadji_info: pd.DataFrame, leadji_stock: pd.DataFrame
 ) -> pd.DataFrame:
-    fixed_columns = ["생산코드", "리드지코드", "리드지명", "생산필요수량", "최소납기일"]
+    fixed_columns = ["생산코드", "수요사이트", "리드지코드", "리드지명", "생산필요수량", "최소납기일"]
     if shortage_df.empty or "품목코드" not in shortage_df.columns:
         return pd.DataFrame(columns=fixed_columns)
 
@@ -3880,7 +3964,7 @@ def build_pcode5_leadji_requirement_summary(
 
     summary = (
         detail.groupby(["P코드5", "리드지코드", "리드지명"], as_index=False)
-        .agg({"생산필요수량": "sum", "최소납기일": "min"})
+        .agg({"수요사이트": join_unique_text_values, "생산필요수량": "sum", "최소납기일": "min"})
         .sort_values(["생산필요수량", "P코드5", "리드지코드"], ascending=[False, True, True])
     )
 
@@ -3900,7 +3984,7 @@ def build_pcode5_leadji_requirement_summary(
 
     summary["최소납기일"] = pd.to_datetime(summary["최소납기일"], errors="coerce").dt.strftime("%Y-%m-%d").fillna("-")
     summary = summary.rename(columns={"P코드5": "생산코드"})
-    return summary[["생산코드", "리드지코드", "리드지명", "생산필요수량", *active_warehouse_columns, "최소납기일"]]
+    return summary[["생산코드", "수요사이트", "리드지코드", "리드지명", "생산필요수량", *active_warehouse_columns, "최소납기일"]]
 
 
 @st.cache_data(show_spinner=False, max_entries=CACHE_MAX_ENTRIES)
@@ -4396,18 +4480,20 @@ def main() -> None:
         st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
 
     try:
-        refresh_key = build_data_refresh_key(data_base_dir)
-        df, _, _ = load_data(refresh_key, str(data_base_dir))
+        df = pd.DataFrame()
+        if selected_top_view == top_views[0]:
+            refresh_key = build_data_refresh_key(data_base_dir)
+            df, _, _ = load_data(refresh_key, str(data_base_dir))
 
         leadji_info = pd.DataFrame()
         leadji_stock = pd.DataFrame()
         leadji_order_df = pd.DataFrame()
-        if selected_top_view in {"리드지 현황", "생산코드별 리드지"}:
-            reference_refresh_key = build_reference_refresh_key(data_base_dir)
-            leadji_info, leadji_stock = load_leadji_data(reference_refresh_key, str(data_base_dir))
-        if selected_top_view == "리드지 현황":
-            leadji_order_refresh_key = build_leadji_order_refresh_key(data_base_dir)
-            leadji_order_df = load_leadji_order_data(leadji_order_refresh_key, str(data_base_dir))
+        if selected_top_view in {top_views[1], top_views[2]}:
+            leadji_status_refresh_key = build_leadji_order_refresh_key(data_base_dir)
+            df, leadji_info, leadji_stock, leadji_order_df = load_leadji_status_snapshot(
+                leadji_status_refresh_key, str(data_base_dir)
+            )
+            updated_at = get_leadji_order_updated_at(data_base_dir)
     except Exception as exc:
         st.error(f"데이터 로드 실패: {exc}")
         st.stop()
