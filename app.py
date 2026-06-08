@@ -30,7 +30,7 @@ WAREHOUSE_MAP = {
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 DATAFRAME_DISPLAY_ROW_LIMIT = 500
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260608-rework-product-code-v2"
+APP_CACHE_VERSION = "20260608-rework-product-code-v3"
 POWER_VALUE_PATTERN = re.compile(r"([+-]\d{1,2}(?:\.\d{1,2})?)")
 UNCLASSIFIED_SHEET_CATEGORY = "미분류"
 INVALID_CATEGORY_VALUES = {"", "-", "nan", "none", "nat", "null", "na", "<na>"}
@@ -3039,6 +3039,7 @@ def filter_data(
     selected_summary_option: str,
     only_same_rq_group: bool,
     only_with_stock: bool,
+    only_rework_available: bool,
 ) -> pd.DataFrame:
     base_filtered = df.copy()
     if "사이트코드" not in base_filtered.columns:
@@ -3066,6 +3067,8 @@ def filter_data(
         base_filtered = base_filtered[p_count_per_group >= 2]
     if only_with_stock and "공정재고 합계" in base_filtered.columns:
         base_filtered = base_filtered[base_filtered["공정재고 합계"] > 0]
+    if only_rework_available and "재작업" in base_filtered.columns:
+        base_filtered = base_filtered[base_filtered["재작업"].astype(str).str.strip() == "재작업 가능"]
 
     return base_filtered.copy()
 
@@ -3097,6 +3100,7 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
         ).strip()
 
         only_with_stock = st.checkbox("공정재고만", value=False, key="flt_only_stock")
+        only_rework_available = st.checkbox("재작업 가능만", value=False, key="flt_only_rework_available")
         exclude_safe_initial = st.checkbox("안전 이니셜 제외", value=False, key="flt_exclude_safe_initial")
         only_same_rq_group = st.checkbox("동일 RQ그룹만(R5/Q5, P5종류2+)", value=False, key="flt_only_same_rq_group")
 
@@ -3133,6 +3137,7 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
         selected_summary_option or "전체",
         only_same_rq_group,
         only_with_stock,
+        only_rework_available,
     )
 
 
@@ -3464,6 +3469,12 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
 
     render_unclassified_products_section(filtered, download_stamp)
     render_rework_match_debug(file_info_df)
+    if "재작업" in filtered.columns and "품목코드" in filtered.columns:
+        rework_scope = filtered[filtered["재작업"].astype(str).str.strip() == "재작업 가능"]
+        st.caption(
+            f"현재 필터 범위 재작업 가능: {len(rework_scope):,}행 / "
+            f"{rework_scope['품목코드'].astype(str).str.strip().str.upper().nunique():,}개 품목코드"
+        )
 
     if selected_shortage_view == "생산 현황":
         full_demand_summary = build_summary_group_totals_with_safe_split(filtered)
