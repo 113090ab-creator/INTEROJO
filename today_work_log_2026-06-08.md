@@ -55,5 +55,31 @@
 - 이번 로그 파일:
   - `today_work_log_2026-06-08.md`
 
+## 8) 생산현황 UI 복구 및 배포 동기화
+- 생산현황 화면 UI 정리 시도 후, 사용자 요청에 따라 기존 화면 구조로 복구
+- 새 UI 관련 코드 제거 확인
+  - `전체 생산현황`
+  - `상세 필터 열기`
+  - `render_shortage_dashboard_v2`
+- 기존 공정별 현황 구조 유지 확인
+  - `생산 현황`
+  - `사출 현황`
+  - `분리 현황`
+  - `공용 품목 현황`
+- `APP_CACHE_VERSION`을 로그 기준 시점인 `20260608-bom-streaming-v5`로 복구
+- 불필요한 재배포용 `requirements.txt` 주석 제거
+- `python -m py_compile app.py`로 문법 검사 통과 확인
+- GitHub `main` 최신 커밋 확인
+  - `461fc37 Restore app to work log baseline`
+- Streamlit Cloud 앱이 과거 배포본을 계속 표시하던 문제 확인
+- GitHub에는 정상 반영되어 있었고, Streamlit Cloud 앱 재부팅 후 화면 복구 확인
+
+## 9) 현재 기준 상태
+- GitHub 원격 저장소: `https://github.com/113090ab-creator/INTEROJO.git`
+- 기준 브랜치: `main`
+- 현재 기준 커밋: `461fc37 Restore app to work log baseline`
+- 배포 앱: `https://interojo-2.streamlit.app/`
+- 운영 기준: 이 커밋을 복구 기준점으로 유지
+
 ---
 저장 위치: `C:\Users\유현아\Documents\GitHub\INTEROJO\today_work_log_2026-06-08.md`
