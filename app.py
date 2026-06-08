@@ -30,7 +30,7 @@ WAREHOUSE_MAP = {
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 DATAFRAME_DISPLAY_ROW_LIMIT = 500
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260608-rework-indicator-only"
+APP_CACHE_VERSION = "20260608-rework-product-code-v2"
 POWER_VALUE_PATTERN = re.compile(r"([+-]\d{1,2}(?:\.\d{1,2})?)")
 UNCLASSIFIED_SHEET_CATEGORY = "미분류"
 INVALID_CATEGORY_VALUES = {"", "-", "nan", "none", "nat", "null", "na", "<na>"}
@@ -975,76 +975,57 @@ def normalize_rework_match_value(value: object) -> str:
     return text
 
 
-def read_rework_request_info_from_demand_file(dem_path: Path) -> tuple[pd.DataFrame, dict[str, object]]:
+def read_rework_product_codes_from_demand_file(dem_path: Path) -> tuple[set[str], dict[str, object]]:
     empty_meta: dict[str, object] = {
         "sheet": "-",
-        "initial_col": "",
         "product_col": "",
-        "qty_col": "",
         "sheet_columns": [],
         "source_rows": 0,
     }
-    empty_df = pd.DataFrame(columns=["이니셜", "품목코드", "재작업수량"])
     try:
         xls = pd.ExcelFile(dem_path)
     except Exception:
-        return empty_df, empty_meta
+        return set(), empty_meta
 
-    rework_sheet = next((s for s in xls.sheet_names if "재작업" in str(s).replace(" ", "")), None)
+    rework_sheet = next((s for s in xls.sheet_names if str(s).replace(" ", "") == "재작업리스트"), None)
     if rework_sheet is None:
-        return empty_df, empty_meta
+        return set(), empty_meta
 
     try:
         preview = xls.parse(sheet_name=rework_sheet, nrows=0)
     except Exception:
-        return empty_df, {**empty_meta, "sheet": rework_sheet}
+        return set(), {**empty_meta, "sheet": rework_sheet}
 
     preview_cols = [str(c).strip() for c in preview.columns]
-    initial_col = pick_first_existing_column(preview_cols, ["이니셜"]) or (preview_cols[0] if len(preview_cols) > 0 else None)
-    product_col = pick_first_existing_column(preview_cols, ["제품코드", "제품 코드", "품목코드", "품목 코드"]) or (
-        preview_cols[3] if len(preview_cols) > 3 else None
-    )
-    qty_col = pick_first_existing_column(preview_cols, ["이동요청", "이동 요청", "재작업수량", "재작업 수량"]) or (
-        preview_cols[15] if len(preview_cols) > 15 else None
-    )
+    product_col = pick_first_existing_column(preview_cols, ["제품코드", "제품 코드"])
     meta = {
         "sheet": rework_sheet,
-        "initial_col": initial_col or "",
         "product_col": product_col or "",
-        "qty_col": qty_col or "",
         "sheet_columns": preview_cols,
         "source_rows": 0,
     }
-    selected_cols = [c for c in [initial_col, product_col, qty_col] if c is not None]
-    if len(selected_cols) < 3:
-        return empty_df, meta
+    if product_col is None:
+        return set(), meta
 
     try:
         rework_df = xls.parse(
             sheet_name=rework_sheet,
-            usecols=lambda c: str(c).strip() in set(selected_cols),
+            usecols=lambda c: str(c).strip() == product_col,
         )
     except Exception:
-        return empty_df, meta
+        return set(), meta
 
     rework_df.columns = [str(c).strip() for c in rework_df.columns]
-    if initial_col not in rework_df.columns or product_col not in rework_df.columns or qty_col not in rework_df.columns:
-        return empty_df, meta
+    if product_col not in rework_df.columns:
+        return set(), meta
 
-    result = pd.DataFrame(
-        {
-            "이니셜": rework_df[initial_col].map(normalize_rework_match_value),
-            "품목코드": rework_df[product_col].map(normalize_rework_match_value),
-            "재작업수량": parse_mixed_numeric(rework_df[qty_col]),
-        }
-    )
-    result = result[(result["이니셜"] != "") & (result["품목코드"] != "") & (result["재작업수량"] > 0)]
-    meta["source_rows"] = int(len(result))
-    if result.empty:
-        return empty_df, meta
-
-    result = result.groupby(["이니셜", "품목코드"], as_index=False)["재작업수량"].sum()
-    return result, meta
+    codes = {
+        code
+        for code in rework_df[product_col].map(normalize_rework_match_value).tolist()
+        if code
+    }
+    meta["source_rows"] = int(len(codes))
+    return codes, meta
 
 
 def is_power_column(column_name: str) -> bool:
@@ -2518,7 +2499,7 @@ def build_summary_group_totals_with_safe_split(df: pd.DataFrame) -> pd.DataFrame
 @st.cache_data(show_spinner=False, persist="disk")
 def load_raw_data(
     refresh_key: str, base_dir_str: str | None = None
-) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, object], pd.DataFrame, dict[str, object], str, str]:
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, object], set[str], dict[str, object], str, str]:
     _ = refresh_key
     data_base_dir = Path(base_dir_str) if base_dir_str else BASE_DIR
     inv_path, dem_path = find_excel_files(data_base_dir)
@@ -2541,15 +2522,15 @@ def load_raw_data(
 
     inv = read_inventory_excel_subset(inv_path)
     dem = read_demand_excel_subset(dem_path, demand_read_plan["usecols"])
-    rework_request_df, rework_meta = read_rework_request_info_from_demand_file(dem_path)
-    return inv, dem, demand_read_plan, rework_request_df, rework_meta, inv_path.name, dem_path.name
+    rework_product_codes, rework_meta = read_rework_product_codes_from_demand_file(dem_path)
+    return inv, dem, demand_read_plan, rework_product_codes, rework_meta, inv_path.name, dem_path.name
 
 
 @st.cache_data(show_spinner=False, persist="disk")
 def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     _ = refresh_key
     data_base_dir = Path(base_dir_str) if base_dir_str else BASE_DIR
-    inv, dem, demand_read_plan, rework_request_df, rework_meta, inv_file_name, dem_file_name = load_raw_data(
+    inv, dem, demand_read_plan, rework_product_codes, rework_meta, inv_file_name, dem_file_name = load_raw_data(
         refresh_key, base_dir_str
     )
     reference_refresh_key = build_reference_refresh_key(data_base_dir)
@@ -2860,37 +2841,10 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
     grouped_demand["R코드 제품명"] = grouped_demand["R코드 제품명"].fillna(grouped_demand["제품명"])
     grouped_demand["R코드 제품명"] = grouped_demand["R코드 제품명"].fillna(grouped_demand["R코드5"])
     grouped_demand["R코드 제품명"] = grouped_demand["R코드 제품명"].replace({"": "-", "nan": "-", "None": "-"}).fillna("-")
-    grouped_demand["_재작업_이니셜"] = grouped_demand["이니셜"].map(normalize_rework_match_value)
-    grouped_demand["_재작업_품목코드"] = grouped_demand["품목코드"].map(normalize_rework_match_value)
-    if not rework_request_df.empty:
-        rework_join = rework_request_df.rename(
-            columns={"이니셜": "_재작업_이니셜", "품목코드": "_재작업_품목코드"}
-        )
-        grouped_demand = grouped_demand.merge(
-            rework_join,
-            on=["_재작업_이니셜", "_재작업_품목코드"],
-            how="left",
-        )
-    else:
-        grouped_demand["재작업수량"] = 0
-    grouped_demand["재작업수량"] = parse_mixed_numeric(grouped_demand["재작업수량"]).fillna(0)
-    grouped_demand["재작업"] = grouped_demand["재작업수량"].gt(0).map({True: "재작업 가능", False: ""})
-    rework_matched_pairs = (
-        grouped_demand.loc[
-            grouped_demand["재작업수량"] > 0,
-            ["_재작업_이니셜", "_재작업_품목코드", "재작업수량"],
-        ]
-        .drop_duplicates(subset=["_재작업_이니셜", "_재작업_품목코드"])
-        .copy()
-    )
-    rework_matched_samples = (
-        rework_matched_pairs.assign(
-            매칭키=lambda df: df["_재작업_이니셜"].astype(str) + " / " + df["_재작업_품목코드"].astype(str)
-        )["매칭키"]
-        .head(10)
-        .tolist()
-    )
-    grouped_demand = grouped_demand.drop(columns=["_재작업_이니셜", "_재작업_품목코드"], errors="ignore")
+    rework_lookup_item_codes = grouped_demand["품목코드"].map(normalize_rework_match_value)
+    rework_match_mask = rework_lookup_item_codes.isin(rework_product_codes)
+    grouped_demand["재작업"] = rework_match_mask.map({True: "재작업 가능", False: ""})
+    rework_matched_item_codes = sorted(rework_lookup_item_codes[rework_match_mask].drop_duplicates().tolist())
 
     code_stock["사출창고"] = code_stock["품목코드"].map(
         lambda x: lookup_stock_qty(stock_lookup["사출창고"], r_by_p.get(x, map_demand_code_to_process_code(x, "R")))
@@ -3029,14 +2983,12 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
             "행수(현황표)": [len(result)],
             "재작업 시트명": [str(rework_meta.get("sheet", "-"))],
             "재작업 기준 컬럼": [
-                f"이니셜={rework_meta.get('initial_col', '')}, "
-                f"제품코드={rework_meta.get('product_col', '')}, "
-                f"수량={rework_meta.get('qty_col', '')}"
+                f"재작업리스트 제품코드={rework_meta.get('product_col', '')}, 생산현황 품목코드=품목코드"
             ],
             "재작업 시트 컬럼": [", ".join(rework_meta.get("sheet_columns", []))],
-            "재작업 리스트 품목 수": [len(rework_request_df)],
-            "재작업 매칭 품목 수": [len(rework_matched_pairs)],
-            "재작업 매칭 샘플": [", ".join(rework_matched_samples)],
+            "재작업 리스트 제품코드 수": [len(rework_product_codes)],
+            "재작업 매칭 품목코드 수": [len(rework_matched_item_codes)],
+            "재작업 매칭 품목코드 샘플": [", ".join(rework_matched_item_codes[:10])],
         }
     )
 
@@ -3438,9 +3390,9 @@ def render_rework_match_debug(file_info_df: pd.DataFrame | None) -> None:
         return
 
     row = file_info_df.iloc[0]
-    source_count = int(row.get("재작업 리스트 품목 수", 0) or 0)
-    matched_count = int(row.get("재작업 매칭 품목 수", 0) or 0)
-    sample_text = str(row.get("재작업 매칭 샘플", "") or "").strip()
+    source_count = int(row.get("재작업 리스트 제품코드 수", 0) or 0)
+    matched_count = int(row.get("재작업 매칭 품목코드 수", 0) or 0)
+    sample_text = str(row.get("재작업 매칭 품목코드 샘플", "") or "").strip()
     sample_codes = [code.strip() for code in sample_text.split(",") if code.strip()]
     rework_sheet = str(row.get("재작업 시트명", "-") or "-")
     basis_columns = str(row.get("재작업 기준 컬럼", "") or "").strip()
@@ -3448,16 +3400,16 @@ def render_rework_match_debug(file_info_df: pd.DataFrame | None) -> None:
 
     with st.expander("재작업 매칭 디버그", expanded=False):
         d1, d2 = st.columns(2)
-        d1.metric("재작업 리스트 품목 수", f"{source_count:,}")
-        d2.metric("생산현황 매칭 품목 수", f"{matched_count:,}")
+        d1.metric("재작업리스트 제품코드 수", f"{source_count:,}")
+        d2.metric("생산현황 매칭 품목코드 수", f"{matched_count:,}")
         st.caption(f"재작업 시트: {rework_sheet}")
         st.caption(f"매칭 기준 컬럼: {basis_columns if basis_columns else '없음'}")
         if sheet_columns:
             st.caption(f"재작업 시트 전체 컬럼: {sheet_columns}")
         if sample_codes:
-            st.dataframe(pd.DataFrame({"매칭 샘플": sample_codes[:10]}), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame({"매칭 품목코드 샘플": sample_codes[:10]}), use_container_width=True, hide_index=True)
         else:
-            st.caption("매칭된 재작업 품목 샘플이 없습니다.")
+            st.caption("매칭된 재작업 품목코드 샘플이 없습니다.")
 
 
 def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: pd.DataFrame | None = None) -> None:
