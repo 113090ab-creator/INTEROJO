@@ -967,6 +967,63 @@ def map_demand_code_to_process_code(demand_code: str, process_prefix: str) -> st
     return code
 
 
+def build_rework_code_candidates(code: object) -> set[str]:
+    raw_code = str(code).strip().upper()
+    if not raw_code or raw_code.lower() in INVALID_CATEGORY_VALUES:
+        return set()
+
+    candidates = {raw_code}
+    if raw_code.startswith("P"):
+        candidates.add(map_demand_code_to_process_code(raw_code, "Q").upper())
+        candidates.add(map_demand_code_to_process_code(raw_code, "R").upper())
+    elif raw_code.startswith("Q"):
+        candidates.add(map_demand_code_to_process_code(raw_code, "R").upper())
+    elif raw_code.startswith("R"):
+        candidates.add(map_demand_code_to_process_code(raw_code, "Q").upper())
+    return {c for c in candidates if c and c.lower() not in INVALID_CATEGORY_VALUES}
+
+
+def read_rework_codes_from_demand_file(dem_path: Path) -> set[str]:
+    try:
+        xls = pd.ExcelFile(dem_path)
+    except Exception:
+        return set()
+
+    rework_sheet = next((s for s in xls.sheet_names if "재작업" in str(s).replace(" ", "")), None)
+    if rework_sheet is None:
+        return set()
+
+    try:
+        preview = xls.parse(sheet_name=rework_sheet, nrows=0)
+    except Exception:
+        return set()
+
+    preview_cols = [str(c).strip() for c in preview.columns]
+    code_cols = [
+        c
+        for c in preview_cols
+        if c in {"품목코드", "품목 코드", "제품코드", "제품 코드", "생산코드", "생산 코드", "ITEM_ID"}
+    ]
+    if not code_cols:
+        code_cols = [c for c in preview_cols if "코드" in c]
+    if not code_cols:
+        return set()
+
+    try:
+        rework_df = xls.parse(
+            sheet_name=rework_sheet,
+            usecols=lambda c: str(c).strip() in set(code_cols),
+        )
+    except Exception:
+        return set()
+
+    rework_codes: set[str] = set()
+    for col in rework_df.columns:
+        for value in rework_df[col].dropna():
+            rework_codes.update(build_rework_code_candidates(value))
+    return rework_codes
+
+
 def is_power_column(column_name: str) -> bool:
     return "파워" in str(column_name) or str(column_name).strip().lower() == "power"
 
@@ -1920,7 +1977,7 @@ def pick_fixed_column_width_px(column_name: str, max_length: int, numeric_like: 
 
     long_text_columns = {"제품명", "R코드 제품명", "리드지명", "제품명 예시", "분류 판단 근거"}
     medium_text_columns = {"품목코드", "R코드", "Q코드", "생산코드", "리드지코드", "P코드 예시"}
-    status_columns = {"상태"}
+    status_columns = {"상태", "재작업"}
     date_columns = {"납기일", "입고예상일자", "생산 최소 납기일", "최소납기일"}
 
     if column_name in long_text_columns:
@@ -2013,6 +2070,17 @@ def style_operational_table(display_df: pd.DataFrame, source_df: pd.DataFrame | 
                 else "background-color: #EEF2FF; color: #1A2B5E; font-weight: 800;"
             ),
             subset=["상태"],
+        )
+    if "재작업" in display_df.columns:
+        styler = styler.set_properties(subset=["재작업"], **{"text-align": "center"})
+        styler = styler.map(
+            lambda v: (
+                "background-color: #FED7AA; color: #C2410C; font-weight: 850; "
+                "border-radius: 999px;"
+                if str(v).strip() == "재작업 가능"
+                else ""
+            ),
+            subset=["재작업"],
         )
 
     return styler
@@ -2425,7 +2493,9 @@ def build_summary_group_totals_with_safe_split(df: pd.DataFrame) -> pd.DataFrame
 
 
 @st.cache_data(show_spinner=False, persist="disk")
-def load_raw_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, object], str, str]:
+def load_raw_data(
+    refresh_key: str, base_dir_str: str | None = None
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, object], set[str], str, str]:
     _ = refresh_key
     data_base_dir = Path(base_dir_str) if base_dir_str else BASE_DIR
     inv_path, dem_path = find_excel_files(data_base_dir)
@@ -2448,14 +2518,15 @@ def load_raw_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[pd
 
     inv = read_inventory_excel_subset(inv_path)
     dem = read_demand_excel_subset(dem_path, demand_read_plan["usecols"])
-    return inv, dem, demand_read_plan, inv_path.name, dem_path.name
+    rework_codes = read_rework_codes_from_demand_file(dem_path)
+    return inv, dem, demand_read_plan, rework_codes, inv_path.name, dem_path.name
 
 
 @st.cache_data(show_spinner=False, persist="disk")
 def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     _ = refresh_key
     data_base_dir = Path(base_dir_str) if base_dir_str else BASE_DIR
-    inv, dem, demand_read_plan, inv_file_name, dem_file_name = load_raw_data(refresh_key, base_dir_str)
+    inv, dem, demand_read_plan, rework_codes, inv_file_name, dem_file_name = load_raw_data(refresh_key, base_dir_str)
     reference_refresh_key = build_reference_refresh_key(data_base_dir)
     (
         product_name_map,
@@ -2764,6 +2835,14 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
     grouped_demand["R코드 제품명"] = grouped_demand["R코드 제품명"].fillna(grouped_demand["제품명"])
     grouped_demand["R코드 제품명"] = grouped_demand["R코드 제품명"].fillna(grouped_demand["R코드5"])
     grouped_demand["R코드 제품명"] = grouped_demand["R코드 제품명"].replace({"": "-", "nan": "-", "None": "-"}).fillna("-")
+    if rework_codes:
+        q_lookup = grouped_demand["Q코드"].astype(str).str.strip().str.upper()
+        r_lookup = grouped_demand["R코드"].astype(str).str.strip().str.upper()
+        q_valid = ~q_lookup.str.lower().isin(INVALID_CATEGORY_VALUES)
+        rework_lookup = q_lookup.where(q_valid, r_lookup)
+        grouped_demand["재작업"] = rework_lookup.isin(rework_codes).map({True: "재작업 가능", False: ""})
+    else:
+        grouped_demand["재작업"] = ""
 
     code_stock["사출창고"] = code_stock["품목코드"].map(
         lambda x: lookup_stock_qty(stock_lookup["사출창고"], r_by_p.get(x, map_demand_code_to_process_code(x, "R")))
@@ -3317,6 +3396,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         "검사접착재작업창고",
         "누수규격검사 창고",
         "공정재고 합계",
+        "재작업",
     ]
 
     shortage_views = ["생산 현황", "사출 현황", "분리 현황", "공용 품목 현황"]
