@@ -24,6 +24,7 @@ WAREHOUSE_MAP = {
     "사출창고": "사출창고",
     "분리창고": "분리창고",
     "검사접착": "검사접착창고",
+    "검사접착재작업": "검사접착재작업창고",
     "누수규격검사": "누수규격검사 창고",
 }
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
@@ -85,10 +86,12 @@ COLUMN_LABEL_ALIASES = {
     "사출창고": "사출 재고",
     "분리창고": "분리 재고",
     "검사접착창고": "검사접착 재고",
+    "검사접착재작업창고": "검사접착재작업 재고",
     "누수규격검사 창고": "누수규격 재고",
     "사출창고 합계": "사출 재고",
     "분리창고 합계": "분리 재고",
     "검사접착창고 합계": "검사접착 재고",
+    "검사접착재작업창고 합계": "검사접착재작업 재고",
     "누수규격검사창고 합계": "누수규격 재고",
     "공정재고 합계": "공정재고",
     "사출 부족수량": "사출부족",
@@ -673,6 +676,13 @@ def join_unique_text_values(series: pd.Series) -> str:
     return ", ".join(values) if values else "-"
 
 
+def is_inspection_rework_wip_code(value: object) -> bool:
+    code = str(value).strip().upper()
+    if not code or code.lower() in INVALID_CATEGORY_VALUES:
+        return False
+    return bool(re.search(r"-C(?:\d*)$", code))
+
+
 def canonicalize_warehouse_label(raw_label: str) -> str:
     label = str(raw_label).strip()
     if not label or label.lower() == "nan":
@@ -699,7 +709,8 @@ def build_inventory_df(inv: pd.DataFrame) -> pd.DataFrame:
 
     qty_col = pick_first_existing_column(columns, ["총 재공 수량", "WIP_QTY", "재고량"])
     item_col = pick_first_existing_column(columns, ["제품 코드", "ITEM_ID", "제품코드", "품목코드"])
-    warehouse_col = pick_first_existing_column(columns, ["버퍼 코드", "제품위치(창고)", "PROP02", "창고"])
+    warehouse_col = pick_first_existing_column(columns, ["WH_NAME", "창고명", "버퍼 코드", "제품위치(창고)", "PROP02", "창고"])
+    wip_code_col = pick_first_existing_column(columns, ["재공 코드", "재공코드", "WIP_CODE", "WIP ID", "WIP_ID"])
 
     # Fallback for unknown layouts
     if qty_col is None:
@@ -707,15 +718,24 @@ def build_inventory_df(inv: pd.DataFrame) -> pd.DataFrame:
     if item_col is None:
         item_col = columns[8] if len(columns) > 8 else (columns[1] if len(columns) > 1 else columns[0])
     if warehouse_col is None:
-        warehouse_col = columns[10] if len(columns) > 10 else (columns[5] if len(columns) > 5 else columns[0])
+        warehouse_col = (
+            columns[23]
+            if len(columns) > 23
+            else (columns[10] if len(columns) > 10 else (columns[5] if len(columns) > 5 else columns[0]))
+        )
+    if wip_code_col is None:
+        wip_code_col = columns[3] if len(columns) > 3 else item_col
 
     inv_df = pd.DataFrame(
         {
             "품목코드": inv[item_col].astype(str).str.strip(),
             "창고": inv[warehouse_col].astype(str).str.strip().map(canonicalize_warehouse_label),
+            "재공코드": inv[wip_code_col].astype(str).str.strip(),
             "재고량": parse_mixed_numeric(inv[qty_col]),
         }
     )
+    rework_mask = (inv_df["창고"] == "검사접착") & inv_df["재공코드"].map(is_inspection_rework_wip_code)
+    inv_df.loc[rework_mask, "창고"] = "검사접착재작업"
 
     inv_df = inv_df[(inv_df["품목코드"] != "") & (inv_df["품목코드"].str.lower() != "nan")]
     inv_df = inv_df[(inv_df["창고"] != "") & (inv_df["창고"].str.lower() != "nan")]
@@ -901,16 +921,22 @@ def read_inventory_excel_subset(inv_path: Path) -> pd.DataFrame:
 
     qty_col = pick_first_existing_column(columns, ["총 재공 수량", "WIP_QTY", "재고량"])
     item_col = pick_first_existing_column(columns, ["제품 코드", "ITEM_ID", "제품코드", "품목코드"])
-    warehouse_col = pick_first_existing_column(columns, ["버퍼 코드", "제품위치(창고)", "PROP02", "창고"])
+    warehouse_col = pick_first_existing_column(columns, ["WH_NAME", "창고명", "버퍼 코드", "제품위치(창고)", "PROP02", "창고"])
+    wip_code_col = pick_first_existing_column(columns, ["재공 코드", "재공코드", "WIP_CODE", "WIP ID", "WIP_ID"])
 
     qty_idx = columns.index(qty_col) if qty_col in columns else (6 if len(columns) > 6 else 0)
     item_idx = columns.index(item_col) if item_col in columns else (8 if len(columns) > 8 else (1 if len(columns) > 1 else 0))
     warehouse_idx = (
         columns.index(warehouse_col)
         if warehouse_col in columns
-        else (10 if len(columns) > 10 else (5 if len(columns) > 5 else 0))
+        else (
+            23
+            if len(columns) > 23
+            else (10 if len(columns) > 10 else (5 if len(columns) > 5 else 0))
+        )
     )
-    usecols = sorted({qty_idx, item_idx, warehouse_idx})
+    wip_code_idx = columns.index(wip_code_col) if wip_code_col in columns else (3 if len(columns) > 3 else item_idx)
+    usecols = sorted({qty_idx, item_idx, warehouse_idx, wip_code_idx})
     inv = pd.read_excel(inv_path, sheet_name=0, usecols=usecols)
     if len(inv.columns) == len(usecols):
         inv.columns = [columns[i] for i in usecols]
@@ -2746,6 +2772,9 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
     code_stock["검사접착창고"] = code_stock["품목코드"].map(
         lambda x: stock_lookup["검사접착창고"].get(x, 0)
     )
+    code_stock["검사접착재작업창고"] = code_stock["품목코드"].map(
+        lambda x: stock_lookup["검사접착재작업창고"].get(x, 0)
+    )
     code_stock["누수규격검사 창고"] = code_stock["품목코드"].map(
         lambda x: stock_lookup["누수규격검사 창고"].get(x, 0)
     )
@@ -2753,11 +2782,12 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
         code_stock["사출창고"]
         + code_stock["분리창고"]
         + code_stock["검사접착창고"]
+        + code_stock["검사접착재작업창고"]
         + code_stock["누수규격검사 창고"]
     )
 
     result = grouped_demand.merge(code_stock, on="품목코드", how="left")
-    for col in ["사출창고", "분리창고", "검사접착창고", "누수규격검사 창고", "공정재고 합계"]:
+    for col in ["사출창고", "분리창고", "검사접착창고", "검사접착재작업창고", "누수규격검사 창고", "공정재고 합계"]:
         result[col] = result[col].fillna(0)
 
     # 분류 필터 정합성 보정:
@@ -2838,23 +2868,26 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
 
     process_map_df = pd.DataFrame(
         {
-            "공정창고": ["사출창고", "분리창고", "검사접착창고", "누수규격검사 창고"],
+            "공정창고": ["사출창고", "분리창고", "검사접착창고", "검사접착재작업창고", "누수규격검사 창고"],
             "수요정보 공정코드": [
                 process_code_map.get("사출창고", "-"),
                 process_code_map.get("분리창고", "-"),
                 process_code_map.get("검사접착창고", "-"),
+                "-",
                 process_code_map.get("누수규격검사 창고", "-"),
             ],
             "재고코드 매핑 규칙": [
                 "리드지정보 우선, 없으면 분류정보, 그래도 없으면 P코드->R코드 유추 (BUL1/BUL2는 BUL로 보정)",
                 "리드지정보 우선, 없으면 분류정보, 그래도 없으면 P코드->Q코드 유추 (BUL1/BUL2는 BUL로 보정)",
                 "P코드 그대로 사용",
+                "WH_NAME=검사접착 중 재공 코드 끝부분 -C 계열은 별도 분류, P코드 그대로 사용",
                 "P코드 그대로 사용",
             ],
             "재고>0 품목수": [
                 int((code_stock["사출창고"] > 0).sum()),
                 int((code_stock["분리창고"] > 0).sum()),
                 int((code_stock["검사접착창고"] > 0).sum()),
+                int((code_stock["검사접착재작업창고"] > 0).sum()),
                 int((code_stock["누수규격검사 창고"] > 0).sum()),
             ],
         }
@@ -3267,6 +3300,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         "사출창고",
         "분리창고",
         "검사접착창고",
+        "검사접착재작업창고",
         "누수규격검사 창고",
         "공정재고 합계",
     ]
@@ -3330,7 +3364,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
             if "사출생산필요수량" in filtered.columns
             else 0
         )
-        c1, c2, c3, c4, c5, c6 = st.columns(6, gap="medium")
+        c1, c2, c3, c4, c5, c6, c7 = st.columns(7, gap="medium")
         with c1:
             render_dashboard_kpi("부족수량 합계", f"{filtered['부족수량'].sum():,.0f}", "risk")
         with c2:
@@ -3342,6 +3376,8 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         with c5:
             render_dashboard_kpi("검사접착 재고", f"{filtered['검사접착창고'].sum():,.0f}", "stock")
         with c6:
+            render_dashboard_kpi("검사접착재작업 재고", f"{filtered['검사접착재작업창고'].sum():,.0f}", "stock")
+        with c7:
             render_dashboard_kpi("누수규격 재고", f"{filtered['누수규격검사 창고'].sum():,.0f}", "stock")
 
         initial_inj_summary = build_initial_injection_summary(filtered)
