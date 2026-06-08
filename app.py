@@ -967,61 +967,68 @@ def map_demand_code_to_process_code(demand_code: str, process_prefix: str) -> st
     return code
 
 
-def build_rework_code_candidates(code: object) -> set[str]:
-    raw_code = str(code).strip().upper()
-    if not raw_code or raw_code.lower() in INVALID_CATEGORY_VALUES:
-        return set()
-
-    candidates = {raw_code}
-    if raw_code.startswith("P"):
-        candidates.add(map_demand_code_to_process_code(raw_code, "Q").upper())
-        candidates.add(map_demand_code_to_process_code(raw_code, "R").upper())
-    elif raw_code.startswith("Q"):
-        candidates.add(map_demand_code_to_process_code(raw_code, "R").upper())
-    elif raw_code.startswith("R"):
-        candidates.add(map_demand_code_to_process_code(raw_code, "Q").upper())
-    return {c for c in candidates if c and c.lower() not in INVALID_CATEGORY_VALUES}
+def normalize_q_code_for_exact_match(value: object) -> str:
+    code = str(value).strip().upper()
+    if not code or code.lower() in INVALID_CATEGORY_VALUES:
+        return ""
+    return code if code.startswith("Q") else ""
 
 
-def read_rework_codes_from_demand_file(dem_path: Path) -> set[str]:
+def is_rework_q_code_column(column_name: object) -> bool:
+    normalized = re.sub(r"[\s_]+", "", str(column_name).strip().upper())
+    return normalized in {"Q코드", "QCODE"}
+
+
+def read_rework_q_code_info_from_demand_file(dem_path: Path) -> tuple[set[str], dict[str, object]]:
+    empty_meta: dict[str, object] = {
+        "sheet": "-",
+        "q_code_columns": [],
+        "sheet_columns": [],
+    }
     try:
         xls = pd.ExcelFile(dem_path)
     except Exception:
-        return set()
+        return set(), empty_meta
 
     rework_sheet = next((s for s in xls.sheet_names if "재작업" in str(s).replace(" ", "")), None)
     if rework_sheet is None:
-        return set()
+        return set(), empty_meta
 
     try:
         preview = xls.parse(sheet_name=rework_sheet, nrows=0)
     except Exception:
-        return set()
+        return set(), {**empty_meta, "sheet": rework_sheet}
 
     preview_cols = [str(c).strip() for c in preview.columns]
-    code_cols = [
-        c
-        for c in preview_cols
-        if c in {"품목코드", "품목 코드", "제품코드", "제품 코드", "생산코드", "생산 코드", "ITEM_ID"}
-    ]
-    if not code_cols:
-        code_cols = [c for c in preview_cols if "코드" in c]
-    if not code_cols:
-        return set()
+    q_code_cols = [c for c in preview_cols if is_rework_q_code_column(c)]
+    meta = {
+        "sheet": rework_sheet,
+        "q_code_columns": q_code_cols,
+        "sheet_columns": preview_cols,
+    }
+    if not q_code_cols:
+        return set(), meta
 
     try:
         rework_df = xls.parse(
             sheet_name=rework_sheet,
-            usecols=lambda c: str(c).strip() in set(code_cols),
+            usecols=lambda c: str(c).strip() in set(q_code_cols),
         )
     except Exception:
-        return set()
+        return set(), meta
 
-    rework_codes: set[str] = set()
+    rework_q_codes: set[str] = set()
     for col in rework_df.columns:
         for value in rework_df[col].dropna():
-            rework_codes.update(build_rework_code_candidates(value))
-    return rework_codes
+            q_code = normalize_q_code_for_exact_match(value)
+            if q_code:
+                rework_q_codes.add(q_code)
+    return rework_q_codes, meta
+
+
+def read_rework_codes_from_demand_file(dem_path: Path) -> set[str]:
+    rework_q_codes, _ = read_rework_q_code_info_from_demand_file(dem_path)
+    return rework_q_codes
 
 
 def is_power_column(column_name: str) -> bool:
@@ -2495,7 +2502,7 @@ def build_summary_group_totals_with_safe_split(df: pd.DataFrame) -> pd.DataFrame
 @st.cache_data(show_spinner=False, persist="disk")
 def load_raw_data(
     refresh_key: str, base_dir_str: str | None = None
-) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, object], set[str], str, str]:
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, object], set[str], dict[str, object], str, str]:
     _ = refresh_key
     data_base_dir = Path(base_dir_str) if base_dir_str else BASE_DIR
     inv_path, dem_path = find_excel_files(data_base_dir)
@@ -2518,15 +2525,17 @@ def load_raw_data(
 
     inv = read_inventory_excel_subset(inv_path)
     dem = read_demand_excel_subset(dem_path, demand_read_plan["usecols"])
-    rework_codes = read_rework_codes_from_demand_file(dem_path)
-    return inv, dem, demand_read_plan, rework_codes, inv_path.name, dem_path.name
+    rework_q_codes, rework_meta = read_rework_q_code_info_from_demand_file(dem_path)
+    return inv, dem, demand_read_plan, rework_q_codes, rework_meta, inv_path.name, dem_path.name
 
 
 @st.cache_data(show_spinner=False, persist="disk")
 def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     _ = refresh_key
     data_base_dir = Path(base_dir_str) if base_dir_str else BASE_DIR
-    inv, dem, demand_read_plan, rework_codes, inv_file_name, dem_file_name = load_raw_data(refresh_key, base_dir_str)
+    inv, dem, demand_read_plan, rework_q_codes, rework_meta, inv_file_name, dem_file_name = load_raw_data(
+        refresh_key, base_dir_str
+    )
     reference_refresh_key = build_reference_refresh_key(data_base_dir)
     (
         product_name_map,
@@ -2835,14 +2844,10 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
     grouped_demand["R코드 제품명"] = grouped_demand["R코드 제품명"].fillna(grouped_demand["제품명"])
     grouped_demand["R코드 제품명"] = grouped_demand["R코드 제품명"].fillna(grouped_demand["R코드5"])
     grouped_demand["R코드 제품명"] = grouped_demand["R코드 제품명"].replace({"": "-", "nan": "-", "None": "-"}).fillna("-")
-    if rework_codes:
-        q_lookup = grouped_demand["Q코드"].astype(str).str.strip().str.upper()
-        r_lookup = grouped_demand["R코드"].astype(str).str.strip().str.upper()
-        q_valid = ~q_lookup.str.lower().isin(INVALID_CATEGORY_VALUES)
-        rework_lookup = q_lookup.where(q_valid, r_lookup)
-        grouped_demand["재작업"] = rework_lookup.isin(rework_codes).map({True: "재작업 가능", False: ""})
-    else:
-        grouped_demand["재작업"] = ""
+    rework_lookup_q = grouped_demand["Q코드"].map(normalize_q_code_for_exact_match)
+    rework_match_mask = rework_lookup_q.isin(rework_q_codes) if rework_q_codes else pd.Series(False, index=grouped_demand.index)
+    grouped_demand["재작업"] = rework_match_mask.map({True: "재작업 가능", False: ""})
+    rework_matched_q_codes = sorted(rework_lookup_q[rework_match_mask].drop_duplicates().tolist())
 
     code_stock["사출창고"] = code_stock["품목코드"].map(
         lambda x: lookup_stock_qty(stock_lookup["사출창고"], r_by_p.get(x, map_demand_code_to_process_code(x, "R")))
@@ -2979,6 +2984,12 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
             "재고파일": [inv_file_name],
             "수요파일": [dem_file_name],
             "행수(현황표)": [len(result)],
+            "재작업 시트명": [str(rework_meta.get("sheet", "-"))],
+            "재작업 Q코드 컬럼": [", ".join(rework_meta.get("q_code_columns", []))],
+            "재작업 시트 컬럼": [", ".join(rework_meta.get("sheet_columns", []))],
+            "재작업 시트 Q코드 수": [len(rework_q_codes)],
+            "재작업 매칭 Q코드 수": [len(rework_matched_q_codes)],
+            "재작업 매칭 Q코드 샘플": [", ".join(rework_matched_q_codes[:10])],
         }
     )
 
@@ -3375,7 +3386,34 @@ def render_unclassified_products_section(df: pd.DataFrame, download_stamp: str) 
         )
 
 
-def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
+def render_rework_match_debug(file_info_df: pd.DataFrame | None) -> None:
+    if file_info_df is None or file_info_df.empty:
+        return
+
+    row = file_info_df.iloc[0]
+    source_count = int(row.get("재작업 시트 Q코드 수", 0) or 0)
+    matched_count = int(row.get("재작업 매칭 Q코드 수", 0) or 0)
+    sample_text = str(row.get("재작업 매칭 Q코드 샘플", "") or "").strip()
+    sample_codes = [code.strip() for code in sample_text.split(",") if code.strip()]
+    rework_sheet = str(row.get("재작업 시트명", "-") or "-")
+    q_code_columns = str(row.get("재작업 Q코드 컬럼", "") or "").strip()
+    sheet_columns = str(row.get("재작업 시트 컬럼", "") or "").strip()
+
+    with st.expander("재작업 매칭 디버그", expanded=False):
+        d1, d2 = st.columns(2)
+        d1.metric("재작업 시트 Q코드 수", f"{source_count:,}")
+        d2.metric("생산현황 매칭 Q코드 수", f"{matched_count:,}")
+        st.caption(f"재작업 시트: {rework_sheet}")
+        st.caption(f"감지된 Q코드 컬럼: {q_code_columns if q_code_columns else '없음'}")
+        if sheet_columns:
+            st.caption(f"재작업 시트 전체 컬럼: {sheet_columns}")
+        if sample_codes:
+            st.dataframe(pd.DataFrame({"매칭 Q코드 샘플": sample_codes[:10]}), use_container_width=True, hide_index=True)
+        else:
+            st.caption("매칭된 Q코드 샘플이 없습니다.")
+
+
+def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: pd.DataFrame | None = None) -> None:
     enriched_df = add_rq_group_columns(df)
     filtered = apply_filters(enriched_df, updated_at)
     download_stamp = datetime.now(DISPLAY_TZ).strftime("%Y%m%d_%H%M%S")
@@ -3426,6 +3464,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         st.caption(f"표시 {len(filtered):,}건 / 전체 {base_filtered_count:,}건")
 
     render_unclassified_products_section(filtered, download_stamp)
+    render_rework_match_debug(file_info_df)
 
     if selected_shortage_view == "생산 현황":
         full_demand_summary = build_summary_group_totals_with_safe_split(filtered)
@@ -4611,9 +4650,10 @@ def main() -> None:
 
     try:
         df = pd.DataFrame()
+        file_info_df = pd.DataFrame()
         if selected_top_view == top_views[0]:
             refresh_key = build_data_refresh_key(data_base_dir)
-            df, _, _ = load_data(refresh_key, str(data_base_dir))
+            df, file_info_df, _ = load_data(refresh_key, str(data_base_dir))
 
         leadji_info = pd.DataFrame()
         leadji_stock = pd.DataFrame()
@@ -4629,7 +4669,7 @@ def main() -> None:
         st.stop()
 
     if selected_top_view == "생산 부족 현황":
-        render_shortage_dashboard(df, updated_at)
+        render_shortage_dashboard(df, updated_at, file_info_df)
     elif selected_top_view == "리드지 현황":
         render_leadji_dashboard(updated_at, df, leadji_info, leadji_stock, leadji_order_df)
     else:
