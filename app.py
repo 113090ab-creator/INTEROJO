@@ -2274,7 +2274,10 @@ def build_qcode_summary(df: pd.DataFrame) -> pd.DataFrame:
     if q_df.empty:
         return pd.DataFrame(columns=columns)
 
-    q_df["Q코드"] = q_df["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "Q"))
+    if "Q코드" in q_df.columns:
+        q_df["Q코드"] = q_df["Q코드"].astype(str).str.strip()
+    else:
+        q_df["Q코드"] = q_df["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "Q"))
     q_df["파워"] = q_df["Q코드"].map(extract_power_from_code)
 
     summary = (
@@ -2546,15 +2549,9 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
         index=grouped_demand.index,
     )
 
-    # P코드는 수요정보 품목코드 기준(P->R/Q)을 우선 유지한다.
-    # 리드지/분류 매핑 코드는 비-P 항목에서만 적용한다.
-    item_prefix = grouped_demand["품목코드"].astype(str).str.upper().str[:1]
-    use_mapped_mask = item_prefix != "P"
-
-    grouped_demand["R코드"] = inferred_r
-    grouped_demand["Q코드"] = inferred_q
-    grouped_demand.loc[use_mapped_mask, "R코드"] = merged_r.loc[use_mapped_mask]
-    grouped_demand.loc[use_mapped_mask, "Q코드"] = merged_q.loc[use_mapped_mask]
+    # 리드지정보/분류정보의 공정 base가 있으면 P행에도 우선 적용하고, 없을 때만 P->R/Q 추론을 사용한다.
+    grouped_demand["R코드"] = merged_r
+    grouped_demand["Q코드"] = merged_q
 
     # BOM exact mapping has the highest priority when TO_ITEM_ID matches the demand item code.
     if bom_r_exact_map or bom_q_exact_map:
@@ -2586,6 +2583,68 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
 
         grouped_demand.loc[invalid_r_mask, "R코드"] = bom_merged_r.loc[invalid_r_mask]
         grouped_demand.loc[invalid_q_mask, "Q코드"] = bom_merged_q.loc[invalid_q_mask]
+
+    item_prefix = grouped_demand["품목코드"].astype(str).str.upper().str[:1]
+    p_mask = item_prefix == "P"
+    r_mask = item_prefix == "R"
+    if p_mask.any() and r_mask.any():
+        demand_r_codes = grouped_demand.loc[
+            r_mask, ["사이트코드", "이니셜", "제품명", "R코드", "Q코드", "사출납기일"]
+        ].copy()
+        demand_r_codes["파워_매칭"] = demand_r_codes["R코드"].map(extract_power_from_code)
+        demand_r_codes["제품명_매칭"] = demand_r_codes["제품명"].map(normalize_lookup_key)
+        demand_r_codes["납기_매칭"] = (
+            pd.to_datetime(demand_r_codes["사출납기일"], errors="coerce").dt.strftime("%Y-%m-%d").fillna("")
+        )
+        demand_r_codes = demand_r_codes[
+            demand_r_codes["R코드"].astype(str).str.startswith("R")
+            & (demand_r_codes["파워_매칭"] != "-")
+            & (demand_r_codes["제품명_매칭"] != "")
+        ].copy()
+
+        if not demand_r_codes.empty:
+            demand_r_codes = demand_r_codes.rename(columns={"R코드": "R코드_수요", "Q코드": "Q코드_수요"})
+            base_match_keys = ["사이트코드", "이니셜", "제품명_매칭", "파워_매칭"]
+            dated_match_keys = [*base_match_keys, "납기_매칭"]
+            demand_r_by_date = demand_r_codes.drop_duplicates(subset=dated_match_keys, keep="first")
+            demand_r_by_base = demand_r_codes.drop_duplicates(subset=base_match_keys, keep="first")
+
+            p_match = grouped_demand.loc[p_mask, ["사이트코드", "이니셜", "제품명", "R코드", "납기일"]].copy()
+            p_match["_row_id"] = p_match.index
+            p_match["파워_매칭"] = p_match["R코드"].map(extract_power_from_code)
+            p_match["제품명_매칭"] = p_match["제품명"].map(normalize_lookup_key)
+            p_match["납기_매칭"] = (
+                pd.to_datetime(p_match["납기일"], errors="coerce").dt.strftime("%Y-%m-%d").fillna("")
+            )
+            p_match = p_match.merge(
+                demand_r_by_date[dated_match_keys + ["R코드_수요", "Q코드_수요"]],
+                on=dated_match_keys,
+                how="left",
+            )
+
+            demand_match_mask = p_match["R코드_수요"].astype(str).str.strip().ne("")
+            demand_match_mask &= p_match["R코드_수요"].notna()
+            if (~demand_match_mask).any():
+                unmatched = p_match.loc[
+                    ~demand_match_mask, ["_row_id", *base_match_keys]
+                ].merge(
+                    demand_r_by_base[base_match_keys + ["R코드_수요", "Q코드_수요"]],
+                    on=base_match_keys,
+                    how="left",
+                )
+                fallback_match_mask = unmatched["R코드_수요"].astype(str).str.strip().ne("")
+                fallback_match_mask &= unmatched["R코드_수요"].notna()
+                fallback_rows = unmatched.loc[fallback_match_mask, "_row_id"]
+                grouped_demand.loc[fallback_rows, "R코드"] = unmatched.loc[
+                    fallback_match_mask, "R코드_수요"
+                ].to_numpy()
+                grouped_demand.loc[fallback_rows, "Q코드"] = unmatched.loc[
+                    fallback_match_mask, "Q코드_수요"
+                ].to_numpy()
+
+            matched_rows = p_match.loc[demand_match_mask, "_row_id"]
+            grouped_demand.loc[matched_rows, "R코드"] = p_match.loc[demand_match_mask, "R코드_수요"].to_numpy()
+            grouped_demand.loc[matched_rows, "Q코드"] = p_match.loc[demand_match_mask, "Q코드_수요"].to_numpy()
 
     grouped_demand["R코드5"] = grouped_demand["R코드"].astype(str).str[:5]
     grouped_demand["R코드 제품명"] = grouped_demand["R코드5"].map(r_name_map)
@@ -3258,10 +3317,10 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
 
         if p_rows.empty:
             p_view["사출 부족수량"] = p_view["사출생산필요수량"]
-            key_cols = [c for c in ["사이트코드", "이니셜", "R코드"] if c in p_view.columns]
+            key_cols = [c for c in ["사이트코드", "이니셜", "R코드", "Q코드"] if c in p_view.columns]
             if key_cols and not r_rows.empty and "품목코드" in enriched_df.columns:
                 # Fallback: when current filters leave only R rows, recover representative P codes
-                # from the full scope using (사이트코드+이니셜+R코드) keys.
+                # from the full scope using (사이트코드+이니셜+R코드+Q코드) keys.
                 p_universe = enriched_df.copy()
                 universe_prefix = p_universe["품목코드"].astype(str).str.upper().str[:1]
                 p_universe = p_universe[universe_prefix == "P"]
@@ -3287,7 +3346,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
                     p_view = p_view.drop(columns=["매핑P코드", "매핑제품명"], errors="ignore")
         else:
             p_rows["사출 부족수량"] = p_rows["사출생산필요수량"]
-            key_cols = [c for c in ["사이트코드", "이니셜", "R코드"] if c in p_rows.columns and c in r_rows.columns]
+            key_cols = [c for c in ["사이트코드", "이니셜", "R코드", "Q코드"] if c in p_rows.columns and c in r_rows.columns]
 
             if key_cols and not r_rows.empty:
                 r_key_inj = (
@@ -3355,7 +3414,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str) -> None:
         )
         if "사출 부족수량(연결R)" in p_view.columns:
             st.caption(
-                f"R→Q→P 연결 매핑(사이트코드+이니셜+R코드): "
+                f"R→Q→P 연결 매핑(사이트코드+이니셜+R코드+Q코드): "
                 f"P행 반영 사출부족수량 {mapped_inj_total:,.0f}, "
                 f"미매핑 R 사출수량 {unmatched_inj_total:,.0f}"
             )
