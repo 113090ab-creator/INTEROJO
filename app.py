@@ -28,7 +28,7 @@ WAREHOUSE_MAP = {
     "누수규격검사": "누수규격검사 창고",
 }
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
-DATAFRAME_DISPLAY_ROW_LIMIT = 1000
+DATAFRAME_DISPLAY_ROW_LIMIT = 500
 CACHE_MAX_ENTRIES = 64
 POWER_VALUE_PATTERN = re.compile(r"([+-]\d{1,2}(?:\.\d{1,2})?)")
 UNCLASSIFIED_SHEET_CATEGORY = "미분류"
@@ -1631,9 +1631,11 @@ def load_reference_maps_bundle(
     # 2) 분류정보 시트 기반 (시트분류 + R/Q 맵 + R코드명 우선)
     group_sheet = find_sheet({"코드", "시트이름"}, preferred_name="분류정보")
     rq_sheet = find_sheet({"코드", "Q코드", "R코드"}, preferred_name="분류정보")
-    group_df_source = parse_sheet(group_sheet) if group_sheet else pd.DataFrame()
+    classification_cols = {"코드", "시트이름", "Q코드", "R코드", "제품명"}
+    classification_usecols = lambda c: str(c).strip() in classification_cols
+    group_df_source = parse_sheet(group_sheet, usecols=classification_usecols) if group_sheet else pd.DataFrame()
     rq_df_source = group_df_source if (rq_sheet and group_sheet and rq_sheet == group_sheet) else (
-        parse_sheet(rq_sheet) if rq_sheet else pd.DataFrame()
+        parse_sheet(rq_sheet, usecols=classification_usecols) if rq_sheet else pd.DataFrame()
     )
 
     if not group_df_source.empty and {"코드", "시트이름"}.issubset(group_df_source.columns):
@@ -3247,17 +3249,29 @@ def render_unclassified_products_section(df: pd.DataFrame, download_stamp: str) 
         return
 
     sheet_category = df["시트분류"].astype(str).str.strip()
-    unclassified = df[sheet_category == UNCLASSIFIED_SHEET_CATEGORY].copy()
-    table = unclassified[[c for c in columns if c in unclassified.columns]].drop_duplicates()
-    if not table.empty:
-        sort_cols = [c for c in ["거래처", "이니셜", "품목코드"] if c in table.columns]
-        if sort_cols:
-            table = table.sort_values(sort_cols, ascending=True)
+    unclassified_mask = sheet_category == UNCLASSIFIED_SHEET_CATEGORY
+    unclassified_count = int(unclassified_mask.sum())
 
-    with st.expander(f"미분류 제품 목록 ({len(table):,}건)", expanded=False):
-        if table.empty:
+    with st.expander(f"미분류 제품 목록 ({unclassified_count:,}건)", expanded=False):
+        if unclassified_count <= 0:
             st.info("미분류 제품이 없습니다.")
             return
+
+        show_unclassified = st.checkbox(
+            "미분류 목록 표시 및 다운로드 준비",
+            value=False,
+            key="show_unclassified_products_table",
+        )
+        if not show_unclassified:
+            st.caption("화면 속도를 위해 기본 상태에서는 목록과 엑셀 파일을 생성하지 않습니다.")
+            return
+
+        unclassified = df[unclassified_mask].copy()
+        table = unclassified[[c for c in columns if c in unclassified.columns]].drop_duplicates()
+        if not table.empty:
+            sort_cols = [c for c in ["거래처", "이니셜", "품목코드"] if c in table.columns]
+            if sort_cols:
+                table = table.sort_values(sort_cols, ascending=True)
 
         st.download_button(
             "미분류 엑셀 다운로드",
