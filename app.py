@@ -35,9 +35,9 @@ WAREHOUSE_MAP = {
     "누수규격검사": "누수규격검사 창고",
 }
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
-DATAFRAME_DISPLAY_ROW_LIMIT = 5000
+DATAFRAME_DISPLAY_ROW_LIMIT = 500
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260609-process-coverage-v5"
+APP_CACHE_VERSION = "20260609-process-coverage-v6"
 POWER_VALUE_PATTERN = re.compile(r"([+-]\d{1,2}(?:\.\d{1,2})?)")
 UNCLASSIFIED_SHEET_CATEGORY = "미분류"
 INVALID_CATEGORY_VALUES = {"", "-", "nan", "none", "nat", "null", "na", "<na>"}
