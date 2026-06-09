@@ -37,7 +37,7 @@ WAREHOUSE_MAP = {
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 DATAFRAME_DISPLAY_ROW_LIMIT = 5000
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260609-process-coverage-v4"
+APP_CACHE_VERSION = "20260609-process-coverage-v5"
 POWER_VALUE_PATTERN = re.compile(r"([+-]\d{1,2}(?:\.\d{1,2})?)")
 UNCLASSIFIED_SHEET_CATEGORY = "미분류"
 INVALID_CATEGORY_VALUES = {"", "-", "nan", "none", "nat", "null", "na", "<na>"}
@@ -3788,7 +3788,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
             help="콤마(,)로 여러 키워드를 입력하면 OR 조건으로 검색합니다.",
         ).strip()
     base_filtered_count = len(filtered)
-    link_mapping_scope = filtered.copy()
+    link_mapping_scope = enriched_df.copy()
     if direct_query and direct_search_cols:
         filtered = filter_with_terms_any(filtered, direct_search_cols, direct_query)
     with result_col:
@@ -3968,18 +3968,28 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
             ]
 
             if key_cols and not r_scope.empty:
-                r_key_inj = (
+                r_key_inj_all = (
                     r_scope.groupby(key_cols, as_index=False)["사출생산필요수량"]
                     .sum()
                     .rename(columns={"사출생산필요수량": "연결R 사출수량"})
                 )
                 p_keys = p_rows[key_cols].drop_duplicates()
-                matched_r_total = (
-                    r_key_inj.merge(p_keys, on=key_cols, how="inner")["연결R 사출수량"].sum()
+                full_p_keys = pd.DataFrame(columns=key_cols)
+                if "품목코드" in link_mapping_scope.columns and all(c in link_mapping_scope.columns for c in key_cols):
+                    full_p_scope = link_mapping_scope[
+                        link_mapping_scope["품목코드"].astype(str).str.upper().str.startswith("P")
+                    ]
+                    full_p_keys = full_p_scope[key_cols].drop_duplicates()
+                if not full_p_keys.empty:
+                    unmatched_r = r_key_inj_all.merge(full_p_keys, on=key_cols, how="left", indicator=True)
+                    unmatched_inj_total = float(
+                        unmatched_r.loc[unmatched_r["_merge"] == "left_only", "연결R 사출수량"].sum()
+                    )
+                r_key_inj = (
+                    r_key_inj_all.merge(p_keys, on=key_cols, how="inner")
                     if not p_keys.empty
-                    else 0.0
+                    else r_key_inj_all.iloc[0:0].copy()
                 )
-                unmatched_inj_total = float(r_key_inj["연결R 사출수량"].sum() - matched_r_total)
 
                 p_rows = p_rows.merge(r_key_inj, on=key_cols, how="left")
                 p_key_short_sum = p_rows.groupby(key_cols)["부족수량"].transform("sum")
@@ -4014,19 +4024,29 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
                     q_scope = q_scope[q_scope["품목코드"].astype(str).str.upper().str.startswith("Q")]
                 q_scope = q_scope[q_scope[SEPARATION_REQUIRED_QTY_COL] > 0]
                 if not q_scope.empty:
-                    q_key_sep = (
+                    q_key_sep_all = (
                         q_scope.groupby(q_link_cols, as_index=False)[SEPARATION_REQUIRED_QTY_COL]
                         .sum()
                         .rename(columns={SEPARATION_REQUIRED_QTY_COL: "연결Q 분리수량"})
                     )
                     q_keys = p_rows[q_link_cols].drop_duplicates()
-                    matched_sep_total = (
-                        q_key_sep.merge(q_keys, on=q_link_cols, how="inner")["연결Q 분리수량"].sum()
+                    full_p_q_keys = pd.DataFrame(columns=q_link_cols)
+                    if "품목코드" in link_mapping_scope.columns and all(c in link_mapping_scope.columns for c in q_link_cols):
+                        full_p_scope = link_mapping_scope[
+                            link_mapping_scope["품목코드"].astype(str).str.upper().str.startswith("P")
+                        ]
+                        full_p_q_keys = full_p_scope[q_link_cols].drop_duplicates()
+                    if not full_p_q_keys.empty:
+                        unmatched_q = q_key_sep_all.merge(full_p_q_keys, on=q_link_cols, how="left", indicator=True)
+                        unmatched_sep_total = float(
+                            unmatched_q.loc[unmatched_q["_merge"] == "left_only", "연결Q 분리수량"].sum()
+                        )
+                    q_key_sep = (
+                        q_key_sep_all.merge(q_keys, on=q_link_cols, how="inner")
                         if not q_keys.empty
-                        else 0.0
+                        else q_key_sep_all.iloc[0:0].copy()
                     )
-                    mapped_sep_total = float(matched_sep_total)
-                    unmatched_sep_total = float(q_key_sep["연결Q 분리수량"].sum() - matched_sep_total)
+                    mapped_sep_total = float(q_key_sep["연결Q 분리수량"].sum())
                     p_rows = p_rows.merge(q_key_sep, on=q_link_cols, how="left")
                     linked_sep = parse_mixed_numeric(p_rows["연결Q 분리수량"])
                     current_sep = parse_mixed_numeric(p_rows[SEPARATION_REQUIRED_QTY_COL])
