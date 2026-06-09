@@ -37,7 +37,7 @@ WAREHOUSE_MAP = {
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 DATAFRAME_DISPLAY_ROW_LIMIT = 500
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260609-process-coverage-v9"
+APP_CACHE_VERSION = "20260609-process-coverage-v10"
 DISPLAY_ROW_LIMIT_SESSION_KEY = "display_row_limit_option"
 POWER_VALUE_PATTERN = re.compile(r"([+-]\d{1,2}(?:\.\d{1,2})?)")
 UNCLASSIFIED_SHEET_CATEGORY = "미분류"
@@ -3848,26 +3848,12 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
             if "사출생산필요수량" in filtered.columns
             else 0
         )
-        separation_required_total = (
-            parse_mixed_numeric(filtered[SEPARATION_REQUIRED_QTY_COL]).sum()
-            if SEPARATION_REQUIRED_QTY_COL in filtered.columns
-            else 0
-        )
-        adhesion_required_total = (
-            parse_mixed_numeric(filtered[ADHESION_REQUIRED_QTY_COL]).sum()
-            if ADHESION_REQUIRED_QTY_COL in filtered.columns
-            else 0
-        )
-        c1, c2, c3, c4, c5 = st.columns(5, gap="medium")
+        c1, c2, c3 = st.columns(3, gap="medium")
         with c1:
             render_dashboard_kpi("부족수량 합계", f"{filtered['부족수량'].sum():,.0f}", "risk")
         with c2:
             render_dashboard_kpi("사출부족수량 합계", f"{inj_shortage_total:,.0f}", "risk")
         with c3:
-            render_dashboard_kpi("분리필요수량 합계", f"{separation_required_total:,.0f}", "risk")
-        with c4:
-            render_dashboard_kpi("55필요수량 합계", f"{adhesion_required_total:,.0f}", "risk")
-        with c5:
             render_dashboard_kpi("공정재고 합계", f"{filtered['공정재고 합계'].sum():,.0f}", "stock")
 
         c1, c2, c3, c4, c5 = st.columns(5, gap="medium")
