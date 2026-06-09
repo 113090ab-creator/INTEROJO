@@ -38,7 +38,7 @@ TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 DATAFRAME_DISPLAY_ROW_LIMIT = 500
 TABLE_STYLE_CELL_LIMIT = 12000
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260609-process-coverage-v13"
+APP_CACHE_VERSION = "20260609-process-coverage-v14"
 DISPLAY_ROW_LIMIT_SESSION_KEY = "display_row_limit_option"
 POWER_VALUE_PATTERN = re.compile(r"([+-]\d{1,2}(?:\.\d{1,2})?)")
 UNCLASSIFIED_SHEET_CATEGORY = "미분류"
@@ -1164,6 +1164,14 @@ def extract_power_from_code(item_code: str) -> str:
     code = str(item_code).strip()
     match = POWER_VALUE_PATTERN.search(code)
     return format_power_value(match.group(1)) if match else "-"
+
+
+def extract_power_key_from_code(item_code: str) -> str:
+    code = str(item_code).strip()
+    matches = POWER_VALUE_PATTERN.findall(code)
+    if not matches:
+        return "-"
+    return "|".join(format_power_value(match) for match in matches)
 
 
 def clean_text_value(value: object) -> str:
@@ -3085,7 +3093,7 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
         demand_r_codes = grouped_demand.loc[
             r_mask, ["사이트코드", "이니셜", "제품명", "R코드", "Q코드", "사출납기일"]
         ].copy()
-        demand_r_codes["파워_매칭"] = demand_r_codes["R코드"].map(extract_power_from_code)
+        demand_r_codes["파워_매칭"] = demand_r_codes["R코드"].map(extract_power_key_from_code)
         demand_r_codes["제품명_매칭"] = demand_r_codes["제품명"].map(normalize_lookup_key)
         demand_r_codes["납기_매칭"] = (
             pd.to_datetime(demand_r_codes["사출납기일"], errors="coerce").dt.strftime("%Y-%m-%d").fillna("")
@@ -3105,7 +3113,7 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
 
             p_match = grouped_demand.loc[p_mask, ["사이트코드", "이니셜", "제품명", "R코드", "납기일"]].copy()
             p_match["_row_id"] = p_match.index
-            p_match["파워_매칭"] = p_match["R코드"].map(extract_power_from_code)
+            p_match["파워_매칭"] = p_match["R코드"].map(extract_power_key_from_code)
             p_match["제품명_매칭"] = p_match["제품명"].map(normalize_lookup_key)
             p_match["납기_매칭"] = (
                 pd.to_datetime(p_match["납기일"], errors="coerce").dt.strftime("%Y-%m-%d").fillna("")
