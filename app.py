@@ -38,7 +38,7 @@ TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 DATAFRAME_DISPLAY_ROW_LIMIT = 500
 TABLE_STYLE_CELL_LIMIT = 12000
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260609-process-coverage-v14"
+APP_CACHE_VERSION = "20260609-process-coverage-v15"
 DISPLAY_ROW_LIMIT_SESSION_KEY = "display_row_limit_option"
 POWER_VALUE_PATTERN = re.compile(r"([+-]\d{1,2}(?:\.\d{1,2})?)")
 UNCLASSIFIED_SHEET_CATEGORY = "미분류"
@@ -1167,7 +1167,10 @@ def extract_power_from_code(item_code: str) -> str:
 
 
 def extract_power_key_from_code(item_code: str) -> str:
-    code = str(item_code).strip()
+    code = str(item_code).strip().upper()
+    variant_match = re.match(r"^[PQRSTU]\d{4}[A-Z]?(.*)$", code)
+    if variant_match and variant_match.group(1):
+        return variant_match.group(1)
     matches = POWER_VALUE_PATTERN.findall(code)
     if not matches:
         return "-"
@@ -2446,6 +2449,123 @@ def add_rq_group_columns(df: pd.DataFrame) -> pd.DataFrame:
     enriched["P코드5"] = enriched["품목코드"].astype(str).str[:5]
     enriched["RQ그룹"] = enriched["R코드"].astype(str) + " | " + enriched["Q코드"].astype(str)
     return enriched
+
+
+def build_synthetic_p_rows_for_process_scope(
+    source_scope: pd.DataFrame,
+    p_reference_scope: pd.DataFrame,
+    template_columns: list[str],
+) -> pd.DataFrame:
+    if source_scope.empty or p_reference_scope.empty or "품목코드" not in source_scope.columns:
+        return pd.DataFrame(columns=template_columns)
+    if "품목코드" not in p_reference_scope.columns:
+        return pd.DataFrame(columns=template_columns)
+
+    p_ref = p_reference_scope[p_reference_scope["품목코드"].astype(str).str.upper().str.startswith("P")].copy()
+    if p_ref.empty:
+        return pd.DataFrame(columns=template_columns)
+
+    p_ref["P코드5"] = p_ref["품목코드"].astype(str).str.upper().str[:5]
+    p_ref_name_cols = ["품목코드", "제품명"] if "제품명" in p_ref.columns else ["품목코드"]
+    p_by_rq = (
+        p_ref.drop_duplicates(subset=["R코드", "Q코드"], keep="first")[["R코드", "Q코드", *p_ref_name_cols]]
+        .rename(columns={"품목코드": "_derived_p_code", "제품명": "_derived_p_name"})
+        if {"R코드", "Q코드"}.issubset(p_ref.columns)
+        else pd.DataFrame()
+    )
+    p_by_q = (
+        p_ref.drop_duplicates(subset=["Q코드"], keep="first")[["Q코드", *p_ref_name_cols]]
+        .rename(columns={"품목코드": "_derived_p_code", "제품명": "_derived_p_name"})
+        if "Q코드" in p_ref.columns
+        else pd.DataFrame()
+    )
+
+    actual_r_keys = [c for c in [ORDER_NO_COL, "거래처", "이니셜", "R코드", "Q코드"] if c in p_ref.columns]
+    actual_q_keys = [c for c in [ORDER_NO_COL, "거래처", "이니셜", "Q코드"] if c in p_ref.columns]
+    actual_r = p_ref[actual_r_keys].drop_duplicates() if actual_r_keys else pd.DataFrame()
+    actual_q = p_ref[actual_q_keys].drop_duplicates() if actual_q_keys else pd.DataFrame()
+
+    candidates: list[pd.DataFrame] = []
+    source_prefix = source_scope["품목코드"].astype(str).str.upper().str[:1]
+    if "사출생산필요수량" in source_scope.columns and {"R코드", "Q코드"}.issubset(source_scope.columns):
+        r_source = source_scope[source_prefix == "R"].copy()
+        r_source["사출생산필요수량"] = parse_mixed_numeric(r_source["사출생산필요수량"])
+        r_source = r_source[r_source["사출생산필요수량"] > 0]
+        r_keys = [c for c in [ORDER_NO_COL, "거래처", "이니셜", "R코드", "Q코드"] if c in r_source.columns]
+        if r_keys and not r_source.empty:
+            r_source = r_source.merge(p_by_rq, on=["R코드", "Q코드"], how="left") if not p_by_rq.empty else r_source
+            if "_derived_p_code" not in r_source.columns:
+                r_source["_derived_p_code"] = ""
+            r_code_text = r_source["_derived_p_code"].astype(str).str.strip()
+            r_source = r_source[
+                r_source["_derived_p_code"].notna()
+                & (r_code_text != "")
+                & (~r_code_text.str.lower().isin(INVALID_CATEGORY_VALUES))
+            ]
+            if not r_source.empty and actual_r_keys == r_keys and not actual_r.empty:
+                r_source = r_source.merge(actual_r, on=r_keys, how="left", indicator=True)
+                r_source = r_source[r_source["_merge"] == "left_only"].drop(columns=["_merge"])
+            candidates.append(r_source)
+
+    if SEPARATION_REQUIRED_QTY_COL in source_scope.columns and "Q코드" in source_scope.columns:
+        q_source = source_scope[source_prefix == "Q"].copy()
+        q_source[SEPARATION_REQUIRED_QTY_COL] = parse_mixed_numeric(q_source[SEPARATION_REQUIRED_QTY_COL])
+        q_source = q_source[q_source[SEPARATION_REQUIRED_QTY_COL] > 0]
+        q_keys = [c for c in [ORDER_NO_COL, "거래처", "이니셜", "Q코드"] if c in q_source.columns]
+        if q_keys and not q_source.empty:
+            q_source = q_source.merge(p_by_q, on=["Q코드"], how="left") if not p_by_q.empty else q_source
+            if "_derived_p_code" not in q_source.columns:
+                q_source["_derived_p_code"] = ""
+            q_code_text = q_source["_derived_p_code"].astype(str).str.strip()
+            q_source = q_source[
+                q_source["_derived_p_code"].notna()
+                & (q_code_text != "")
+                & (~q_code_text.str.lower().isin(INVALID_CATEGORY_VALUES))
+            ]
+            if "R코드" not in q_source.columns:
+                q_source["R코드"] = q_source["Q코드"].map(lambda code: map_demand_code_to_process_code(code, "R"))
+            if not q_source.empty and actual_q_keys == q_keys and not actual_q.empty:
+                q_source = q_source.merge(actual_q, on=q_keys, how="left", indicator=True)
+                q_source = q_source[q_source["_merge"] == "left_only"].drop(columns=["_merge"])
+            candidates.append(q_source)
+
+    if not candidates:
+        return pd.DataFrame(columns=template_columns)
+
+    combined = pd.concat(candidates, ignore_index=True, sort=False)
+    if combined.empty:
+        return pd.DataFrame(columns=template_columns)
+
+    group_cols = [
+        c
+        for c in [ORDER_NO_COL, "거래처", "이니셜", "R코드", "Q코드", "_derived_p_code"]
+        if c in combined.columns
+    ]
+    first_rows = combined.sort_values(group_cols).drop_duplicates(subset=group_cols, keep="first").copy()
+    synthetic = pd.DataFrame(index=first_rows.index, columns=template_columns)
+    for col in template_columns:
+        if col in first_rows.columns:
+            synthetic[col] = first_rows[col]
+
+    synthetic["품목코드"] = first_rows["_derived_p_code"].values
+    if "제품명" in synthetic.columns:
+        synthetic["제품명"] = first_rows["_derived_p_name"] if "_derived_p_name" in first_rows.columns else pd.NA
+        if "제품명" in first_rows.columns:
+            synthetic["제품명"] = synthetic["제품명"].fillna(first_rows["제품명"])
+        synthetic["제품명"] = synthetic["제품명"].fillna("-")
+
+    for col in [
+        DEMAND_QTY_COL,
+        "부족수량",
+        "사출생산필요수량",
+        SEPARATION_REQUIRED_QTY_COL,
+        LEADJI_REQUIRED_QTY_COL,
+        ADHESION_REQUIRED_QTY_COL,
+    ]:
+        if col in synthetic.columns:
+            synthetic[col] = 0.0
+
+    return synthetic.reset_index(drop=True)
 
 
 @st.cache_data(show_spinner=False, max_entries=CACHE_MAX_ENTRIES)
@@ -3948,6 +4068,19 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
             p_rows = p_view.copy()
             r_rows = p_view.iloc[0:0].copy()
 
+        synthetic_full_rows = build_synthetic_p_rows_for_process_scope(
+            link_mapping_scope,
+            link_mapping_scope,
+            p_view.columns.tolist(),
+        )
+        synthetic_display_rows = build_synthetic_p_rows_for_process_scope(
+            p_view,
+            link_mapping_scope,
+            p_view.columns.tolist(),
+        )
+        if not synthetic_display_rows.empty:
+            p_rows = pd.concat([p_rows, synthetic_display_rows], ignore_index=True, sort=False)
+
         if p_rows.empty:
             p_view["사출 부족수량"] = p_view["사출생산필요수량"]
             key_cols = [
@@ -4015,6 +4148,8 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
                     full_p_scope = link_mapping_scope[
                         link_mapping_scope["품목코드"].astype(str).str.upper().str.startswith("P")
                     ]
+                    if not synthetic_full_rows.empty:
+                        full_p_scope = pd.concat([full_p_scope, synthetic_full_rows], ignore_index=True, sort=False)
                     full_p_keys = full_p_scope[key_cols].drop_duplicates()
                 if not full_p_keys.empty:
                     unmatched_r = r_key_inj_all.merge(full_p_keys, on=key_cols, how="left", indicator=True)
@@ -4071,6 +4206,8 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
                         full_p_scope = link_mapping_scope[
                             link_mapping_scope["품목코드"].astype(str).str.upper().str.startswith("P")
                         ]
+                        if not synthetic_full_rows.empty:
+                            full_p_scope = pd.concat([full_p_scope, synthetic_full_rows], ignore_index=True, sort=False)
                         full_p_q_keys = full_p_scope[q_link_cols].drop_duplicates()
                     if not full_p_q_keys.empty:
                         unmatched_q = q_key_sep_all.merge(full_p_q_keys, on=q_link_cols, how="left", indicator=True)
@@ -4148,25 +4285,26 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
             st.caption(
                 f"R→P 연결 매핑(수주번호+거래처+이니셜+R코드+Q코드): "
                 f"P행 반영 사출부족수량 {mapped_inj_total:,.0f}, "
-                f"P행 없음 R 사출수량 {unmatched_inj_total:,.0f}"
+                f"P코드 유추 불가 R 사출수량 {unmatched_inj_total:,.0f}"
             )
         if mapped_sep_total or unmatched_sep_total:
             st.caption(
                 f"Q→P 연결 매핑(수주번호+거래처+이니셜+Q코드): "
                 f"P행 반영 분리필요수량 {mapped_sep_total:,.0f}, "
-                f"P행 없음 Q 분리수량 {unmatched_sep_total:,.0f}"
+                f"P코드 유추 불가 Q 분리수량 {unmatched_sep_total:,.0f}"
             )
         if unmatched_inj_total > 0 or unmatched_sep_total > 0:
             with st.expander("R/Q 독립 수요 확인", expanded=False):
                 v1, v2, v3, v4 = st.columns(4)
                 v1.metric("P 연결 사출", f"{mapped_inj_total:,.0f}")
-                v2.metric("P행 없음 R 사출", f"{unmatched_inj_total:,.0f}")
+                v2.metric("P코드 유추 불가 R 사출", f"{unmatched_inj_total:,.0f}")
                 v3.metric("P 연결 분리", f"{mapped_sep_total:,.0f}")
-                v4.metric("P행 없음 Q 분리", f"{unmatched_sep_total:,.0f}")
+                v4.metric("P코드 유추 불가 Q 분리", f"{unmatched_sep_total:,.0f}")
                 st.info(
                     "수요정보는 P/R/Q 제품코드가 행으로 분리되어 있습니다. "
-                    "같은 수주번호/거래처/이니셜/R 또는 Q코드에 대응되는 P행이 없는 R/Q 공정수량은 "
-                    "P 생산현황에 임의로 붙이지 않고, 사출 현황 또는 분리 현황에서 독립 수요로 확인합니다."
+                    "같은 수주번호/거래처/이니셜/R 또는 Q코드에 대응되는 P행이 없어도 P코드 접두를 유추할 수 있으면 "
+                    "수요정보에 실제 P행이 있는 R/Q 또는 Q코드만 생산현황에 별도 P행으로 반영합니다. "
+                    "여기에는 수요정보에서 대응 P행을 찾지 못한 잔여 R/Q 수량만 표시됩니다."
                 )
         render_lazy_excel_download_button(
             "엑셀 다운로드",
