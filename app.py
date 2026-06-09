@@ -37,7 +37,7 @@ WAREHOUSE_MAP = {
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 DATAFRAME_DISPLAY_ROW_LIMIT = 5000
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260609-process-coverage-v3"
+APP_CACHE_VERSION = "20260609-process-coverage-v4"
 POWER_VALUE_PATTERN = re.compile(r"([+-]\d{1,2}(?:\.\d{1,2})?)")
 UNCLASSIFIED_SHEET_CATEGORY = "미분류"
 INVALID_CATEGORY_VALUES = {"", "-", "nan", "none", "nat", "null", "na", "<na>"}
@@ -2149,7 +2149,10 @@ def limit_dataframe_for_display(
 
 def caption_limited_rows(total_rows: int, displayed_rows: int) -> None:
     if total_rows > displayed_rows:
-        st.caption(f"대용량 데이터 안정성을 위해 화면에는 상위 {displayed_rows:,}건만 표시합니다. 다운로드는 전체 {total_rows:,}건 기준입니다.")
+        st.info(
+            f"화면 표시 제한: 상위 {displayed_rows:,}건만 표시 중입니다. "
+            f"전체 {total_rows:,}건은 직접 검색 또는 엑셀 다운로드로 확인하세요."
+        )
 
 
 def infer_numeric_like_series(series: pd.Series) -> bool:
@@ -3781,7 +3784,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
             "직접 검색",
             value="",
             key="shortage_direct_query_v1",
-            placeholder="거래처, 이니셜, 품목코드, R코드, Q코드, 제품명으로 검색하세요",
+            placeholder="수주번호, 거래처, 이니셜, 품목코드, R코드, Q코드, 제품명으로 검색하세요",
             help="콤마(,)로 여러 키워드를 입력하면 OR 조건으로 검색합니다.",
         ).strip()
     base_filtered_count = len(filtered)
@@ -4097,6 +4100,18 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
                 f"P행 반영 분리필요수량 {mapped_sep_total:,.0f}, "
                 f"미매핑 Q 분리수량 {unmatched_sep_total:,.0f}"
             )
+        if unmatched_inj_total > 0 or unmatched_sep_total > 0:
+            with st.expander("R/Q→P 연결 검증", expanded=True):
+                v1, v2, v3, v4 = st.columns(4)
+                v1.metric("P 반영 사출", f"{mapped_inj_total:,.0f}")
+                v2.metric("미매핑 R 사출", f"{unmatched_inj_total:,.0f}")
+                v3.metric("P 반영 분리", f"{mapped_sep_total:,.0f}")
+                v4.metric("미매핑 Q 분리", f"{unmatched_sep_total:,.0f}")
+                st.warning(
+                    "P행으로 연결되지 않은 R/Q 공정수량이 있습니다. "
+                    "같은 수주번호/거래처/이니셜/RQ코드 조합의 P행이 없으면 생산현황 P표에는 붙지 않으며, "
+                    "사출 현황 또는 분리 현황 탭에서 별도로 확인하세요."
+                )
         st.download_button(
             "엑셀 다운로드",
             data=dataframe_to_excel_bytes(p_table, sheet_name="생산현황"),
