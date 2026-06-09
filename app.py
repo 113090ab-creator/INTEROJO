@@ -20,6 +20,9 @@ DISPLAY_TZ = ZoneInfo("Asia/Seoul")
 LEADJI_REQUIRED_QTY_COL = "[45]하이드레이션/전면검사 필요수량"
 LEADJI_REQUIRED_DUE_COL = "[45]하이드레이션/전면검사 납기일"
 LEADJI_COMPLETED_STOCK_COL = "누수규격검사 창고"
+DEMAND_QTY_COL = "수요수량"
+SEPARATION_REQUIRED_QTY_COL = "분리생산필요수량"
+SEPARATION_REQUIRED_DUE_COL = "분리납기일"
 
 WAREHOUSE_MAP = {
     "사출창고": "사출창고",
@@ -31,7 +34,7 @@ WAREHOUSE_MAP = {
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 DATAFRAME_DISPLAY_ROW_LIMIT = 500
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260608-bom-streaming-v5"
+APP_CACHE_VERSION = "20260609-separation-demand-v1"
 POWER_VALUE_PATTERN = re.compile(r"([+-]\d{1,2}(?:\.\d{1,2})?)")
 UNCLASSIFIED_SHEET_CATEGORY = "미분류"
 INVALID_CATEGORY_VALUES = {"", "-", "nan", "none", "nat", "null", "na", "<na>"}
@@ -98,6 +101,8 @@ COLUMN_LABEL_ALIASES = {
     "공정재고 합계": "공정재고",
     "사출 부족수량": "사출부족",
     "사출생산필요수량": "사출필요",
+    "분리생산필요수량": "분리필요",
+    "수요수량": "수요",
     "생산필요수량": "생산필요",
     "최소납기일": "생산 최소 납기일",
 }
@@ -858,9 +863,15 @@ def build_demand_read_plan(
         header_labels,
         ["수요 제품 이름", "수요제품이름", "제품명"],
     )
+    demand_qty_idx = pick_first_existing_column_index(
+        header_labels,
+        ["수요 수량", "수요수량"],
+    )
 
     leak_qty_idx = existing_idx(warehouse_qty_col_indices.get("누수규격검사 창고"))
     leak_due_idx = existing_idx(leak_qty_idx + 1 if leak_qty_idx is not None else None)
+    separation_qty_idx = existing_idx(warehouse_qty_col_indices.get("분리창고"))
+    separation_due_idx = existing_idx(separation_qty_idx + 1 if separation_qty_idx is not None else None)
 
     leadji_qty_idx: int | None = None
     for process_label, idx in process_qty_col_indices.items():
@@ -891,8 +902,11 @@ def build_demand_read_plan(
         initial_col_idx if initial_col_idx is not None else existing_idx(2),
         demand_item_col_idx if demand_item_col_idx is not None else existing_idx(3),
         demand_name_col_idx if demand_name_col_idx is not None else existing_idx(4),
+        demand_qty_idx,
         leak_qty_idx,
         leak_due_idx,
+        separation_qty_idx,
+        separation_due_idx,
         leadji_qty_idx,
         leadji_due_idx,
         selected_qty_idx,
@@ -916,8 +930,11 @@ def build_demand_read_plan(
         "initial_col_idx": initial_col_idx if initial_col_idx is not None else existing_idx(2),
         "demand_item_col_idx": demand_item_col_idx if demand_item_col_idx is not None else existing_idx(3),
         "demand_name_col_idx": demand_name_col_idx if demand_name_col_idx is not None else existing_idx(4),
+        "demand_qty_idx": demand_qty_idx,
         "leak_qty_idx": leak_qty_idx,
         "leak_due_idx": leak_due_idx,
+        "separation_qty_idx": separation_qty_idx,
+        "separation_due_idx": separation_due_idx,
         "leadji_qty_idx": leadji_qty_idx,
         "leadji_due_idx": leadji_due_idx,
         "selected_qty_idx": selected_qty_idx,
@@ -2559,6 +2576,7 @@ def build_qcode_summary(df: pd.DataFrame) -> pd.DataFrame:
         "파워",
         "대표 이니셜",
         "대표 P코드",
+        "분리 생산 필요수량 합계",
         "부족수량 합계",
         "분리창고",
         "사출창고",
@@ -2571,7 +2589,11 @@ def build_qcode_summary(df: pd.DataFrame) -> pd.DataFrame:
 
     q_df = df.copy()
     q_df["부족수량"] = parse_mixed_numeric(q_df["부족수량"])
-    q_df = q_df[q_df["부족수량"] > 0]
+    if SEPARATION_REQUIRED_QTY_COL in q_df.columns:
+        q_df[SEPARATION_REQUIRED_QTY_COL] = parse_mixed_numeric(q_df[SEPARATION_REQUIRED_QTY_COL])
+    else:
+        q_df[SEPARATION_REQUIRED_QTY_COL] = 0
+    q_df = q_df[(q_df["부족수량"] > 0) | (q_df[SEPARATION_REQUIRED_QTY_COL] > 0)]
     if q_df.empty:
         return pd.DataFrame(columns=columns)
 
@@ -2588,6 +2610,7 @@ def build_qcode_summary(df: pd.DataFrame) -> pd.DataFrame:
                 "제품명": lambda s: summarize_unique(s, head_count=1),
                 "이니셜": lambda s: summarize_unique(s, head_count=1),
                 "품목코드": lambda s: summarize_unique(s, head_count=1),
+                SEPARATION_REQUIRED_QTY_COL: "sum",
                 "부족수량": "sum",
                 "분리창고": "max",
                 "사출창고": "max",
@@ -2599,17 +2622,18 @@ def build_qcode_summary(df: pd.DataFrame) -> pd.DataFrame:
                 "제품명": "Q기준 제품명",
                 "이니셜": "대표 이니셜",
                 "품목코드": "대표 P코드",
+                SEPARATION_REQUIRED_QTY_COL: "분리 생산 필요수량 합계",
                 "부족수량": "부족수량 합계",
             }
         )
-        .sort_values(["부족수량 합계", "Q코드"], ascending=[False, True])
+        .sort_values(["분리 생산 필요수량 합계", "부족수량 합계", "Q코드"], ascending=[False, False, True])
     )
     return summary[columns]
 
 
 @st.cache_data(show_spinner=False, max_entries=CACHE_MAX_ENTRIES)
 def build_summary_group_totals_with_safe_split(df: pd.DataFrame) -> pd.DataFrame:
-    columns = ["분류별요약", "오더 부족수량", "안전재고 부족수량", "총수량"]
+    columns = ["분류별요약", "오더 부족수량", "안전재고 부족수량", "분리 필요수량", "총수량"]
     if df.empty or "부족수량" not in df.columns:
         return pd.DataFrame(columns=columns)
 
@@ -2621,6 +2645,10 @@ def build_summary_group_totals_with_safe_split(df: pd.DataFrame) -> pd.DataFrame
 
     group_label = base["분류별요약"].astype(str).str.strip()
     base["분류별요약"] = group_label.replace({"": "(미분류)", "nan": "(미분류)", "None": "(미분류)"})
+    if SEPARATION_REQUIRED_QTY_COL not in base.columns:
+        base[SEPARATION_REQUIRED_QTY_COL] = 0
+    base["부족수량"] = parse_mixed_numeric(base["부족수량"])
+    base[SEPARATION_REQUIRED_QTY_COL] = parse_mixed_numeric(base[SEPARATION_REQUIRED_QTY_COL])
     include_qty = base.groupby("분류별요약", as_index=False)["부족수량"].sum().rename(columns={"부족수량": "안전 포함"})
     exclude_qty = (
         base[~base["이니셜"].astype(str).str.contains("안전", na=False)]
@@ -2628,11 +2656,18 @@ def build_summary_group_totals_with_safe_split(df: pd.DataFrame) -> pd.DataFrame
         .sum()
         .rename(columns={"부족수량": "안전 미포함"})
     )
+    separation_qty = (
+        base.groupby("분류별요약", as_index=False)[SEPARATION_REQUIRED_QTY_COL]
+        .sum()
+        .rename(columns={SEPARATION_REQUIRED_QTY_COL: "분리 필요수량"})
+    )
 
-    grouped = include_qty.merge(exclude_qty, on="분류별요약", how="left").fillna(0)
+    grouped = include_qty.merge(exclude_qty, on="분류별요약", how="left").merge(
+        separation_qty, on="분류별요약", how="left"
+    ).fillna(0)
     grouped["오더 부족수량"] = grouped["안전 미포함"]
     grouped["안전재고 부족수량"] = grouped["안전 포함"] - grouped["안전 미포함"]
-    grouped["총수량"] = grouped["오더 부족수량"] + grouped["안전재고 부족수량"]
+    grouped["총수량"] = grouped["오더 부족수량"] + grouped["안전재고 부족수량"] + grouped["분리 필요수량"]
     grouped = grouped[columns].sort_values("총수량", ascending=False)
 
     total_row = pd.DataFrame(
@@ -2641,6 +2676,7 @@ def build_summary_group_totals_with_safe_split(df: pd.DataFrame) -> pd.DataFrame
                 "분류별요약": "전체",
                 "오더 부족수량": grouped["오더 부족수량"].sum(),
                 "안전재고 부족수량": grouped["안전재고 부족수량"].sum(),
+                "분리 필요수량": grouped["분리 필요수량"].sum(),
                 "총수량": grouped["총수량"].sum(),
             }
         ]
@@ -2714,6 +2750,7 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
     initial_col_idx = demand_read_plan.get("initial_col_idx")
     demand_item_col_idx = demand_read_plan.get("demand_item_col_idx")
     demand_name_col_idx = demand_read_plan.get("demand_name_col_idx")
+    demand_qty_idx = demand_read_plan.get("demand_qty_idx")
 
     site_series = (
         dem_series(site_col_idx).astype(str).str.strip()
@@ -2740,6 +2777,11 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
         if demand_name_col_idx is not None
         else pd.Series("", index=dem.index)
     )
+    demand_qty = (
+        parse_mixed_numeric(dem_series(demand_qty_idx))
+        if isinstance(demand_qty_idx, int) and demand_qty_idx in dem.columns
+        else pd.Series(0.0, index=dem.index)
+    )
 
     # 기준1) 생산 현황: 누수/규격검사 생산수량 + 납기일
     leak_qty_idx = demand_read_plan.get("leak_qty_idx")
@@ -2761,6 +2803,18 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
         leak_due_date = parse_mixed_excel_date(dem[leak_due_idx])
     else:
         leak_due_date = pd.Series(pd.NaT, index=dem.index, dtype="datetime64[ns]")
+
+    separation_qty_idx = demand_read_plan.get("separation_qty_idx")
+    separation_due_idx = demand_read_plan.get("separation_due_idx")
+    if isinstance(separation_qty_idx, int) and separation_qty_idx in dem.columns:
+        separation_required_qty = parse_mixed_numeric(dem[separation_qty_idx])
+        if isinstance(separation_due_idx, int) and separation_due_idx in dem.columns:
+            separation_due_date = parse_mixed_excel_date(dem[separation_due_idx])
+        else:
+            separation_due_date = pd.Series(pd.NaT, index=dem.index, dtype="datetime64[ns]")
+    else:
+        separation_required_qty = pd.Series(0.0, index=dem.index)
+        separation_due_date = pd.Series(pd.NaT, index=dem.index, dtype="datetime64[ns]")
 
     leadji_qty_idx = demand_read_plan.get("leadji_qty_idx")
     leadji_due_idx = demand_read_plan.get("leadji_due_idx")
@@ -2797,11 +2851,14 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
             "이니셜": initial_series,
             "품목코드": item_series,
             "제품명": name_series,
+            DEMAND_QTY_COL: demand_qty,
             "납기일": leak_due_date,
             "사출납기일": inj_due_date,
+            SEPARATION_REQUIRED_DUE_COL: separation_due_date,
             LEADJI_REQUIRED_DUE_COL: leadji_due_date,
             "생산수량": shortage_qty,
             "사출생산필요수량": inj_qty,
+            SEPARATION_REQUIRED_QTY_COL: separation_required_qty,
             LEADJI_REQUIRED_QTY_COL: leadji_required_qty,
         }
     )
@@ -2817,20 +2874,35 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
     dem_df = dem_df[(dem_df["품목코드"] != "") & (dem_df["품목코드"].str.lower() != "nan")]
     dem_df = dem_df[dem_df["품목코드"].astype(str).str.upper().str.startswith(("P", "Q", "R"))]
     dem_df = dem_df[
-        (dem_df["생산수량"] > 0) | (dem_df["사출생산필요수량"] > 0) | (dem_df[LEADJI_REQUIRED_QTY_COL] > 0)
+        (dem_df[DEMAND_QTY_COL] > 0)
+        | (dem_df["생산수량"] > 0)
+        | (dem_df["사출생산필요수량"] > 0)
+        | (dem_df[SEPARATION_REQUIRED_QTY_COL] > 0)
+        | (dem_df[LEADJI_REQUIRED_QTY_COL] > 0)
     ]
     dem_df["제품명"] = dem_df["제품명"].replace({"nan": "", "None": ""})
 
     grouped_demand = (
         dem_df.groupby(
-            ["사이트코드", "이니셜", "거래처", "품목코드", "납기일", "사출납기일", LEADJI_REQUIRED_DUE_COL],
+            [
+                "사이트코드",
+                "이니셜",
+                "거래처",
+                "품목코드",
+                "납기일",
+                "사출납기일",
+                SEPARATION_REQUIRED_DUE_COL,
+                LEADJI_REQUIRED_DUE_COL,
+            ],
             as_index=False,
             dropna=False,
         )
         .agg(
             {
+                DEMAND_QTY_COL: "sum",
                 "생산수량": "sum",
                 "사출생산필요수량": "sum",
+                SEPARATION_REQUIRED_QTY_COL: "sum",
                 LEADJI_REQUIRED_QTY_COL: "sum",
                 "제품명": lambda s: next((v for v in s if str(v).strip() and str(v).strip().lower() != "nan"), "-"),
             }
@@ -3168,10 +3240,12 @@ def load_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[pd.Dat
 def build_filter_option_maps(
     df: pd.DataFrame, selected_site_option: str = "전체"
 ) -> tuple[dict[str, float], dict[str, float], dict[str, float]]:
-    required_cols = ["사이트코드", "시트분류", "분류별요약", "부족수량"]
+    required_cols = ["사이트코드", "시트분류", "분류별요약", "부족수량", SEPARATION_REQUIRED_QTY_COL]
     option_df = df[[c for c in required_cols if c in df.columns]].copy()
     if "부족수량" not in option_df.columns:
         option_df["부족수량"] = 0
+    if SEPARATION_REQUIRED_QTY_COL not in option_df.columns:
+        option_df[SEPARATION_REQUIRED_QTY_COL] = 0
     if "사이트코드" not in option_df.columns:
         option_df["사이트코드"] = "(미지정)"
     if "시트분류" not in option_df.columns:
@@ -3182,15 +3256,17 @@ def build_filter_option_maps(
     site_label = option_df["사이트코드"].astype(str).str.strip()
     option_df["사이트코드"] = site_label.replace({"": "(미지정)", "nan": "(미지정)", "None": "(미지정)"})
     option_df["부족수량"] = parse_mixed_numeric(option_df["부족수량"])
+    option_df[SEPARATION_REQUIRED_QTY_COL] = parse_mixed_numeric(option_df[SEPARATION_REQUIRED_QTY_COL])
+    option_df["필터수량"] = option_df["부족수량"] + option_df[SEPARATION_REQUIRED_QTY_COL]
 
-    site_sum_map = option_df.groupby("사이트코드", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
+    site_sum_map = option_df.groupby("사이트코드", as_index=True)["필터수량"].sum().sort_values(ascending=False).to_dict()
 
     scoped = option_df
     if selected_site_option and selected_site_option != "전체":
         scoped = scoped[scoped["사이트코드"] == selected_site_option]
 
-    sheet_sum_map = scoped.groupby("시트분류", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
-    summary_sum_map = scoped.groupby("분류별요약", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
+    sheet_sum_map = scoped.groupby("시트분류", as_index=True)["필터수량"].sum().sort_values(ascending=False).to_dict()
+    summary_sum_map = scoped.groupby("분류별요약", as_index=True)["필터수량"].sum().sort_values(ascending=False).to_dict()
     return site_sum_map, sheet_sum_map, summary_sum_map
 
 
@@ -3596,7 +3672,9 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
         "제품명",
         "파워",
         "납기일",
+        DEMAND_QTY_COL,
         "부족수량",
+        SEPARATION_REQUIRED_QTY_COL,
         "사출창고",
         "분리창고",
         "검사접착창고",
@@ -3644,15 +3722,19 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
     if selected_shortage_view == "생산 현황":
         full_demand_summary = build_summary_group_totals_with_safe_split(filtered)
         with st.expander("전체 수요 요약 (분류별요약 × 안전 포함 여부)", expanded=False):
-            st.caption("오더 부족수량 = 안전 미포함, 안전재고 부족수량 = 안전 포함 - 안전 미포함, 총수량 = 오더 부족수량 + 안전재고 부족수량")
+            st.caption(
+                "오더 부족수량 = 안전 미포함, 안전재고 부족수량 = 안전 포함 - 안전 미포함, "
+                "총수량 = 오더 부족수량 + 안전재고 부족수량 + 분리 필요수량"
+            )
             if full_demand_summary.empty:
                 st.info("전체 수요 요약을 계산할 데이터가 없습니다.")
             else:
                 total_row = full_demand_summary.iloc[0]
-                s1, s2, s3 = st.columns(3)
+                s1, s2, s3, s4 = st.columns(4)
                 s1.metric("전체 수요 총수량", f"{float(total_row['총수량']):,.0f}")
                 s2.metric("오더 부족수량", f"{float(total_row['오더 부족수량']):,.0f}")
                 s3.metric("안전재고 부족수량", f"{float(total_row['안전재고 부족수량']):,.0f}")
+                s4.metric("분리 필요수량", f"{float(total_row['분리 필요수량']):,.0f}")
                 full_demand_summary_display = format_numeric_columns_for_display(full_demand_summary)
                 full_demand_summary_column_config = build_auto_column_config(
                     full_demand_summary_display,
@@ -3672,12 +3754,19 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
             if "사출생산필요수량" in filtered.columns
             else 0
         )
-        c1, c2, c3 = st.columns(3, gap="medium")
+        separation_required_total = (
+            parse_mixed_numeric(filtered[SEPARATION_REQUIRED_QTY_COL]).sum()
+            if SEPARATION_REQUIRED_QTY_COL in filtered.columns
+            else 0
+        )
+        c1, c2, c3, c4 = st.columns(4, gap="medium")
         with c1:
             render_dashboard_kpi("부족수량 합계", f"{filtered['부족수량'].sum():,.0f}", "risk")
         with c2:
             render_dashboard_kpi("사출부족수량 합계", f"{inj_shortage_total:,.0f}", "risk")
         with c3:
+            render_dashboard_kpi("분리필요수량 합계", f"{separation_required_total:,.0f}", "risk")
+        with c4:
             render_dashboard_kpi("공정재고 합계", f"{filtered['공정재고 합계'].sum():,.0f}", "stock")
 
         c1, c2, c3, c4, c5 = st.columns(5, gap="medium")
@@ -3891,12 +3980,23 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
         q_summary = build_qcode_summary(filtered)
         q1, q2, q3 = st.columns(3)
         q1.metric("Q코드 수", f"{len(q_summary):,}")
-        q2.metric("Q기준 부족수량 합계", f"{q_summary['부족수량 합계'].sum():,.0f}")
+        q2.metric(
+            "Q기준 분리 필요수량 합계",
+            f"{q_summary['분리 생산 필요수량 합계'].sum():,.0f}" if not q_summary.empty else "0",
+        )
         q3.metric("Q기준 공정재고 합계", f"{q_summary['공정재고 합계'].sum():,.0f}")
 
-        q_sort_cols = ["Q코드5", "Q코드", "부족수량"] if {"Q코드5", "Q코드", "부족수량"}.issubset(filtered.columns) else ["Q코드", "부족수량"]
-        q_sort_asc = [True, True, False] if len(q_sort_cols) == 3 else [True, False]
-        q_table = filtered.sort_values(q_sort_cols, ascending=q_sort_asc)[detail_columns]
+        q_view = filtered.copy()
+        if SEPARATION_REQUIRED_QTY_COL not in q_view.columns:
+            q_view[SEPARATION_REQUIRED_QTY_COL] = 0
+        q_view[SEPARATION_REQUIRED_QTY_COL] = parse_mixed_numeric(q_view[SEPARATION_REQUIRED_QTY_COL])
+        q_sort_cols = (
+            ["Q코드5", "Q코드", SEPARATION_REQUIRED_QTY_COL, "부족수량"]
+            if {"Q코드5", "Q코드", SEPARATION_REQUIRED_QTY_COL, "부족수량"}.issubset(q_view.columns)
+            else ["Q코드", SEPARATION_REQUIRED_QTY_COL]
+        )
+        q_sort_asc = [True, True, False, False] if len(q_sort_cols) == 4 else [True, False]
+        q_table = q_view.sort_values(q_sort_cols, ascending=q_sort_asc)[detail_columns]
         q_table_ui = q_table.drop(columns=["상태"], errors="ignore")
         q_table_display_source, _ = limit_dataframe_for_display(q_table_ui)
         caption_limited_rows(len(q_table_ui), len(q_table_display_source))
