@@ -35,11 +35,9 @@ WAREHOUSE_MAP = {
     "누수규격검사": "누수규격검사 창고",
 }
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
-DATAFRAME_DISPLAY_ROW_LIMIT = 500
 TABLE_STYLE_CELL_LIMIT = 12000
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260609-process-coverage-v18"
-DISPLAY_ROW_LIMIT_SESSION_KEY = "display_row_limit_option"
+APP_CACHE_VERSION = "20260609-process-coverage-v19"
 POWER_VALUE_PATTERN = re.compile(r"([+-]\d{1,2}(?:\.\d{1,2})?)")
 UNCLASSIFIED_SHEET_CATEGORY = "미분류"
 INVALID_CATEGORY_VALUES = {"", "-", "nan", "none", "nat", "null", "na", "<na>"}
@@ -2159,32 +2157,15 @@ def format_numeric_columns_for_display(df: pd.DataFrame) -> pd.DataFrame:
     return display_df
 
 
-def get_selected_dataframe_display_limit() -> int | None:
-    selected = st.session_state.get(DISPLAY_ROW_LIMIT_SESSION_KEY, DATAFRAME_DISPLAY_ROW_LIMIT)
-    try:
-        selected_limit = int(selected)
-    except (TypeError, ValueError):
-        return DATAFRAME_DISPLAY_ROW_LIMIT
-    if selected_limit <= 0:
-        return None
-    return selected_limit
-
-
 def limit_dataframe_for_display(
     df: pd.DataFrame, limit: int | None = None
 ) -> tuple[pd.DataFrame, bool]:
-    resolved_limit = get_selected_dataframe_display_limit() if limit is None else limit
-    if resolved_limit is None or resolved_limit <= 0 or len(df) <= resolved_limit:
-        return df, False
-    return df.head(resolved_limit).copy(), True
+    _ = limit
+    return df, False
 
 
 def caption_limited_rows(total_rows: int, displayed_rows: int) -> None:
-    if total_rows > displayed_rows:
-        st.info(
-            f"화면 표시 제한: 상위 {displayed_rows:,}건만 표시 중입니다. "
-            f"전체 {total_rows:,}건은 사이드바 표시 건수에서 전체를 선택하거나 엑셀 다운로드로 확인하세요."
-        )
+    _ = total_rows, displayed_rows
 
 
 def infer_numeric_like_series(series: pd.Series) -> bool:
@@ -5147,14 +5128,6 @@ def main() -> None:
             index=0,
             key="top_view_radio_v2",
             label_visibility="collapsed",
-        )
-        st.selectbox(
-            "표시 건수",
-            options=[500, 1000, 3000, 0],
-            index=0,
-            key=DISPLAY_ROW_LIMIT_SESSION_KEY,
-            format_func=lambda value: "전체" if int(value) <= 0 else f"{int(value):,}건",
-            help="전체 선택 시 브라우저 렌더링이 느려질 수 있습니다.",
         )
         st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
         data_base_dir, _, updated_at = select_data_source(BASE_DIR)
