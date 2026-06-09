@@ -66,7 +66,7 @@
 - `python -m compileall app.py` 통과
 - `git diff --check` 통과
 - 앱 코드 변경은 `main`에 푸시 완료
-- 문서 변경은 본 로그와 표준서 갱신으로 별도 커밋 예정
+- 문서 변경은 본 로그와 표준서 갱신 커밋으로 반영
 
 ## 10) 현재 기준 상태
 - 최신 앱 코드 커밋: `0108165 Search visible dashboard columns`
