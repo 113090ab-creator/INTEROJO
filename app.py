@@ -36,8 +36,9 @@ WAREHOUSE_MAP = {
 }
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 DATAFRAME_DISPLAY_ROW_LIMIT = 500
+TABLE_STYLE_CELL_LIMIT = 12000
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260609-process-coverage-v10"
+APP_CACHE_VERSION = "20260609-process-coverage-v12"
 DISPLAY_ROW_LIMIT_SESSION_KEY = "display_row_limit_option"
 POWER_VALUE_PATTERN = re.compile(r"([+-]\d{1,2}(?:\.\d{1,2})?)")
 UNCLASSIFIED_SHEET_CATEGORY = "미분류"
@@ -1830,6 +1831,11 @@ def load_reference_maps_bundle(
     empty_bundle = ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
     if ref_path is None:
         return empty_bundle
+    cache_key = hashlib.sha256(f"reference-bundle-v2|{reference_refresh_key}".encode("utf-8")).hexdigest()[:24]
+    cache_path = ref_path.resolve().parent / ".dashboard_cache" / f"reference_bundle_{cache_key}.pkl"
+    cached = read_pickle_cache(cache_path)
+    if isinstance(cached, tuple) and len(cached) == 12 and all(isinstance(part, dict) for part in cached):
+        return cached
 
     try:
         xls = pd.ExcelFile(ref_path)
@@ -2071,7 +2077,7 @@ def load_reference_maps_bundle(
                     leadji_q_map = q_df.set_index("코드5")["Q정규"].to_dict()
                     leadji_r_map = r_df.set_index("코드5")["R정규"].to_dict()
 
-    return (
+    result = (
         product_name_map,
         product_group_map,
         sheet2_group_map,
@@ -2085,6 +2091,8 @@ def load_reference_maps_bundle(
         leadji_r_map,
         leadji_q_map,
     )
+    write_pickle_cache(cache_path, result)
+    return result
 
 
 def summarize_unique(values: pd.Series, head_count: int = 1) -> str:
@@ -2238,6 +2246,8 @@ def render_dashboard_kpi(label: str, value: str, variant: str = "stock") -> None
 def style_operational_table(display_df: pd.DataFrame, source_df: pd.DataFrame | None = None):
     if display_df.empty:
         return display_df.style
+    if len(display_df) * max(len(display_df.columns), 1) > TABLE_STYLE_CELL_LIMIT:
+        return display_df
 
     source = source_df if source_df is not None else display_df
     styler = display_df.style
@@ -2304,6 +2314,29 @@ def dataframe_to_excel_bytes(df: pd.DataFrame, sheet_name: str = "data") -> byte
         df.to_excel(writer, index=False, sheet_name=safe_sheet)
     output.seek(0)
     return output.getvalue()
+
+
+def render_lazy_excel_download_button(
+    label: str,
+    df: pd.DataFrame,
+    sheet_name: str,
+    file_name: str,
+    key: str,
+) -> None:
+    prepare_key = f"{key}_prepare"
+    if st.button("엑셀 파일 생성", key=f"{key}_prepare_button", use_container_width=False):
+        st.session_state[prepare_key] = True
+    if not st.session_state.get(prepare_key, False):
+        st.caption("다운로드가 필요할 때만 엑셀 파일을 생성합니다.")
+        return
+    st.download_button(
+        label,
+        data=dataframe_to_excel_bytes(df, sheet_name=sheet_name),
+        file_name=file_name,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key=key,
+        use_container_width=False,
+    )
 
 
 def split_query_terms(query: str) -> list[str]:
@@ -4127,13 +4160,12 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
                     "같은 수주번호/거래처/이니셜/RQ코드 조합의 P행이 없으면 생산현황 P표에는 붙지 않으며, "
                     "사출 현황 또는 분리 현황 탭에서 별도로 확인하세요."
                 )
-        st.download_button(
+        render_lazy_excel_download_button(
             "엑셀 다운로드",
-            data=dataframe_to_excel_bytes(p_table, sheet_name="생산현황"),
-            file_name=f"shortage_production_{download_stamp}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="download_shortage_tab_p",
-            use_container_width=False,
+            p_table,
+            "생산현황",
+            f"shortage_production_{download_stamp}.xlsx",
+            "download_shortage_tab_p",
         )
 
         st.dataframe(
@@ -4164,13 +4196,12 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
         r_summary_column_config = build_auto_column_config(
             r_summary_display, r_summary_display.columns.tolist(), source_df=r_summary_display_source
         )
-        st.download_button(
+        render_lazy_excel_download_button(
             "엑셀 다운로드",
-            data=dataframe_to_excel_bytes(r_summary, sheet_name="사출생산현황"),
-            file_name=f"shortage_injection_summary_{download_stamp}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="download_shortage_tab_r",
-            use_container_width=False,
+            r_summary,
+            "사출생산현황",
+            f"shortage_injection_summary_{download_stamp}.xlsx",
+            "download_shortage_tab_r",
         )
 
         st.dataframe(
@@ -4211,13 +4242,12 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
         q_detail_column_config = build_auto_column_config(
             q_table_display, q_display_columns, source_df=q_table_display_source
         )
-        st.download_button(
+        render_lazy_excel_download_button(
             "엑셀 다운로드",
-            data=dataframe_to_excel_bytes(q_table, sheet_name="분리생산현황"),
-            file_name=f"shortage_separation_{download_stamp}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="download_shortage_tab_q",
-            use_container_width=False,
+            q_table,
+            "분리생산현황",
+            f"shortage_separation_{download_stamp}.xlsx",
+            "download_shortage_tab_q",
         )
         st.dataframe(
             style_operational_table(q_table_display, q_table_display_source),
@@ -4308,13 +4338,12 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
 
         if rq_summary_tab.empty:
             st.info("표시할 RQ 그룹 데이터가 없습니다.")
-            st.download_button(
+            render_lazy_excel_download_button(
                 "엑셀 다운로드",
-                data=dataframe_to_excel_bytes(pd.DataFrame(columns=detail_columns), sheet_name="사출분리공용"),
-                file_name=f"shortage_shared_rq_{download_stamp}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="download_shortage_tab_rq_empty",
-                use_container_width=False,
+                pd.DataFrame(columns=detail_columns),
+                "사출분리공용",
+                f"shortage_shared_rq_{download_stamp}.xlsx",
+                "download_shortage_tab_rq_empty",
             )
         else:
             rq_sort_cols = ["R코드5", "Q코드5", "부족수량"] if {"R코드5", "Q코드5", "부족수량"}.issubset(rq_filtered.columns) else ["R코드", "Q코드", "부족수량"]
@@ -4349,13 +4378,12 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
             rq_detail_column_config = build_auto_column_config(
                 rq_table_display, rq_display_columns, source_df=rq_table_display_source
             )
-            st.download_button(
+            render_lazy_excel_download_button(
                 "엑셀 다운로드",
-                data=dataframe_to_excel_bytes(rq_table, sheet_name="사출분리공용"),
-                file_name=f"shortage_shared_rq_{download_stamp}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="download_shortage_tab_rq",
-                use_container_width=False,
+                rq_table,
+                "사출분리공용",
+                f"shortage_shared_rq_{download_stamp}.xlsx",
+                "download_shortage_tab_rq",
             )
             st.dataframe(
                 style_operational_table(rq_table_display, rq_table_display_source),
