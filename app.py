@@ -38,7 +38,7 @@ TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 DATAFRAME_DISPLAY_ROW_LIMIT = 500
 TABLE_STYLE_CELL_LIMIT = 12000
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260609-process-coverage-v17"
+APP_CACHE_VERSION = "20260609-process-coverage-v18"
 DISPLAY_ROW_LIMIT_SESSION_KEY = "display_row_limit_option"
 POWER_VALUE_PATTERN = re.compile(r"([+-]\d{1,2}(?:\.\d{1,2})?)")
 UNCLASSIFIED_SHEET_CATEGORY = "미분류"
@@ -3830,59 +3830,6 @@ def load_leadji_status_snapshot(
     return shortage_df, leadji_info, leadji_stock, leadji_order_df
 
 
-def render_unclassified_products_section(df: pd.DataFrame, download_stamp: str) -> None:
-    columns = ["거래처", "이니셜", "품목코드", "제품명", "자동분류결과", "분류 판단 근거"]
-    if df.empty or "시트분류" not in df.columns:
-        return
-
-    sheet_category = df["시트분류"].astype(str).str.strip()
-    unclassified_mask = sheet_category == UNCLASSIFIED_SHEET_CATEGORY
-    unclassified_count = int(unclassified_mask.sum())
-
-    with st.expander(f"미분류 제품 목록 ({unclassified_count:,}건)", expanded=False):
-        if unclassified_count <= 0:
-            st.info("미분류 제품이 없습니다.")
-            return
-
-        show_unclassified = st.checkbox(
-            "미분류 목록 표시 및 다운로드 준비",
-            value=False,
-            key="show_unclassified_products_table",
-        )
-        if not show_unclassified:
-            st.caption("화면 속도를 위해 기본 상태에서는 목록과 엑셀 파일을 생성하지 않습니다.")
-            return
-
-        unclassified = df[unclassified_mask].copy()
-        table = unclassified[[c for c in columns if c in unclassified.columns]].drop_duplicates()
-        if not table.empty:
-            sort_cols = [c for c in ["거래처", "이니셜", "품목코드"] if c in table.columns]
-            if sort_cols:
-                table = table.sort_values(sort_cols, ascending=True)
-
-        st.download_button(
-            "미분류 엑셀 다운로드",
-            data=dataframe_to_excel_bytes(table, sheet_name="미분류제품"),
-            file_name=f"unclassified_products_{download_stamp}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="download_unclassified_products",
-            use_container_width=False,
-        )
-        table_display_source, _ = limit_dataframe_for_display(table)
-        caption_limited_rows(len(table), len(table_display_source))
-        table_display = format_numeric_columns_for_display(table_display_source)
-        table_column_config = build_auto_column_config(
-            table_display, table_display.columns.tolist(), source_df=table_display_source
-        )
-        st.dataframe(
-            table_display,
-            use_container_width=True,
-            height=min(520, 78 + len(table_display_source) * 38),
-            column_config=table_column_config,
-            hide_index=True,
-        )
-
-
 def render_rework_match_debug(file_info_df: pd.DataFrame | None) -> None:
     if file_info_df is None or file_info_df.empty:
         return
@@ -3964,7 +3911,6 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
     with result_col:
         st.caption(f"표시 {len(filtered):,}건 / 전체 {base_filtered_count:,}건")
 
-    render_unclassified_products_section(filtered, download_stamp)
     render_rework_match_debug(file_info_df)
     if "재작업" in filtered.columns and "품목코드" in filtered.columns:
         rework_scope = filtered[filtered["재작업"].astype(str).str.strip() == "재작업 가능"]
