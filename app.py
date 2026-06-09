@@ -37,7 +37,7 @@ WAREHOUSE_MAP = {
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 DATAFRAME_DISPLAY_ROW_LIMIT = 5000
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260609-process-coverage-v2"
+APP_CACHE_VERSION = "20260609-process-coverage-v3"
 POWER_VALUE_PATTERN = re.compile(r"([+-]\d{1,2}(?:\.\d{1,2})?)")
 UNCLASSIFIED_SHEET_CATEGORY = "미분류"
 INVALID_CATEGORY_VALUES = {"", "-", "nan", "none", "nat", "null", "na", "<na>"}
@@ -3392,6 +3392,7 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
     with st.sidebar:
         st.markdown('<div class="sidebar-section-title">필터</div>', unsafe_allow_html=True)
         st.caption(f"업데이트: {updated_at}")
+        st.caption(f"앱 버전: {APP_CACHE_VERSION}")
         st.caption("기본 적용: 전체 수요")
 
         site_sum_map, _, _ = build_filter_option_maps(df, "전체")
@@ -3912,7 +3913,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
             p_view["사출 부족수량"] = p_view["사출생산필요수량"]
             key_cols = [
                 c
-                for c in ["사이트코드", ORDER_NO_COL, "거래처", "이니셜", "R코드", "Q코드"]
+                for c in [ORDER_NO_COL, "거래처", "이니셜", "R코드", "Q코드"]
                 if c in p_view.columns
             ]
             if key_cols and not r_rows.empty and "품목코드" in enriched_df.columns:
@@ -3959,7 +3960,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
                 r_scope = r_scope.iloc[0:0]
             key_cols = [
                 c
-                for c in ["사이트코드", ORDER_NO_COL, "거래처", "이니셜", "R코드", "Q코드"]
+                for c in [ORDER_NO_COL, "거래처", "이니셜", "R코드", "Q코드"]
                 if c in p_rows.columns and c in r_scope.columns
             ]
 
@@ -4000,7 +4001,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
 
             q_link_cols = [
                 c
-                for c in ["사이트코드", ORDER_NO_COL, "거래처", "이니셜", "Q코드"]
+                for c in [ORDER_NO_COL, "거래처", "이니셜", "Q코드"]
                 if c in p_rows.columns and c in link_mapping_scope.columns
             ]
             if q_link_cols and SEPARATION_REQUIRED_QTY_COL in link_mapping_scope.columns:
@@ -4086,13 +4087,13 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
         )
         if "사출 부족수량(연결R)" in p_view.columns:
             st.caption(
-                f"R→P 연결 매핑(사이트코드+수주번호+거래처+이니셜+R코드+Q코드): "
+                f"R→P 연결 매핑(수주번호+거래처+이니셜+R코드+Q코드): "
                 f"P행 반영 사출부족수량 {mapped_inj_total:,.0f}, "
                 f"미매핑 R 사출수량 {unmatched_inj_total:,.0f}"
             )
         if mapped_sep_total or unmatched_sep_total:
             st.caption(
-                f"Q→P 연결 매핑(사이트코드+수주번호+거래처+이니셜+Q코드): "
+                f"Q→P 연결 매핑(수주번호+거래처+이니셜+Q코드): "
                 f"P행 반영 분리필요수량 {mapped_sep_total:,.0f}, "
                 f"미매핑 Q 분리수량 {unmatched_sep_total:,.0f}"
             )
