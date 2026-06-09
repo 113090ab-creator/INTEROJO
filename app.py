@@ -37,7 +37,7 @@ WAREHOUSE_MAP = {
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 12000
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260609-process-coverage-v19"
+APP_CACHE_VERSION = "20260609-process-coverage-v20"
 POWER_VALUE_PATTERN = re.compile(r"([+-]\d{1,2}(?:\.\d{1,2})?)")
 UNCLASSIFIED_SHEET_CATEGORY = "미분류"
 INVALID_CATEGORY_VALUES = {"", "-", "nan", "none", "nat", "null", "na", "<na>"}
@@ -2355,6 +2355,15 @@ def filter_with_terms_any(df: pd.DataFrame, columns: list[str], query: str) -> p
     return df[mask]
 
 
+def filter_display_table_with_query(df: pd.DataFrame, query: str) -> pd.DataFrame:
+    if df.empty:
+        return df
+    search_columns = df.columns.tolist()
+    if not search_columns:
+        return df
+    return filter_with_terms_any(df, search_columns, query)
+
+
 def normalize_warehouse_name(value: str) -> str:
     return re.sub(r"\s+", "", str(value)).strip().lower()
 
@@ -3845,7 +3854,6 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
 
     detail_columns = [
         "거래처",
-        ORDER_NO_COL,
         "이니셜",
         "품목코드",
         "R코드",
@@ -3871,26 +3879,18 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
         key="shortage_view_selector_v4",
         width="stretch",
     )
-    direct_search_cols = [
-        c
-        for c in [ORDER_NO_COL, "거래처", "이니셜", "품목코드", "R코드", "Q코드", "제품명", "R코드 제품명"]
-        if c in filtered.columns
-    ]
     search_col, result_col = st.columns([3.2, 1.0])
     with search_col:
         direct_query = st.text_input(
             "직접 검색",
             value="",
-            key="shortage_direct_query_v1",
-            placeholder="수주번호, 거래처, 이니셜, 품목코드, R코드, Q코드, 제품명으로 검색하세요",
+            key="shortage_direct_query_v2",
+            placeholder="아래 표의 모든 컬럼으로 검색하세요",
             help="콤마(,)로 여러 키워드를 입력하면 OR 조건으로 검색합니다.",
         ).strip()
-    base_filtered_count = len(filtered)
-    link_mapping_scope = enriched_df.copy()
-    if direct_query and direct_search_cols:
-        filtered = filter_with_terms_any(filtered, direct_search_cols, direct_query)
     with result_col:
-        st.caption(f"표시 {len(filtered):,}건 / 전체 {base_filtered_count:,}건")
+        result_caption = st.empty()
+    link_mapping_scope = enriched_df.copy()
 
     render_rework_match_debug(file_info_df)
     if "재작업" in filtered.columns and "품목코드" in filtered.columns:
@@ -4171,6 +4171,9 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
             ascending=[False, False, False, True, True],
         )[p_detail_columns]
         p_table_ui = p_table.drop(columns=["상태"], errors="ignore")
+        p_table_total_count = len(p_table_ui)
+        p_table_ui = filter_display_table_with_query(p_table_ui, direct_query)
+        result_caption.caption(f"표시 {len(p_table_ui):,}건 / 전체 {p_table_total_count:,}건")
         p_table_display_source, _ = limit_dataframe_for_display(p_table_ui)
         caption_limited_rows(len(p_table_ui), len(p_table_display_source))
         p_display_columns = p_table_display_source.columns.tolist()
@@ -4180,7 +4183,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
         )
         render_lazy_excel_download_button(
             "엑셀 다운로드",
-            p_table,
+            p_table_ui,
             "생산현황",
             f"shortage_production_{download_stamp}.xlsx",
             "download_shortage_tab_p",
@@ -4198,7 +4201,11 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
 
     elif selected_shortage_view == "사출 현황":
         r_summary = build_rcode_summary(filtered)
-
+        r_summary_ui = r_summary.drop(columns=["상태"], errors="ignore")
+        r_summary_total_count = len(r_summary_ui)
+        r_summary_ui = filter_display_table_with_query(r_summary_ui, direct_query)
+        r_summary = r_summary_ui
+        result_caption.caption(f"표시 {len(r_summary_ui):,}건 / 전체 {r_summary_total_count:,}건")
         r1, r2, r3, r4 = st.columns(4)
         r1.metric("R코드 수", f"{len(r_summary):,}")
         r2.metric(
@@ -4207,7 +4214,6 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
         )
         r3.metric("R기준 사출 재고", f"{r_summary['사출창고 합계'].sum():,.0f}" if not r_summary.empty else "0")
         r4.metric("R기준 분리 재고", f"{r_summary['분리창고 합계'].sum():,.0f}" if not r_summary.empty else "0")
-        r_summary_ui = r_summary.drop(columns=["상태"], errors="ignore")
         r_summary_display_source, _ = limit_dataframe_for_display(r_summary_ui)
         caption_limited_rows(len(r_summary_ui), len(r_summary_display_source))
         r_summary_display = format_numeric_columns_for_display(r_summary_display_source)
@@ -4309,6 +4315,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
         r2.metric("부족수량 합계", f"{rq_shortage_total:,.0f}")
 
         if rq_summary_tab.empty:
+            result_caption.caption("표시 0건 / 전체 0건")
             st.info("표시할 RQ 그룹 데이터가 없습니다.")
             render_lazy_excel_download_button(
                 "엑셀 다운로드",
@@ -4343,6 +4350,9 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
 
             rq_table = rq_view.sort_values(rq_sort_cols, ascending=rq_sort_asc)[rq_detail_columns]
             rq_table_ui = rq_table.drop(columns=["상태"], errors="ignore")
+            rq_table_total_count = len(rq_table_ui)
+            rq_table_ui = filter_display_table_with_query(rq_table_ui, direct_query)
+            result_caption.caption(f"표시 {len(rq_table_ui):,}건 / 전체 {rq_table_total_count:,}건")
             rq_table_display_source, _ = limit_dataframe_for_display(rq_table_ui)
             caption_limited_rows(len(rq_table_ui), len(rq_table_display_source))
             rq_display_columns = rq_table_display_source.columns.tolist()
@@ -4352,7 +4362,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
             )
             render_lazy_excel_download_button(
                 "엑셀 다운로드",
-                rq_table,
+                rq_table_ui,
                 "사출분리공용",
                 f"shortage_shared_rq_{download_stamp}.xlsx",
                 "download_shortage_tab_rq",
