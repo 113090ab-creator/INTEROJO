@@ -17,8 +17,11 @@ st.set_page_config(page_title="생산현황", layout="wide")
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_WORKSPACE_ROOT = BASE_DIR / ".uploaded_workspaces"
 DISPLAY_TZ = ZoneInfo("Asia/Seoul")
+ORDER_NO_COL = "수주번호"
 LEADJI_REQUIRED_QTY_COL = "[45]하이드레이션/전면검사 필요수량"
 LEADJI_REQUIRED_DUE_COL = "[45]하이드레이션/전면검사 납기일"
+ADHESION_REQUIRED_QTY_COL = "[55]접착/멸균 필요수량"
+ADHESION_REQUIRED_DUE_COL = "[55]접착/멸균 납기일"
 LEADJI_COMPLETED_STOCK_COL = "누수규격검사 창고"
 DEMAND_QTY_COL = "수요수량"
 SEPARATION_REQUIRED_QTY_COL = "분리생산필요수량"
@@ -34,7 +37,7 @@ WAREHOUSE_MAP = {
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 DATAFRAME_DISPLAY_ROW_LIMIT = 500
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260609-separation-demand-v1"
+APP_CACHE_VERSION = "20260609-process-coverage-v2"
 POWER_VALUE_PATTERN = re.compile(r"([+-]\d{1,2}(?:\.\d{1,2})?)")
 UNCLASSIFIED_SHEET_CATEGORY = "미분류"
 INVALID_CATEGORY_VALUES = {"", "-", "nan", "none", "nat", "null", "na", "<na>"}
@@ -102,6 +105,8 @@ COLUMN_LABEL_ALIASES = {
     "사출 부족수량": "사출부족",
     "사출생산필요수량": "사출필요",
     "분리생산필요수량": "분리필요",
+    "[45]하이드레이션/전면검사 필요수량": "45필요",
+    "[55]접착/멸균 필요수량": "55필요",
     "수요수량": "수요",
     "생산필요수량": "생산필요",
     "최소납기일": "생산 최소 납기일",
@@ -755,7 +760,7 @@ def normalize_process_to_warehouse(process_label: str) -> str | None:
         return "사출창고"
     if "분리" in label:
         return "분리창고"
-    if "검사접착" in label or ("검사" in label and "접착" in label):
+    if "검사접착" in label or ("검사" in label and "접착" in label) or "접착" in label or "멸균" in label:
         return "검사접착창고"
     if "누수" in label or "규격검사" in label:
         return "누수규격검사 창고"
@@ -854,6 +859,10 @@ def build_demand_read_plan(
         header_labels,
         ["고객 이름", "고객이름", "거래처"],
     )
+    order_no_col_idx = pick_first_existing_column_index(
+        header_labels,
+        ["수주번호", "수주 번호", "오더번호", "오더 번호"],
+    )
     initial_col_idx = pick_first_existing_column_index(header_labels, ["이니셜"])
     demand_item_col_idx = pick_first_existing_column_index(
         header_labels,
@@ -872,6 +881,8 @@ def build_demand_read_plan(
     leak_due_idx = existing_idx(leak_qty_idx + 1 if leak_qty_idx is not None else None)
     separation_qty_idx = existing_idx(warehouse_qty_col_indices.get("분리창고"))
     separation_due_idx = existing_idx(separation_qty_idx + 1 if separation_qty_idx is not None else None)
+    adhesion_qty_idx = existing_idx(warehouse_qty_col_indices.get("검사접착창고"))
+    adhesion_due_idx = existing_idx(adhesion_qty_idx + 1 if adhesion_qty_idx is not None else None)
 
     leadji_qty_idx: int | None = None
     for process_label, idx in process_qty_col_indices.items():
@@ -899,14 +910,17 @@ def build_demand_read_plan(
     for idx in [
         site_col_idx if site_col_idx is not None else existing_idx(0),
         customer_col_idx if customer_col_idx is not None else existing_idx(1),
-        initial_col_idx if initial_col_idx is not None else existing_idx(2),
-        demand_item_col_idx if demand_item_col_idx is not None else existing_idx(3),
-        demand_name_col_idx if demand_name_col_idx is not None else existing_idx(4),
-        demand_qty_idx,
+        order_no_col_idx if order_no_col_idx is not None else existing_idx(2),
+        initial_col_idx if initial_col_idx is not None else existing_idx(3),
+        demand_item_col_idx if demand_item_col_idx is not None else existing_idx(4),
+        demand_name_col_idx if demand_name_col_idx is not None else existing_idx(5),
+        demand_qty_idx if demand_qty_idx is not None else existing_idx(6),
         leak_qty_idx,
         leak_due_idx,
         separation_qty_idx,
         separation_due_idx,
+        adhesion_qty_idx,
+        adhesion_due_idx,
         leadji_qty_idx,
         leadji_due_idx,
         selected_qty_idx,
@@ -927,14 +941,17 @@ def build_demand_read_plan(
         "header_labels": header_labels,
         "site_col_idx": site_col_idx if site_col_idx is not None else existing_idx(0),
         "customer_col_idx": customer_col_idx if customer_col_idx is not None else existing_idx(1),
-        "initial_col_idx": initial_col_idx if initial_col_idx is not None else existing_idx(2),
-        "demand_item_col_idx": demand_item_col_idx if demand_item_col_idx is not None else existing_idx(3),
-        "demand_name_col_idx": demand_name_col_idx if demand_name_col_idx is not None else existing_idx(4),
-        "demand_qty_idx": demand_qty_idx,
+        "order_no_col_idx": order_no_col_idx if order_no_col_idx is not None else existing_idx(2),
+        "initial_col_idx": initial_col_idx if initial_col_idx is not None else existing_idx(3),
+        "demand_item_col_idx": demand_item_col_idx if demand_item_col_idx is not None else existing_idx(4),
+        "demand_name_col_idx": demand_name_col_idx if demand_name_col_idx is not None else existing_idx(5),
+        "demand_qty_idx": demand_qty_idx if demand_qty_idx is not None else existing_idx(6),
         "leak_qty_idx": leak_qty_idx,
         "leak_due_idx": leak_due_idx,
         "separation_qty_idx": separation_qty_idx,
         "separation_due_idx": separation_due_idx,
+        "adhesion_qty_idx": adhesion_qty_idx,
+        "adhesion_due_idx": adhesion_due_idx,
         "leadji_qty_idx": leadji_qty_idx,
         "leadji_due_idx": leadji_due_idx,
         "selected_qty_idx": selected_qty_idx,
@@ -2633,7 +2650,24 @@ def build_qcode_summary(df: pd.DataFrame) -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False, max_entries=CACHE_MAX_ENTRIES)
 def build_summary_group_totals_with_safe_split(df: pd.DataFrame) -> pd.DataFrame:
-    columns = ["분류별요약", "오더 부족수량", "안전재고 부족수량", "분리 필요수량", "총수량"]
+    process_qty_columns = {
+        "사출 필요수량": "사출생산필요수량",
+        "분리 필요수량": SEPARATION_REQUIRED_QTY_COL,
+        "45 필요수량": LEADJI_REQUIRED_QTY_COL,
+        "55 필요수량": ADHESION_REQUIRED_QTY_COL,
+        "80 필요수량": "부족수량",
+    }
+    columns = [
+        "분류별요약",
+        "사출 필요수량",
+        "분리 필요수량",
+        "45 필요수량",
+        "55 필요수량",
+        "오더 부족수량",
+        "안전재고 부족수량",
+        "80 필요수량",
+        "총수량",
+    ]
     if df.empty or "부족수량" not in df.columns:
         return pd.DataFrame(columns=columns)
 
@@ -2645,10 +2679,10 @@ def build_summary_group_totals_with_safe_split(df: pd.DataFrame) -> pd.DataFrame
 
     group_label = base["분류별요약"].astype(str).str.strip()
     base["분류별요약"] = group_label.replace({"": "(미분류)", "nan": "(미분류)", "None": "(미분류)"})
-    if SEPARATION_REQUIRED_QTY_COL not in base.columns:
-        base[SEPARATION_REQUIRED_QTY_COL] = 0
-    base["부족수량"] = parse_mixed_numeric(base["부족수량"])
-    base[SEPARATION_REQUIRED_QTY_COL] = parse_mixed_numeric(base[SEPARATION_REQUIRED_QTY_COL])
+    for source_col in process_qty_columns.values():
+        if source_col not in base.columns:
+            base[source_col] = 0
+        base[source_col] = parse_mixed_numeric(base[source_col])
     include_qty = base.groupby("분류별요약", as_index=False)["부족수량"].sum().rename(columns={"부족수량": "안전 포함"})
     exclude_qty = (
         base[~base["이니셜"].astype(str).str.contains("안전", na=False)]
@@ -2656,27 +2690,35 @@ def build_summary_group_totals_with_safe_split(df: pd.DataFrame) -> pd.DataFrame
         .sum()
         .rename(columns={"부족수량": "안전 미포함"})
     )
-    separation_qty = (
-        base.groupby("분류별요약", as_index=False)[SEPARATION_REQUIRED_QTY_COL]
-        .sum()
-        .rename(columns={SEPARATION_REQUIRED_QTY_COL: "분리 필요수량"})
+    process_qty = base.groupby("분류별요약", as_index=False).agg(
+        {source_col: "sum" for source_col in process_qty_columns.values()}
     )
+    process_qty = process_qty.rename(columns={source: label for label, source in process_qty_columns.items()})
 
-    grouped = include_qty.merge(exclude_qty, on="분류별요약", how="left").merge(
-        separation_qty, on="분류별요약", how="left"
-    ).fillna(0)
+    grouped = include_qty.merge(exclude_qty, on="분류별요약", how="left").merge(process_qty, on="분류별요약", how="left").fillna(0)
     grouped["오더 부족수량"] = grouped["안전 미포함"]
     grouped["안전재고 부족수량"] = grouped["안전 포함"] - grouped["안전 미포함"]
-    grouped["총수량"] = grouped["오더 부족수량"] + grouped["안전재고 부족수량"] + grouped["분리 필요수량"]
+    grouped["80 필요수량"] = grouped["오더 부족수량"] + grouped["안전재고 부족수량"]
+    grouped["총수량"] = (
+        grouped["사출 필요수량"]
+        + grouped["분리 필요수량"]
+        + grouped["45 필요수량"]
+        + grouped["55 필요수량"]
+        + grouped["80 필요수량"]
+    )
     grouped = grouped[columns].sort_values("총수량", ascending=False)
 
     total_row = pd.DataFrame(
         [
             {
                 "분류별요약": "전체",
+                "사출 필요수량": grouped["사출 필요수량"].sum(),
+                "분리 필요수량": grouped["분리 필요수량"].sum(),
+                "45 필요수량": grouped["45 필요수량"].sum(),
+                "55 필요수량": grouped["55 필요수량"].sum(),
                 "오더 부족수량": grouped["오더 부족수량"].sum(),
                 "안전재고 부족수량": grouped["안전재고 부족수량"].sum(),
-                "분리 필요수량": grouped["분리 필요수량"].sum(),
+                "80 필요수량": grouped["80 필요수량"].sum(),
                 "총수량": grouped["총수량"].sum(),
             }
         ]
@@ -2747,6 +2789,7 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
 
     site_col_idx = demand_read_plan.get("site_col_idx")
     customer_col_idx = demand_read_plan.get("customer_col_idx")
+    order_no_col_idx = demand_read_plan.get("order_no_col_idx")
     initial_col_idx = demand_read_plan.get("initial_col_idx")
     demand_item_col_idx = demand_read_plan.get("demand_item_col_idx")
     demand_name_col_idx = demand_read_plan.get("demand_name_col_idx")
@@ -2760,6 +2803,11 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
     customer_series = (
         dem_series(customer_col_idx).astype(str).str.strip()
         if customer_col_idx is not None
+        else pd.Series("", index=dem.index)
+    )
+    order_no_series = (
+        dem_series(order_no_col_idx).astype(str).str.strip()
+        if order_no_col_idx is not None
         else pd.Series("", index=dem.index)
     )
     initial_series = (
@@ -2816,6 +2864,18 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
         separation_required_qty = pd.Series(0.0, index=dem.index)
         separation_due_date = pd.Series(pd.NaT, index=dem.index, dtype="datetime64[ns]")
 
+    adhesion_qty_idx = demand_read_plan.get("adhesion_qty_idx")
+    adhesion_due_idx = demand_read_plan.get("adhesion_due_idx")
+    if isinstance(adhesion_qty_idx, int) and adhesion_qty_idx in dem.columns:
+        adhesion_required_qty = parse_mixed_numeric(dem[adhesion_qty_idx])
+        if isinstance(adhesion_due_idx, int) and adhesion_due_idx in dem.columns:
+            adhesion_due_date = parse_mixed_excel_date(dem[adhesion_due_idx])
+        else:
+            adhesion_due_date = pd.Series(pd.NaT, index=dem.index, dtype="datetime64[ns]")
+    else:
+        adhesion_required_qty = pd.Series(0.0, index=dem.index)
+        adhesion_due_date = pd.Series(pd.NaT, index=dem.index, dtype="datetime64[ns]")
+
     leadji_qty_idx = demand_read_plan.get("leadji_qty_idx")
     leadji_due_idx = demand_read_plan.get("leadji_due_idx")
     if isinstance(leadji_qty_idx, int) and leadji_qty_idx in dem.columns:
@@ -2848,6 +2908,7 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
         {
             "사이트코드": site_series,
             "거래처": customer_series,
+            ORDER_NO_COL: order_no_series,
             "이니셜": initial_series,
             "품목코드": item_series,
             "제품명": name_series,
@@ -2856,10 +2917,12 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
             "사출납기일": inj_due_date,
             SEPARATION_REQUIRED_DUE_COL: separation_due_date,
             LEADJI_REQUIRED_DUE_COL: leadji_due_date,
+            ADHESION_REQUIRED_DUE_COL: adhesion_due_date,
             "생산수량": shortage_qty,
             "사출생산필요수량": inj_qty,
             SEPARATION_REQUIRED_QTY_COL: separation_required_qty,
             LEADJI_REQUIRED_QTY_COL: leadji_required_qty,
+            ADHESION_REQUIRED_QTY_COL: adhesion_required_qty,
         }
     )
 
@@ -2879,6 +2942,7 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
         | (dem_df["사출생산필요수량"] > 0)
         | (dem_df[SEPARATION_REQUIRED_QTY_COL] > 0)
         | (dem_df[LEADJI_REQUIRED_QTY_COL] > 0)
+        | (dem_df[ADHESION_REQUIRED_QTY_COL] > 0)
     ]
     dem_df["제품명"] = dem_df["제품명"].replace({"nan": "", "None": ""})
 
@@ -2888,11 +2952,13 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
                 "사이트코드",
                 "이니셜",
                 "거래처",
+                ORDER_NO_COL,
                 "품목코드",
                 "납기일",
                 "사출납기일",
                 SEPARATION_REQUIRED_DUE_COL,
                 LEADJI_REQUIRED_DUE_COL,
+                ADHESION_REQUIRED_DUE_COL,
             ],
             as_index=False,
             dropna=False,
@@ -2904,6 +2970,7 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
                 "사출생산필요수량": "sum",
                 SEPARATION_REQUIRED_QTY_COL: "sum",
                 LEADJI_REQUIRED_QTY_COL: "sum",
+                ADHESION_REQUIRED_QTY_COL: "sum",
                 "제품명": lambda s: next((v for v in s if str(v).strip() and str(v).strip().lower() != "nan"), "-"),
             }
         )
@@ -3240,12 +3307,18 @@ def load_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[pd.Dat
 def build_filter_option_maps(
     df: pd.DataFrame, selected_site_option: str = "전체"
 ) -> tuple[dict[str, float], dict[str, float], dict[str, float]]:
-    required_cols = ["사이트코드", "시트분류", "분류별요약", "부족수량", SEPARATION_REQUIRED_QTY_COL]
+    process_qty_cols = [
+        "사출생산필요수량",
+        SEPARATION_REQUIRED_QTY_COL,
+        LEADJI_REQUIRED_QTY_COL,
+        ADHESION_REQUIRED_QTY_COL,
+        "부족수량",
+    ]
+    required_cols = ["사이트코드", "시트분류", "분류별요약", *process_qty_cols]
     option_df = df[[c for c in required_cols if c in df.columns]].copy()
-    if "부족수량" not in option_df.columns:
-        option_df["부족수량"] = 0
-    if SEPARATION_REQUIRED_QTY_COL not in option_df.columns:
-        option_df[SEPARATION_REQUIRED_QTY_COL] = 0
+    for qty_col in process_qty_cols:
+        if qty_col not in option_df.columns:
+            option_df[qty_col] = 0
     if "사이트코드" not in option_df.columns:
         option_df["사이트코드"] = "(미지정)"
     if "시트분류" not in option_df.columns:
@@ -3255,9 +3328,10 @@ def build_filter_option_maps(
 
     site_label = option_df["사이트코드"].astype(str).str.strip()
     option_df["사이트코드"] = site_label.replace({"": "(미지정)", "nan": "(미지정)", "None": "(미지정)"})
-    option_df["부족수량"] = parse_mixed_numeric(option_df["부족수량"])
-    option_df[SEPARATION_REQUIRED_QTY_COL] = parse_mixed_numeric(option_df[SEPARATION_REQUIRED_QTY_COL])
-    option_df["필터수량"] = option_df["부족수량"] + option_df[SEPARATION_REQUIRED_QTY_COL]
+    option_df["필터수량"] = 0.0
+    for qty_col in process_qty_cols:
+        option_df[qty_col] = parse_mixed_numeric(option_df[qty_col])
+        option_df["필터수량"] = option_df["필터수량"] + option_df[qty_col]
 
     site_sum_map = option_df.groupby("사이트코드", as_index=True)["필터수량"].sum().sort_values(ascending=False).to_dict()
 
@@ -3293,7 +3367,7 @@ def filter_data(
 
     search_cols = [
         c
-        for c in ["사이트코드", "이니셜", "거래처", "품목코드", "제품명", "R코드 제품명", "R코드", "Q코드"]
+        for c in ["사이트코드", ORDER_NO_COL, "이니셜", "거래처", "품목코드", "제품명", "R코드 제품명", "R코드", "Q코드"]
         if c in base_filtered.columns
     ]
     base_filtered = filter_with_terms_any(base_filtered, search_cols, unified_query)
@@ -3665,6 +3739,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
 
     detail_columns = [
         "거래처",
+        ORDER_NO_COL,
         "이니셜",
         "품목코드",
         "R코드",
@@ -3675,6 +3750,8 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
         DEMAND_QTY_COL,
         "부족수량",
         SEPARATION_REQUIRED_QTY_COL,
+        LEADJI_REQUIRED_QTY_COL,
+        ADHESION_REQUIRED_QTY_COL,
         "사출창고",
         "분리창고",
         "검사접착창고",
@@ -3693,7 +3770,9 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
         width="stretch",
     )
     direct_search_cols = [
-        c for c in ["거래처", "이니셜", "품목코드", "R코드", "Q코드", "제품명", "R코드 제품명"] if c in filtered.columns
+        c
+        for c in [ORDER_NO_COL, "거래처", "이니셜", "품목코드", "R코드", "Q코드", "제품명", "R코드 제품명"]
+        if c in filtered.columns
     ]
     search_col, result_col = st.columns([3.2, 1.0])
     with search_col:
@@ -3705,6 +3784,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
             help="콤마(,)로 여러 키워드를 입력하면 OR 조건으로 검색합니다.",
         ).strip()
     base_filtered_count = len(filtered)
+    link_mapping_scope = filtered.copy()
     if direct_query and direct_search_cols:
         filtered = filter_with_terms_any(filtered, direct_search_cols, direct_query)
     with result_col:
@@ -3724,17 +3804,18 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
         with st.expander("전체 수요 요약 (분류별요약 × 안전 포함 여부)", expanded=False):
             st.caption(
                 "오더 부족수량 = 안전 미포함, 안전재고 부족수량 = 안전 포함 - 안전 미포함, "
-                "총수량 = 오더 부족수량 + 안전재고 부족수량 + 분리 필요수량"
+                "총수량 = 사출 + 분리 + 45 + 55 + 80 필요수량"
             )
             if full_demand_summary.empty:
                 st.info("전체 수요 요약을 계산할 데이터가 없습니다.")
             else:
                 total_row = full_demand_summary.iloc[0]
-                s1, s2, s3, s4 = st.columns(4)
+                s1, s2, s3, s4, s5 = st.columns(5)
                 s1.metric("전체 수요 총수량", f"{float(total_row['총수량']):,.0f}")
-                s2.metric("오더 부족수량", f"{float(total_row['오더 부족수량']):,.0f}")
-                s3.metric("안전재고 부족수량", f"{float(total_row['안전재고 부족수량']):,.0f}")
-                s4.metric("분리 필요수량", f"{float(total_row['분리 필요수량']):,.0f}")
+                s2.metric("사출 필요수량", f"{float(total_row['사출 필요수량']):,.0f}")
+                s3.metric("분리 필요수량", f"{float(total_row['분리 필요수량']):,.0f}")
+                s4.metric("55 필요수량", f"{float(total_row['55 필요수량']):,.0f}")
+                s5.metric("80 필요수량", f"{float(total_row['80 필요수량']):,.0f}")
                 full_demand_summary_display = format_numeric_columns_for_display(full_demand_summary)
                 full_demand_summary_column_config = build_auto_column_config(
                     full_demand_summary_display,
@@ -3759,7 +3840,12 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
             if SEPARATION_REQUIRED_QTY_COL in filtered.columns
             else 0
         )
-        c1, c2, c3, c4 = st.columns(4, gap="medium")
+        adhesion_required_total = (
+            parse_mixed_numeric(filtered[ADHESION_REQUIRED_QTY_COL]).sum()
+            if ADHESION_REQUIRED_QTY_COL in filtered.columns
+            else 0
+        )
+        c1, c2, c3, c4, c5 = st.columns(5, gap="medium")
         with c1:
             render_dashboard_kpi("부족수량 합계", f"{filtered['부족수량'].sum():,.0f}", "risk")
         with c2:
@@ -3767,6 +3853,8 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
         with c3:
             render_dashboard_kpi("분리필요수량 합계", f"{separation_required_total:,.0f}", "risk")
         with c4:
+            render_dashboard_kpi("55필요수량 합계", f"{adhesion_required_total:,.0f}", "risk")
+        with c5:
             render_dashboard_kpi("공정재고 합계", f"{filtered['공정재고 합계'].sum():,.0f}", "stock")
 
         c1, c2, c3, c4, c5 = st.columns(5, gap="medium")
@@ -3810,6 +3898,8 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
 
         mapped_inj_total = 0.0
         unmatched_inj_total = 0.0
+        mapped_sep_total = 0.0
+        unmatched_sep_total = 0.0
         if "품목코드" in p_view.columns:
             item_prefix = p_view["품목코드"].astype(str).str.upper().str[:1]
             p_rows = p_view[item_prefix == "P"].copy()
@@ -3820,7 +3910,11 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
 
         if p_rows.empty:
             p_view["사출 부족수량"] = p_view["사출생산필요수량"]
-            key_cols = [c for c in ["사이트코드", "이니셜", "R코드", "Q코드"] if c in p_view.columns]
+            key_cols = [
+                c
+                for c in ["사이트코드", ORDER_NO_COL, "거래처", "이니셜", "R코드", "Q코드"]
+                if c in p_view.columns
+            ]
             if key_cols and not r_rows.empty and "품목코드" in enriched_df.columns:
                 # Fallback: when current filters leave only R rows, recover representative P codes
                 # from the full scope using (사이트코드+이니셜+R코드+Q코드) keys.
@@ -3848,12 +3942,30 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
                         p_view.loc[mapped_mask, "제품명"] = p_view.loc[mapped_mask, "매핑제품명"]
                     p_view = p_view.drop(columns=["매핑P코드", "매핑제품명"], errors="ignore")
         else:
+            if SEPARATION_REQUIRED_QTY_COL not in p_rows.columns:
+                p_rows[SEPARATION_REQUIRED_QTY_COL] = 0
+            p_rows[SEPARATION_REQUIRED_QTY_COL] = parse_mixed_numeric(p_rows[SEPARATION_REQUIRED_QTY_COL])
+            if ADHESION_REQUIRED_QTY_COL not in p_rows.columns:
+                p_rows[ADHESION_REQUIRED_QTY_COL] = 0
+            p_rows[ADHESION_REQUIRED_QTY_COL] = parse_mixed_numeric(p_rows[ADHESION_REQUIRED_QTY_COL])
             p_rows["사출 부족수량"] = p_rows["사출생산필요수량"]
-            key_cols = [c for c in ["사이트코드", "이니셜", "R코드", "Q코드"] if c in p_rows.columns and c in r_rows.columns]
+            r_scope = link_mapping_scope.copy()
+            if "품목코드" in r_scope.columns:
+                r_scope = r_scope[r_scope["품목코드"].astype(str).str.upper().str.startswith("R")]
+            if "사출생산필요수량" in r_scope.columns:
+                r_scope["사출생산필요수량"] = parse_mixed_numeric(r_scope["사출생산필요수량"])
+                r_scope = r_scope[r_scope["사출생산필요수량"] > 0]
+            else:
+                r_scope = r_scope.iloc[0:0]
+            key_cols = [
+                c
+                for c in ["사이트코드", ORDER_NO_COL, "거래처", "이니셜", "R코드", "Q코드"]
+                if c in p_rows.columns and c in r_scope.columns
+            ]
 
-            if key_cols and not r_rows.empty:
+            if key_cols and not r_scope.empty:
                 r_key_inj = (
-                    r_rows.groupby(key_cols, as_index=False)["사출생산필요수량"]
+                    r_scope.groupby(key_cols, as_index=False)["사출생산필요수량"]
                     .sum()
                     .rename(columns={"사출생산필요수량": "연결R 사출수량"})
                 )
@@ -3884,12 +3996,59 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
                 )
                 mapped_inj_total = float(p_rows["사출 부족수량(연결R)"].sum())
             else:
-                unmatched_inj_total = float(parse_mixed_numeric(r_rows["사출생산필요수량"]).sum())
+                unmatched_inj_total = float(parse_mixed_numeric(r_scope["사출생산필요수량"]).sum())
+
+            q_link_cols = [
+                c
+                for c in ["사이트코드", ORDER_NO_COL, "거래처", "이니셜", "Q코드"]
+                if c in p_rows.columns and c in link_mapping_scope.columns
+            ]
+            if q_link_cols and SEPARATION_REQUIRED_QTY_COL in link_mapping_scope.columns:
+                q_scope = link_mapping_scope.copy()
+                q_scope[SEPARATION_REQUIRED_QTY_COL] = parse_mixed_numeric(q_scope[SEPARATION_REQUIRED_QTY_COL])
+                if "품목코드" in q_scope.columns:
+                    q_scope = q_scope[q_scope["품목코드"].astype(str).str.upper().str.startswith("Q")]
+                q_scope = q_scope[q_scope[SEPARATION_REQUIRED_QTY_COL] > 0]
+                if not q_scope.empty:
+                    q_key_sep = (
+                        q_scope.groupby(q_link_cols, as_index=False)[SEPARATION_REQUIRED_QTY_COL]
+                        .sum()
+                        .rename(columns={SEPARATION_REQUIRED_QTY_COL: "연결Q 분리수량"})
+                    )
+                    q_keys = p_rows[q_link_cols].drop_duplicates()
+                    matched_sep_total = (
+                        q_key_sep.merge(q_keys, on=q_link_cols, how="inner")["연결Q 분리수량"].sum()
+                        if not q_keys.empty
+                        else 0.0
+                    )
+                    mapped_sep_total = float(matched_sep_total)
+                    unmatched_sep_total = float(q_key_sep["연결Q 분리수량"].sum() - matched_sep_total)
+                    p_rows = p_rows.merge(q_key_sep, on=q_link_cols, how="left")
+                    linked_sep = parse_mixed_numeric(p_rows["연결Q 분리수량"])
+                    current_sep = parse_mixed_numeric(p_rows[SEPARATION_REQUIRED_QTY_COL])
+                    p_rows[SEPARATION_REQUIRED_QTY_COL] = current_sep.where(current_sep > 0, linked_sep).fillna(0)
+                    p_rows = p_rows.drop(columns=["연결Q 분리수량"], errors="ignore")
 
             p_view = p_rows.copy()
 
-        p_view = p_view[(p_view["부족수량"] > 0) | (p_view["사출 부족수량"] > 0)]
-        p_view["표시부족수량"] = p_view["부족수량"] + p_view["사출 부족수량"]
+        if SEPARATION_REQUIRED_QTY_COL not in p_view.columns:
+            p_view[SEPARATION_REQUIRED_QTY_COL] = 0
+        p_view[SEPARATION_REQUIRED_QTY_COL] = parse_mixed_numeric(p_view[SEPARATION_REQUIRED_QTY_COL])
+        if ADHESION_REQUIRED_QTY_COL not in p_view.columns:
+            p_view[ADHESION_REQUIRED_QTY_COL] = 0
+        p_view[ADHESION_REQUIRED_QTY_COL] = parse_mixed_numeric(p_view[ADHESION_REQUIRED_QTY_COL])
+        p_view = p_view[
+            (p_view["부족수량"] > 0)
+            | (p_view["사출 부족수량"] > 0)
+            | (p_view[SEPARATION_REQUIRED_QTY_COL] > 0)
+            | (p_view[ADHESION_REQUIRED_QTY_COL] > 0)
+        ]
+        p_view["표시부족수량"] = (
+            p_view["부족수량"]
+            + p_view["사출 부족수량"]
+            + p_view[SEPARATION_REQUIRED_QTY_COL]
+            + p_view[ADHESION_REQUIRED_QTY_COL]
+        )
         if "납기일" not in p_view.columns:
             p_view["납기일"] = "-"
         if "사출납기일" in p_view.columns:
@@ -3898,6 +4057,16 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
             due_missing = due_text.str.lower().isin({"", "-", "nan", "nat", "none"})
             inj_due_valid = ~inj_due_text.str.lower().isin({"", "-", "nan", "nat", "none"})
             p_view.loc[due_missing & inj_due_valid, "납기일"] = inj_due_text[due_missing & inj_due_valid]
+        for fallback_due_col in [ADHESION_REQUIRED_DUE_COL, LEADJI_REQUIRED_DUE_COL, SEPARATION_REQUIRED_DUE_COL]:
+            if fallback_due_col not in p_view.columns:
+                continue
+            due_text = p_view["납기일"].astype(str).str.strip()
+            fallback_due_text = p_view[fallback_due_col].astype(str).str.strip()
+            due_missing = due_text.str.lower().isin({"", "-", "nan", "nat", "none"})
+            fallback_due_valid = ~fallback_due_text.str.lower().isin({"", "-", "nan", "nat", "none"})
+            p_view.loc[due_missing & fallback_due_valid, "납기일"] = fallback_due_text[
+                due_missing & fallback_due_valid
+            ]
 
         p_detail_columns = detail_columns.copy()
         if "사출 부족수량" not in p_detail_columns:
@@ -3917,9 +4086,15 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
         )
         if "사출 부족수량(연결R)" in p_view.columns:
             st.caption(
-                f"R→Q→P 연결 매핑(사이트코드+이니셜+R코드+Q코드): "
+                f"R→P 연결 매핑(사이트코드+수주번호+거래처+이니셜+R코드+Q코드): "
                 f"P행 반영 사출부족수량 {mapped_inj_total:,.0f}, "
                 f"미매핑 R 사출수량 {unmatched_inj_total:,.0f}"
+            )
+        if mapped_sep_total or unmatched_sep_total:
+            st.caption(
+                f"Q→P 연결 매핑(사이트코드+수주번호+거래처+이니셜+Q코드): "
+                f"P행 반영 분리필요수량 {mapped_sep_total:,.0f}, "
+                f"미매핑 Q 분리수량 {unmatched_sep_total:,.0f}"
             )
         st.download_button(
             "엑셀 다운로드",
