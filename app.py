@@ -37,7 +37,7 @@ WAREHOUSE_MAP = {
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 DATAFRAME_DISPLAY_ROW_LIMIT = 500
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260609-process-coverage-v7"
+APP_CACHE_VERSION = "20260609-process-coverage-v8"
 DISPLAY_ROW_LIMIT_SESSION_KEY = "display_row_limit_option"
 POWER_VALUE_PATTERN = re.compile(r"([+-]\d{1,2}(?:\.\d{1,2})?)")
 UNCLASSIFIED_SHEET_CATEGORY = "미분류"
@@ -3766,9 +3766,6 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
         "납기일",
         DEMAND_QTY_COL,
         "부족수량",
-        SEPARATION_REQUIRED_QTY_COL,
-        LEADJI_REQUIRED_QTY_COL,
-        ADHESION_REQUIRED_QTY_COL,
         "사출창고",
         "분리창고",
         "검사접착창고",
