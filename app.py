@@ -38,7 +38,7 @@ TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 DATAFRAME_DISPLAY_ROW_LIMIT = 500
 TABLE_STYLE_CELL_LIMIT = 12000
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260609-process-coverage-v12"
+APP_CACHE_VERSION = "20260609-process-coverage-v13"
 DISPLAY_ROW_LIMIT_SESSION_KEY = "display_row_limit_option"
 POWER_VALUE_PATTERN = re.compile(r"([+-]\d{1,2}(?:\.\d{1,2})?)")
 UNCLASSIFIED_SHEET_CATEGORY = "미분류"
@@ -4140,25 +4140,25 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
             st.caption(
                 f"R→P 연결 매핑(수주번호+거래처+이니셜+R코드+Q코드): "
                 f"P행 반영 사출부족수량 {mapped_inj_total:,.0f}, "
-                f"미매핑 R 사출수량 {unmatched_inj_total:,.0f}"
+                f"P행 없음 R 사출수량 {unmatched_inj_total:,.0f}"
             )
         if mapped_sep_total or unmatched_sep_total:
             st.caption(
                 f"Q→P 연결 매핑(수주번호+거래처+이니셜+Q코드): "
                 f"P행 반영 분리필요수량 {mapped_sep_total:,.0f}, "
-                f"미매핑 Q 분리수량 {unmatched_sep_total:,.0f}"
+                f"P행 없음 Q 분리수량 {unmatched_sep_total:,.0f}"
             )
         if unmatched_inj_total > 0 or unmatched_sep_total > 0:
-            with st.expander("R/Q→P 연결 검증", expanded=True):
+            with st.expander("R/Q 독립 수요 확인", expanded=False):
                 v1, v2, v3, v4 = st.columns(4)
-                v1.metric("P 반영 사출", f"{mapped_inj_total:,.0f}")
-                v2.metric("미매핑 R 사출", f"{unmatched_inj_total:,.0f}")
-                v3.metric("P 반영 분리", f"{mapped_sep_total:,.0f}")
-                v4.metric("미매핑 Q 분리", f"{unmatched_sep_total:,.0f}")
-                st.warning(
-                    "P행으로 연결되지 않은 R/Q 공정수량이 있습니다. "
-                    "같은 수주번호/거래처/이니셜/RQ코드 조합의 P행이 없으면 생산현황 P표에는 붙지 않으며, "
-                    "사출 현황 또는 분리 현황 탭에서 별도로 확인하세요."
+                v1.metric("P 연결 사출", f"{mapped_inj_total:,.0f}")
+                v2.metric("P행 없음 R 사출", f"{unmatched_inj_total:,.0f}")
+                v3.metric("P 연결 분리", f"{mapped_sep_total:,.0f}")
+                v4.metric("P행 없음 Q 분리", f"{unmatched_sep_total:,.0f}")
+                st.info(
+                    "수요정보는 P/R/Q 제품코드가 행으로 분리되어 있습니다. "
+                    "같은 수주번호/거래처/이니셜/R 또는 Q코드에 대응되는 P행이 없는 R/Q 공정수량은 "
+                    "P 생산현황에 임의로 붙이지 않고, 사출 현황 또는 분리 현황에서 독립 수요로 확인합니다."
                 )
         render_lazy_excel_download_button(
             "엑셀 다운로드",
