@@ -35,7 +35,7 @@ WAREHOUSE_MAP = {
     "누수규격검사": "누수규격검사 창고",
 }
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
-DATAFRAME_DISPLAY_ROW_LIMIT = 500
+DATAFRAME_DISPLAY_ROW_LIMIT = 5000
 CACHE_MAX_ENTRIES = 64
 APP_CACHE_VERSION = "20260609-process-coverage-v2"
 POWER_VALUE_PATTERN = re.compile(r"([+-]\d{1,2}(?:\.\d{1,2})?)")
