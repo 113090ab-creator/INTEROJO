@@ -38,7 +38,7 @@ TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 DATAFRAME_DISPLAY_ROW_LIMIT = 500
 TABLE_STYLE_CELL_LIMIT = 12000
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260609-process-coverage-v16"
+APP_CACHE_VERSION = "20260609-process-coverage-v17"
 DISPLAY_ROW_LIMIT_SESSION_KEY = "display_row_limit_option"
 POWER_VALUE_PATTERN = re.compile(r"([+-]\d{1,2}(?:\.\d{1,2})?)")
 UNCLASSIFIED_SHEET_CATEGORY = "미분류"
@@ -3935,12 +3935,12 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
         "재작업",
     ]
 
-    shortage_views = ["생산 현황", "사출 현황", "분리 현황", "공용 품목 현황"]
+    shortage_views = ["생산 현황", "사출 현황", "공용 품목 현황"]
     selected_shortage_view = st.segmented_control(
         "공정별 현황",
         options=shortage_views,
         default=shortage_views[0],
-        key="shortage_view_selector_v3",
+        key="shortage_view_selector_v4",
         width="stretch",
     )
     direct_search_cols = [
@@ -4302,52 +4302,6 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
             column_config=r_summary_column_config,
             hide_index=True,
             key="shortage_r_table_v2",
-        )
-
-    elif selected_shortage_view == "분리 현황":
-        q_summary = build_qcode_summary(filtered)
-        q1, q2, q3 = st.columns(3)
-        q1.metric("Q코드 수", f"{len(q_summary):,}")
-        q2.metric(
-            "Q기준 분리 필요수량 합계",
-            f"{q_summary['분리 생산 필요수량 합계'].sum():,.0f}" if not q_summary.empty else "0",
-        )
-        q3.metric("Q기준 공정재고 합계", f"{q_summary['공정재고 합계'].sum():,.0f}")
-
-        q_view = filtered.copy()
-        if SEPARATION_REQUIRED_QTY_COL not in q_view.columns:
-            q_view[SEPARATION_REQUIRED_QTY_COL] = 0
-        q_view[SEPARATION_REQUIRED_QTY_COL] = parse_mixed_numeric(q_view[SEPARATION_REQUIRED_QTY_COL])
-        q_sort_cols = (
-            ["Q코드5", "Q코드", SEPARATION_REQUIRED_QTY_COL, "부족수량"]
-            if {"Q코드5", "Q코드", SEPARATION_REQUIRED_QTY_COL, "부족수량"}.issubset(q_view.columns)
-            else ["Q코드", SEPARATION_REQUIRED_QTY_COL]
-        )
-        q_sort_asc = [True, True, False, False] if len(q_sort_cols) == 4 else [True, False]
-        q_table = q_view.sort_values(q_sort_cols, ascending=q_sort_asc)[detail_columns]
-        q_table_ui = q_table.drop(columns=["상태"], errors="ignore")
-        q_table_display_source, _ = limit_dataframe_for_display(q_table_ui)
-        caption_limited_rows(len(q_table_ui), len(q_table_display_source))
-        q_display_columns = q_table_display_source.columns.tolist()
-        q_table_display = format_numeric_columns_for_display(q_table_display_source)
-        q_detail_column_config = build_auto_column_config(
-            q_table_display, q_display_columns, source_df=q_table_display_source
-        )
-        render_lazy_excel_download_button(
-            "엑셀 다운로드",
-            q_table,
-            "분리생산현황",
-            f"shortage_separation_{download_stamp}.xlsx",
-            "download_shortage_tab_q",
-        )
-        st.dataframe(
-            style_operational_table(q_table_display, q_table_display_source),
-            use_container_width=True,
-            height=700,
-            column_order=q_display_columns,
-            column_config=q_detail_column_config,
-            hide_index=True,
-            key="shortage_q_table_v2",
         )
 
     else:
