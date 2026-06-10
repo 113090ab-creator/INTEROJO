@@ -3885,11 +3885,13 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
             "직접 검색",
             value="",
             key="shortage_direct_query_v2",
-            placeholder="아래 표의 모든 컬럼으로 검색하세요",
-            help="콤마(,)로 여러 키워드를 입력하면 OR 조건으로 검색합니다.",
+            placeholder="합계와 표에 적용할 검색어",
+            help="현재 필터 범위 안에서 합계와 표에 함께 적용됩니다. 콤마(,)로 여러 키워드를 입력하면 OR 조건으로 검색합니다.",
         ).strip()
     with result_col:
         result_caption = st.empty()
+    if direct_query:
+        filtered = filter_display_table_with_query(filtered, direct_query).copy()
     link_mapping_scope = enriched_df.copy()
 
     render_rework_match_debug(file_info_df)
@@ -4172,7 +4174,6 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
         )[p_detail_columns]
         p_table_ui = p_table.drop(columns=["상태"], errors="ignore")
         p_table_total_count = len(p_table_ui)
-        p_table_ui = filter_display_table_with_query(p_table_ui, direct_query)
         result_caption.caption(f"표시 {len(p_table_ui):,}건 / 전체 {p_table_total_count:,}건")
         p_table_display_source, _ = limit_dataframe_for_display(p_table_ui)
         caption_limited_rows(len(p_table_ui), len(p_table_display_source))
@@ -4203,7 +4204,6 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
         r_summary = build_rcode_summary(filtered)
         r_summary_ui = r_summary.drop(columns=["상태"], errors="ignore")
         r_summary_total_count = len(r_summary_ui)
-        r_summary_ui = filter_display_table_with_query(r_summary_ui, direct_query)
         r_summary = r_summary_ui
         result_caption.caption(f"표시 {len(r_summary_ui):,}건 / 전체 {r_summary_total_count:,}건")
         r1, r2, r3, r4 = st.columns(4)
@@ -4351,7 +4351,6 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
             rq_table = rq_view.sort_values(rq_sort_cols, ascending=rq_sort_asc)[rq_detail_columns]
             rq_table_ui = rq_table.drop(columns=["상태"], errors="ignore")
             rq_table_total_count = len(rq_table_ui)
-            rq_table_ui = filter_display_table_with_query(rq_table_ui, direct_query)
             result_caption.caption(f"표시 {len(rq_table_ui):,}건 / 전체 {rq_table_total_count:,}건")
             rq_table_display_source, _ = limit_dataframe_for_display(rq_table_ui)
             caption_limited_rows(len(rq_table_ui), len(rq_table_display_source))
