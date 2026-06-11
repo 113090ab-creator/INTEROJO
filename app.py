@@ -37,7 +37,7 @@ WAREHOUSE_MAP = {
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 12000
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260609-process-coverage-v20"
+APP_CACHE_VERSION = "20260611-pia-kr-v21"
 POWER_VALUE_PATTERN = re.compile(r"([+-]\d{1,2}(?:\.\d{1,2})?)")
 UNCLASSIFIED_SHEET_CATEGORY = "미분류"
 INVALID_CATEGORY_VALUES = {"", "-", "nan", "none", "nat", "null", "na", "<na>"}
@@ -81,7 +81,7 @@ PRODUCT_CATEGORY_RULES = {
     "ANW": ["ANW"],
     "Sincere": ["Sincere"],
     "렌즈미": ["렌즈미", "LENSME", "AKMA"],
-    "국내": ["Clalen", "클라렌", "Lensvery", "Lens Very"],
+    "국내": ["PIA_KR", "Clalen", "클라렌", "Lensvery", "Lens Very"],
     "MG MEDICAL": ["MG M_"],
     "PIA 종합": ["PIA", "feliamo", "Lilmoon", "MOLAK"],
 }
@@ -2541,6 +2541,9 @@ def build_synthetic_p_rows_for_process_scope(
     if "제품명" in synthetic.columns:
         synthetic["제품명"] = first_rows["_derived_p_name"] if "_derived_p_name" in first_rows.columns else pd.NA
         if "제품명" in first_rows.columns:
+            source_name = first_rows["제품명"].astype(str).str.strip()
+            prefer_source_name = source_name.str.contains("PIA_KR", case=False, na=False, regex=False)
+            synthetic["제품명"] = synthetic["제품명"].where(~prefer_source_name, first_rows["제품명"])
             synthetic["제품명"] = synthetic["제품명"].fillna(first_rows["제품명"])
         synthetic["제품명"] = synthetic["제품명"].fillna("-")
 
@@ -3399,6 +3402,9 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
     result["시트분류"] = result["자동분류결과"]
     result.loc[manual_mask, "시트분류"] = result.loc[manual_mask, "수동시트분류"]
     result.loc[manual_mask, "분류 판단 근거"] = "수동 분류값 적용"
+    pia_kr_mask = result["제품명"].astype(str).str.contains("PIA_KR", case=False, na=False, regex=False)
+    result.loc[pia_kr_mask, "시트분류"] = "국내"
+    result.loc[pia_kr_mask, "분류 판단 근거"] = "PIA_KR 제품명 기준 국내 분류"
 
     result["시트분류"] = result["시트분류"].map(clean_text_value)
     result.loc[result["시트분류"].str.lower().isin(INVALID_CATEGORY_VALUES), "시트분류"] = UNCLASSIFIED_SHEET_CATEGORY
