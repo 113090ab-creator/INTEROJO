@@ -2817,25 +2817,14 @@ def build_qcode_summary(df: pd.DataFrame) -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False, max_entries=CACHE_MAX_ENTRIES)
 def build_summary_group_totals_with_safe_split(df: pd.DataFrame) -> pd.DataFrame:
-    process_qty_columns = {
-        "사출 필요수량": "사출생산필요수량",
-        "분리 필요수량": SEPARATION_REQUIRED_QTY_COL,
-        "45 필요수량": LEADJI_REQUIRED_QTY_COL,
-        "55 필요수량": ADHESION_REQUIRED_QTY_COL,
-        "80 필요수량": "부족수량",
-    }
     columns = [
         "분류별요약",
-        "사출 필요수량",
-        "분리 필요수량",
-        "45 필요수량",
-        "55 필요수량",
-        "오더 부족수량",
-        "안전재고 부족수량",
-        "80 필요수량",
-        "총수량",
+        "오더 기준 부족수량",
+        "오더 기준 사출부족수량",
+        "안전재고 기준 부족수량",
+        "안전재고 기준 사출부족수량",
     ]
-    if df.empty or "부족수량" not in df.columns:
+    if df.empty:
         return pd.DataFrame(columns=columns)
 
     base = df.copy()
@@ -2843,50 +2832,56 @@ def build_summary_group_totals_with_safe_split(df: pd.DataFrame) -> pd.DataFrame
         base["분류별요약"] = "(미분류)"
     if "이니셜" not in base.columns:
         base["이니셜"] = ""
+    for qty_col in ["부족수량", "사출생산필요수량"]:
+        if qty_col not in base.columns:
+            base[qty_col] = 0
+        base[qty_col] = parse_mixed_numeric(base[qty_col])
 
     group_label = base["분류별요약"].astype(str).str.strip()
     base["분류별요약"] = group_label.replace({"": "(미분류)", "nan": "(미분류)", "None": "(미분류)"})
-    for source_col in process_qty_columns.values():
-        if source_col not in base.columns:
-            base[source_col] = 0
-        base[source_col] = parse_mixed_numeric(base[source_col])
-    include_qty = base.groupby("분류별요약", as_index=False)["부족수량"].sum().rename(columns={"부족수량": "안전 포함"})
-    exclude_qty = (
-        base[~base["이니셜"].astype(str).str.contains("안전", na=False)]
-        .groupby("분류별요약", as_index=False)["부족수량"]
-        .sum()
-        .rename(columns={"부족수량": "안전 미포함"})
-    )
-    process_qty = base.groupby("분류별요약", as_index=False).agg(
-        {source_col: "sum" for source_col in process_qty_columns.values()}
-    )
-    process_qty = process_qty.rename(columns={source: label for label, source in process_qty_columns.items()})
 
-    grouped = include_qty.merge(exclude_qty, on="분류별요약", how="left").merge(process_qty, on="분류별요약", how="left").fillna(0)
-    grouped["오더 부족수량"] = grouped["안전 미포함"]
-    grouped["안전재고 부족수량"] = grouped["안전 포함"] - grouped["안전 미포함"]
-    grouped["80 필요수량"] = grouped["오더 부족수량"] + grouped["안전재고 부족수량"]
-    grouped["총수량"] = (
-        grouped["사출 필요수량"]
-        + grouped["분리 필요수량"]
-        + grouped["45 필요수량"]
-        + grouped["55 필요수량"]
-        + grouped["80 필요수량"]
+    safe_mask = base["이니셜"].astype(str).str.contains("안전", na=False)
+    order_qty = (
+        base[~safe_mask]
+        .groupby("분류별요약", as_index=False)[["부족수량", "사출생산필요수량"]]
+        .sum()
+        .rename(
+            columns={
+                "부족수량": "오더 기준 부족수량",
+                "사출생산필요수량": "오더 기준 사출부족수량",
+            }
+        )
     )
-    grouped = grouped[columns].sort_values("총수량", ascending=False)
+    safe_qty = (
+        base[safe_mask]
+        .groupby("분류별요약", as_index=False)[["부족수량", "사출생산필요수량"]]
+        .sum()
+        .rename(
+            columns={
+                "부족수량": "안전재고 기준 부족수량",
+                "사출생산필요수량": "안전재고 기준 사출부족수량",
+            }
+        )
+    )
+
+    grouped = order_qty.merge(safe_qty, on="분류별요약", how="outer").fillna(0)
+    grouped["_정렬합계"] = (
+        grouped["오더 기준 부족수량"]
+        + grouped["오더 기준 사출부족수량"]
+        + grouped["안전재고 기준 부족수량"]
+        + grouped["안전재고 기준 사출부족수량"]
+    )
+    grouped = grouped.sort_values(["_정렬합계", "분류별요약"], ascending=[False, True]).drop(columns=["_정렬합계"])
+    grouped = grouped[columns]
 
     total_row = pd.DataFrame(
         [
             {
                 "분류별요약": "전체",
-                "사출 필요수량": grouped["사출 필요수량"].sum(),
-                "분리 필요수량": grouped["분리 필요수량"].sum(),
-                "45 필요수량": grouped["45 필요수량"].sum(),
-                "55 필요수량": grouped["55 필요수량"].sum(),
-                "오더 부족수량": grouped["오더 부족수량"].sum(),
-                "안전재고 부족수량": grouped["안전재고 부족수량"].sum(),
-                "80 필요수량": grouped["80 필요수량"].sum(),
-                "총수량": grouped["총수량"].sum(),
+                "오더 기준 부족수량": grouped["오더 기준 부족수량"].sum(),
+                "오더 기준 사출부족수량": grouped["오더 기준 사출부족수량"].sum(),
+                "안전재고 기준 부족수량": grouped["안전재고 기준 부족수량"].sum(),
+                "안전재고 기준 사출부족수량": grouped["안전재고 기준 사출부족수량"].sum(),
             }
         ]
     )
@@ -3904,21 +3899,14 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
 
     if selected_shortage_view == "생산 현황":
         full_demand_summary = build_summary_group_totals_with_safe_split(filtered)
-        with st.expander("전체 수요 요약 (분류별요약 × 안전 포함 여부)", expanded=False):
+        with st.expander("분류별요약 기준 부족수량 요약", expanded=False):
             st.caption(
-                "오더 부족수량 = 안전 미포함, 안전재고 부족수량 = 안전 포함 - 안전 미포함, "
-                "총수량 = 사출 + 분리 + 45 + 55 + 80 필요수량"
+                "오더 기준 = 이니셜에 안전 미포함, 안전재고 기준 = 이니셜에 안전 포함, "
+                "사출부족수량 = 사출생산필요수량 합계"
             )
             if full_demand_summary.empty:
-                st.info("전체 수요 요약을 계산할 데이터가 없습니다.")
+                st.info("분류별요약 기준 부족수량 요약을 계산할 데이터가 없습니다.")
             else:
-                total_row = full_demand_summary.iloc[0]
-                s1, s2, s3, s4, s5 = st.columns(5)
-                s1.metric("전체 수요 총수량", f"{float(total_row['총수량']):,.0f}")
-                s2.metric("사출 필요수량", f"{float(total_row['사출 필요수량']):,.0f}")
-                s3.metric("분리 필요수량", f"{float(total_row['분리 필요수량']):,.0f}")
-                s4.metric("55 필요수량", f"{float(total_row['55 필요수량']):,.0f}")
-                s5.metric("80 필요수량", f"{float(total_row['80 필요수량']):,.0f}")
                 full_demand_summary_display = format_numeric_columns_for_display(full_demand_summary)
                 full_demand_summary_column_config = build_auto_column_config(
                     full_demand_summary_display,
