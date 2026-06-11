@@ -3903,6 +3903,36 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
         )
 
     if selected_shortage_view == "생산 현황":
+        full_demand_summary = build_summary_group_totals_with_safe_split(filtered)
+        with st.expander("전체 수요 요약 (분류별요약 × 안전 포함 여부)", expanded=False):
+            st.caption(
+                "오더 부족수량 = 안전 미포함, 안전재고 부족수량 = 안전 포함 - 안전 미포함, "
+                "총수량 = 사출 + 분리 + 45 + 55 + 80 필요수량"
+            )
+            if full_demand_summary.empty:
+                st.info("전체 수요 요약을 계산할 데이터가 없습니다.")
+            else:
+                total_row = full_demand_summary.iloc[0]
+                s1, s2, s3, s4, s5 = st.columns(5)
+                s1.metric("전체 수요 총수량", f"{float(total_row['총수량']):,.0f}")
+                s2.metric("사출 필요수량", f"{float(total_row['사출 필요수량']):,.0f}")
+                s3.metric("분리 필요수량", f"{float(total_row['분리 필요수량']):,.0f}")
+                s4.metric("55 필요수량", f"{float(total_row['55 필요수량']):,.0f}")
+                s5.metric("80 필요수량", f"{float(total_row['80 필요수량']):,.0f}")
+                full_demand_summary_display = format_numeric_columns_for_display(full_demand_summary)
+                full_demand_summary_column_config = build_auto_column_config(
+                    full_demand_summary_display,
+                    full_demand_summary_display.columns.tolist(),
+                    source_df=full_demand_summary,
+                )
+                st.dataframe(
+                    full_demand_summary_display,
+                    use_container_width=True,
+                    height=320,
+                    column_config=full_demand_summary_column_config,
+                    hide_index=True,
+                )
+
         inj_shortage_total = (
             parse_mixed_numeric(filtered["사출생산필요수량"]).sum()
             if "사출생산필요수량" in filtered.columns
