@@ -37,10 +37,11 @@ WAREHOUSE_MAP = {
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 12000
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260611-pia-kr-v21"
+APP_CACHE_VERSION = "20260612-demand-rework-v23"
 POWER_VALUE_PATTERN = re.compile(r"([+-]\d{1,2}(?:\.\d{1,2})?)")
 UNCLASSIFIED_SHEET_CATEGORY = "미분류"
 INVALID_CATEGORY_VALUES = {"", "-", "nan", "none", "nat", "null", "na", "<na>"}
+REWORK_AVAILABLE_QTY_COL = "재작업가능"
 
 CUSTOMER_EXACT_CATEGORY_RULES = {
     "PIA Co.,Ltd.": "PIA 종합",
@@ -110,6 +111,7 @@ COLUMN_LABEL_ALIASES = {
     "수요수량": "수요",
     "생산필요수량": "생산필요",
     "최소납기일": "생산 최소 납기일",
+    "재작업가능": "재작업가능",
 }
 
 
@@ -1085,55 +1087,93 @@ def normalize_rework_match_value(value: object) -> str:
     return text
 
 
-def read_rework_item_keys_from_demand_file(dem_path: Path) -> tuple[set[tuple[str, str]], dict[str, object]]:
+def parse_single_numeric_value(value: object) -> float:
+    return float(parse_mixed_numeric(pd.Series([value])).iat[0])
+
+
+def find_rework_quantity_column_index(header: list[str]) -> tuple[int | None, str]:
+    normalized = [str(label).replace(" ", "").strip() for label in header]
+    preferred_names = ["이동요청수량", "재작업가능수량", "재작업수량", "가능수량"]
+    for preferred in preferred_names:
+        if preferred in normalized:
+            idx = normalized.index(preferred)
+            return idx, header[idx]
+
+    move_request_indices = [idx for idx, label in enumerate(normalized) if label == "이동요청"]
+    if len(move_request_indices) >= 2:
+        idx = move_request_indices[-1]
+        return idx, f"{header[idx]}(수량)"
+
+    fallback_names = ["잔량", "전산재고"]
+    for fallback in fallback_names:
+        if fallback in normalized:
+            idx = normalized.index(fallback)
+            return idx, header[idx]
+
+    return None, ""
+
+
+def read_rework_item_keys_from_demand_file(dem_path: Path) -> tuple[dict[tuple[str, str], float], dict[str, object]]:
     empty_meta: dict[str, object] = {
         "sheet": "-",
         "initial_col": "",
         "product_col": "",
+        "quantity_col": "",
         "sheet_columns": [],
         "source_rows": 0,
+        "source_qty_total": 0.0,
     }
     try:
         wb = openpyxl.load_workbook(dem_path, read_only=True, data_only=True)
     except Exception:
-        return set(), empty_meta
+        return {}, empty_meta
 
     try:
         rework_sheet = next((s for s in wb.sheetnames if str(s).replace(" ", "") == "재작업리스트"), None)
         if rework_sheet is None:
-            return set(), empty_meta
+            return {}, empty_meta
 
         ws = wb[rework_sheet]
         rows = ws.iter_rows(values_only=True)
         try:
             header = next(rows)
         except StopIteration:
-            return set(), {**empty_meta, "sheet": rework_sheet}
+            return {}, {**empty_meta, "sheet": rework_sheet}
 
         preview_cols = [str(c).strip() if c is not None else "" for c in header]
         initial_col = pick_first_existing_column(preview_cols, ["이니셜"])
         product_col = pick_first_existing_column(preview_cols, ["제품코드", "제품 코드"])
+        quantity_idx, quantity_col = find_rework_quantity_column_index(preview_cols)
         meta = {
             "sheet": rework_sheet,
             "initial_col": initial_col or "",
             "product_col": product_col or "",
+            "quantity_col": quantity_col or "",
             "sheet_columns": preview_cols,
             "source_rows": 0,
+            "source_qty_total": 0.0,
         }
         if initial_col is None or product_col is None:
-            return set(), meta
+            return {}, meta
 
         initial_idx = preview_cols.index(initial_col)
         product_idx = preview_cols.index(product_col)
-        keys: set[tuple[str, str]] = set()
+        qty_by_key: dict[tuple[str, str], float] = {}
         for row in rows:
             initial = normalize_rework_match_value(row[initial_idx] if initial_idx < len(row) else "")
             product_code = normalize_rework_match_value(row[product_idx] if product_idx < len(row) else "")
             if initial and product_code:
-                keys.add((initial, product_code))
+                qty = (
+                    parse_single_numeric_value(row[quantity_idx])
+                    if quantity_idx is not None and quantity_idx < len(row)
+                    else 0.0
+                )
+                key = (initial, product_code)
+                qty_by_key[key] = qty_by_key.get(key, 0.0) + qty
 
-        meta["source_rows"] = int(len(keys))
-        return keys, meta
+        meta["source_rows"] = int(len(qty_by_key))
+        meta["source_qty_total"] = float(sum(qty_by_key.values()))
+        return qty_by_key, meta
     finally:
         wb.close()
 
@@ -2917,15 +2957,15 @@ def load_raw_data(
 
     inv = read_inventory_excel_subset(inv_path)
     dem = read_demand_excel_subset(dem_path, demand_read_plan["usecols"])
-    rework_item_keys, rework_meta = read_rework_item_keys_from_demand_file(dem_path)
-    return inv, dem, demand_read_plan, rework_item_keys, rework_meta, inv_path.name, dem_path.name
+    rework_item_qty_map, rework_meta = read_rework_item_keys_from_demand_file(dem_path)
+    return inv, dem, demand_read_plan, rework_item_qty_map, rework_meta, inv_path.name, dem_path.name
 
 
 @st.cache_data(show_spinner=False, persist="disk")
 def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     _ = refresh_key
     data_base_dir = Path(base_dir_str) if base_dir_str else BASE_DIR
-    inv, dem, demand_read_plan, rework_item_keys, rework_meta, inv_file_name, dem_file_name = load_raw_data(
+    inv, dem, demand_read_plan, rework_item_qty_map, rework_meta, inv_file_name, dem_file_name = load_raw_data(
         refresh_key, base_dir_str
     )
     reference_refresh_key = build_reference_refresh_key(data_base_dir)
@@ -3303,15 +3343,21 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
         list(zip(rework_lookup_initials, rework_lookup_item_codes)),
         index=grouped_demand.index,
     )
-    rework_match_mask = rework_lookup_keys.isin(rework_item_keys)
-    grouped_demand["재작업"] = rework_match_mask.map({True: "재작업 가능", False: ""})
+    rework_key_set = set(rework_item_qty_map.keys())
+    rework_match_mask = rework_lookup_keys.isin(rework_key_set)
+    rework_available_qty = rework_lookup_keys.map(lambda key: rework_item_qty_map.get(key, 0.0)).fillna(0.0)
+    grouped_demand[REWORK_AVAILABLE_QTY_COL] = rework_available_qty
+    has_rework_qty_basis = bool(str(rework_meta.get("quantity_col", "") or "").strip())
+    rework_available_mask = rework_match_mask & ((rework_available_qty > 0) if has_rework_qty_basis else True)
+    grouped_demand["재작업"] = rework_available_mask.map({True: "재작업 가능", False: ""})
     rework_matched_item_keys = sorted(
         {
             f"{initial} / {item_code}"
-            for initial, item_code in rework_lookup_keys[rework_match_mask].tolist()
+            for initial, item_code in rework_lookup_keys[rework_available_mask].tolist()
             if initial and item_code
         }
     )
+    rework_matched_qty_total = float(rework_available_qty[rework_available_mask].sum())
 
     code_stock["사출창고"] = code_stock["품목코드"].map(
         lambda x: lookup_stock_qty(stock_lookup["사출창고"], r_by_p.get(x, map_demand_code_to_process_code(x, "R")))
@@ -3433,7 +3479,7 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
                 "리드지정보 우선, 없으면 분류정보, 그래도 없으면 P코드->R코드 유추 (BUL1/BUL2는 BUL로 보정)",
                 "리드지정보 우선, 없으면 분류정보, 그래도 없으면 P코드->Q코드 유추 (BUL1/BUL2는 BUL로 보정)",
                 "P코드 그대로 사용",
-                "WH_NAME=검사접착 중 재공 코드 끝부분 -C 계열은 별도 분류, P코드 그대로 사용",
+                "WH_NAME=검사접착 중 재공 코드 끝부분 -C 계열은 별도 분류, 재작업가능은 재작업리스트 이동요청 수량",
                 "P코드 그대로 사용",
             ],
             "재고>0 품목수": [
@@ -3455,11 +3501,14 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
             "재작업 기준 컬럼": [
                 f"재작업리스트 이니셜={rework_meta.get('initial_col', '')}, "
                 f"제품코드={rework_meta.get('product_col', '')}, "
+                f"수량={rework_meta.get('quantity_col', '')}, "
                 f"생산현황 이니셜=이니셜, 품목코드=품목코드"
             ],
             "재작업 시트 컬럼": [", ".join(rework_meta.get("sheet_columns", []))],
-            "재작업 리스트 키 수": [len(rework_item_keys)],
+            "재작업 리스트 키 수": [len(rework_item_qty_map)],
+            "재작업 리스트 수량 합계": [float(rework_meta.get("source_qty_total", 0.0) or 0.0)],
             "재작업 매칭 키 수": [len(rework_matched_item_keys)],
+            "재작업 매칭 수량 합계": [rework_matched_qty_total],
             "재작업 매칭 키 샘플": [", ".join(rework_matched_item_keys[:10])],
         }
     )
@@ -3828,6 +3877,8 @@ def render_rework_match_debug(file_info_df: pd.DataFrame | None) -> None:
     row = file_info_df.iloc[0]
     source_count = int(row.get("재작업 리스트 키 수", 0) or 0)
     matched_count = int(row.get("재작업 매칭 키 수", 0) or 0)
+    source_qty_total = float(row.get("재작업 리스트 수량 합계", 0) or 0)
+    matched_qty_total = float(row.get("재작업 매칭 수량 합계", 0) or 0)
     sample_text = str(row.get("재작업 매칭 키 샘플", "") or "").strip()
     sample_codes = [code.strip() for code in sample_text.split(",") if code.strip()]
     rework_sheet = str(row.get("재작업 시트명", "-") or "-")
@@ -3835,9 +3886,11 @@ def render_rework_match_debug(file_info_df: pd.DataFrame | None) -> None:
     sheet_columns = str(row.get("재작업 시트 컬럼", "") or "").strip()
 
     with st.expander("재작업 매칭 디버그", expanded=False):
-        d1, d2 = st.columns(2)
+        d1, d2, d3, d4 = st.columns(4)
         d1.metric("재작업리스트 이니셜+제품코드 수", f"{source_count:,}")
         d2.metric("생산현황 매칭 이니셜+품목코드 수", f"{matched_count:,}")
+        d3.metric("재작업리스트 수량 합계", f"{source_qty_total:,.0f}")
+        d4.metric("생산현황 매칭 수량 합계", f"{matched_qty_total:,.0f}")
         st.caption(f"재작업 시트: {rework_sheet}")
         st.caption(f"매칭 기준 컬럼: {basis_columns if basis_columns else '없음'}")
         if sheet_columns:
@@ -3862,13 +3915,18 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
         "제품명",
         "파워",
         "납기일",
+        DEMAND_QTY_COL,
         "부족수량",
+        SEPARATION_REQUIRED_QTY_COL,
+        LEADJI_REQUIRED_QTY_COL,
+        ADHESION_REQUIRED_QTY_COL,
         "사출창고",
         "분리창고",
         "검사접착창고",
         "검사접착재작업창고",
         "누수규격검사 창고",
         "공정재고 합계",
+        REWORK_AVAILABLE_QTY_COL,
         "재작업",
     ]
 
@@ -4154,19 +4212,28 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
         if SEPARATION_REQUIRED_QTY_COL not in p_view.columns:
             p_view[SEPARATION_REQUIRED_QTY_COL] = 0
         p_view[SEPARATION_REQUIRED_QTY_COL] = parse_mixed_numeric(p_view[SEPARATION_REQUIRED_QTY_COL])
+        if LEADJI_REQUIRED_QTY_COL not in p_view.columns:
+            p_view[LEADJI_REQUIRED_QTY_COL] = 0
+        p_view[LEADJI_REQUIRED_QTY_COL] = parse_mixed_numeric(p_view[LEADJI_REQUIRED_QTY_COL])
         if ADHESION_REQUIRED_QTY_COL not in p_view.columns:
             p_view[ADHESION_REQUIRED_QTY_COL] = 0
         p_view[ADHESION_REQUIRED_QTY_COL] = parse_mixed_numeric(p_view[ADHESION_REQUIRED_QTY_COL])
+        if DEMAND_QTY_COL not in p_view.columns:
+            p_view[DEMAND_QTY_COL] = 0
+        p_view[DEMAND_QTY_COL] = parse_mixed_numeric(p_view[DEMAND_QTY_COL])
         p_view = p_view[
             (p_view["부족수량"] > 0)
             | (p_view["사출 부족수량"] > 0)
             | (p_view[SEPARATION_REQUIRED_QTY_COL] > 0)
+            | (p_view[LEADJI_REQUIRED_QTY_COL] > 0)
             | (p_view[ADHESION_REQUIRED_QTY_COL] > 0)
+            | (p_view[DEMAND_QTY_COL] > 0)
         ]
         p_view["표시부족수량"] = (
             p_view["부족수량"]
             + p_view["사출 부족수량"]
             + p_view[SEPARATION_REQUIRED_QTY_COL]
+            + p_view[LEADJI_REQUIRED_QTY_COL]
             + p_view[ADHESION_REQUIRED_QTY_COL]
         )
         if "납기일" not in p_view.columns:
