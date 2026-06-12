@@ -3917,16 +3917,12 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
         "납기일",
         DEMAND_QTY_COL,
         "부족수량",
-        SEPARATION_REQUIRED_QTY_COL,
-        LEADJI_REQUIRED_QTY_COL,
-        ADHESION_REQUIRED_QTY_COL,
         "사출창고",
         "분리창고",
         "검사접착창고",
         "검사접착재작업창고",
         "누수규격검사 창고",
         "공정재고 합계",
-        REWORK_AVAILABLE_QTY_COL,
         "재작업",
     ]
 
