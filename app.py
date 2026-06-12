@@ -112,6 +112,7 @@ COLUMN_LABEL_ALIASES = {
     "생산필요수량": "생산필요",
     "최소납기일": "생산 최소 납기일",
     "재작업가능": "재작업가능",
+    "확인구분": "확인구분",
 }
 
 
@@ -2223,13 +2224,15 @@ def pick_fixed_column_width_px(column_name: str, max_length: int, numeric_like: 
 
     long_text_columns = {"제품명", "R코드 제품명", "리드지명", "제품명 예시", "분류 판단 근거"}
     medium_text_columns = {"품목코드", "R코드", "Q코드", "생산코드", "리드지코드", "P코드 예시"}
-    status_columns = {"상태", "재작업"}
+    status_columns = {"상태", "재작업", "확인구분"}
     date_columns = {"납기일", "입고예상일자", "생산 최소 납기일", "최소납기일"}
 
     if column_name in long_text_columns:
         return int(max(240, min(380, 28 + max_length * 7)))
     if column_name in medium_text_columns:
         return int(max(120, min(170, 24 + max_length * 7)))
+    if column_name == "확인구분":
+        return 150
     if column_name in status_columns:
         return 96
     if column_name in date_columns:
@@ -2318,6 +2321,22 @@ def style_operational_table(display_df: pd.DataFrame, source_df: pd.DataFrame | 
                 else "background-color: #EEF2FF; color: #1A2B5E; font-weight: 800;"
             ),
             subset=["상태"],
+        )
+    if "확인구분" in display_df.columns:
+        styler = styler.set_properties(subset=["확인구분"], **{"text-align": "center"})
+        styler = styler.map(
+            lambda v: (
+                "background-color: #FEE2E2; color: #B91C1C; font-weight: 850;"
+                if str(v).strip() == "최종부족/재고없음"
+                else "background-color: #FEF3C7; color: #92400E; font-weight: 850;"
+                if str(v).strip() == "공정재고 확인"
+                else "background-color: #EEF2FF; color: #1A2B5E; font-weight: 850;"
+                if str(v).strip() == "사출필요"
+                else "background-color: #FED7AA; color: #C2410C; font-weight: 850;"
+                if str(v).strip() == "재작업가능"
+                else ""
+            ),
+            subset=["확인구분"],
         )
     if "재작업" in display_df.columns:
         styler = styler.set_properties(subset=["재작업"], **{"text-align": "center"})
@@ -3915,8 +3934,8 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
         "제품명",
         "파워",
         "납기일",
-        DEMAND_QTY_COL,
         "부족수량",
+        "확인구분",
         "사출창고",
         "분리창고",
         "검사접착창고",
@@ -4232,6 +4251,23 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
             + p_view[LEADJI_REQUIRED_QTY_COL]
             + p_view[ADHESION_REQUIRED_QTY_COL]
         )
+        stock_total = (
+            parse_mixed_numeric(p_view["공정재고 합계"])
+            if "공정재고 합계" in p_view.columns
+            else pd.Series(0.0, index=p_view.index)
+        )
+        injection_shortage = parse_mixed_numeric(p_view["사출 부족수량"])
+        final_shortage = parse_mixed_numeric(p_view["부족수량"])
+        p_view["확인구분"] = ""
+        p_view.loc[(final_shortage > 0) & (stock_total > 0), "확인구분"] = "공정재고 확인"
+        p_view.loc[injection_shortage > 0, "확인구분"] = "사출필요"
+        p_view.loc[
+            (final_shortage > 0) & (injection_shortage <= 0) & (stock_total <= 0),
+            "확인구분",
+        ] = "최종부족/재고없음"
+        if "재작업" in p_view.columns:
+            rework_available = p_view["재작업"].astype(str).str.strip() == "재작업 가능"
+            p_view.loc[rework_available & (p_view["확인구분"].astype(str).str.strip() == ""), "확인구분"] = "재작업가능"
         if "납기일" not in p_view.columns:
             p_view["납기일"] = "-"
         if "사출납기일" in p_view.columns:
