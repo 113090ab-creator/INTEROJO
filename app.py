@@ -37,7 +37,7 @@ WAREHOUSE_MAP = {
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 12000
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260612-demand-rework-v23"
+APP_CACHE_VERSION = "20260616-u-process-stock-v24"
 POWER_VALUE_PATTERN = re.compile(r"([+-]\d{1,2}(?:\.\d{1,2})?)")
 UNCLASSIFIED_SHEET_CATEGORY = "미분류"
 INVALID_CATEGORY_VALUES = {"", "-", "nan", "none", "nat", "null", "na", "<na>"}
@@ -1679,6 +1679,14 @@ def lookup_stock_qty(stock_map: dict[str, float], process_code: str) -> float:
     return 0.0
 
 
+def lookup_stock_qty_from_candidates(stock_map: dict[str, float], process_codes: list[str]) -> float:
+    for process_code in process_codes:
+        qty = lookup_stock_qty(stock_map, process_code)
+        if qty:
+            return qty
+    return 0.0
+
+
 def resolve_process_code_for_stock(stock_map: dict[str, float], process_code: str) -> str:
     code = str(process_code).strip()
     if not code or code.lower() == "nan":
@@ -1875,16 +1883,17 @@ def load_reference_maps_bundle(
     dict[str, str],
     dict[str, str],
     dict[str, str],
+    dict[str, str],
 ]:
     _ = reference_refresh_key
     ref_path = find_product_name_reference_file(base_dir)
-    empty_bundle = ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
+    empty_bundle = ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
     if ref_path is None:
         return empty_bundle
-    cache_key = hashlib.sha256(f"reference-bundle-v2|{reference_refresh_key}".encode("utf-8")).hexdigest()[:24]
+    cache_key = hashlib.sha256(f"reference-bundle-v3|{reference_refresh_key}".encode("utf-8")).hexdigest()[:24]
     cache_path = ref_path.resolve().parent / ".dashboard_cache" / f"reference_bundle_{cache_key}.pkl"
     cached = read_pickle_cache(cache_path)
-    if isinstance(cached, tuple) and len(cached) == 12 and all(isinstance(part, dict) for part in cached):
+    if isinstance(cached, tuple) and len(cached) == 13 and all(isinstance(part, dict) for part in cached):
         return cached
 
     try:
@@ -1933,6 +1942,7 @@ def load_reference_maps_bundle(
     bom_q_exact_map: dict[str, str] = {}
     leadji_r_map: dict[str, str] = {}
     leadji_q_map: dict[str, str] = {}
+    leadji_u_map: dict[str, str] = {}
 
     # 1) 제품명/분류 맵 + R코드명 fallback 기반 시트
     try:
@@ -2080,7 +2090,8 @@ def load_reference_maps_bundle(
             prod_col = "생산" if "생산" in leadji_cols else (leadji_cols[3] if len(leadji_cols) > 3 else None)
             q_col = "분리" if "분리" in leadji_cols else (leadji_cols[9] if len(leadji_cols) > 9 else None)
             r_col = "사출" if "사출" in leadji_cols else (leadji_cols[21] if len(leadji_cols) > 21 else None)
-            selected_cols = {c for c in [prod_col, q_col, r_col] if c is not None}
+            u_col = "외주" if "외주" in leadji_cols else ("U코드" if "U코드" in leadji_cols else None)
+            selected_cols = {c for c in [prod_col, q_col, r_col, u_col] if c is not None}
             leadji = (
                 parse_sheet(leadji_sheet, usecols=lambda c: str(c).strip() in selected_cols)
                 if selected_cols
@@ -2092,6 +2103,7 @@ def load_reference_maps_bundle(
                         prod_col: "생산",
                         q_col: "분리",
                         r_col: "사출",
+                        u_col: "외주",
                     }
                 )
         else:
@@ -2100,9 +2112,11 @@ def load_reference_maps_bundle(
             prod_col = "생산" if "생산" in leadji.columns else (leadji.columns[3] if len(leadji.columns) > 3 else None)
             q_col = "분리" if "분리" in leadji.columns else (leadji.columns[9] if len(leadji.columns) > 9 else None)
             r_col = "사출" if "사출" in leadji.columns else (leadji.columns[21] if len(leadji.columns) > 21 else None)
-            if prod_col is not None and q_col is not None and r_col is not None:
-                ldf = leadji[[prod_col, q_col, r_col]].copy()
-                for col in [prod_col, q_col, r_col]:
+            u_col = "외주" if "외주" in leadji.columns else ("U코드" if "U코드" in leadji.columns else None)
+            selected_leadji_cols = [c for c in [prod_col, q_col, r_col, u_col] if c is not None]
+            if prod_col is not None and selected_leadji_cols:
+                ldf = leadji[selected_leadji_cols].copy()
+                for col in selected_leadji_cols:
                     ldf[col] = ldf[col].astype(str).str.strip()
                     ldf.loc[ldf[col].str.lower() == "nan", col] = ""
                 ldf = ldf[ldf[prod_col].str.startswith("P")]
@@ -2120,12 +2134,18 @@ def load_reference_maps_bundle(
                             return f"{prefix}{value[1:]}"
                         return value
 
-                    ldf["Q정규"] = ldf[q_col].map(lambda x: normalize_to_code(x, "Q"))
-                    ldf["R정규"] = ldf[r_col].map(lambda x: normalize_to_code(x, "R"))
-                    q_df = ldf[ldf["Q정규"] != ""].drop_duplicates(subset=["코드5"], keep="first")
-                    r_df = ldf[ldf["R정규"] != ""].drop_duplicates(subset=["코드5"], keep="first")
-                    leadji_q_map = q_df.set_index("코드5")["Q정규"].to_dict()
-                    leadji_r_map = r_df.set_index("코드5")["R정규"].to_dict()
+                    if q_col is not None and q_col in ldf.columns:
+                        ldf["Q정규"] = ldf[q_col].map(lambda x: normalize_to_code(x, "Q"))
+                        q_df = ldf[ldf["Q정규"] != ""].drop_duplicates(subset=["코드5"], keep="first")
+                        leadji_q_map = q_df.set_index("코드5")["Q정규"].to_dict()
+                    if r_col is not None and r_col in ldf.columns:
+                        ldf["R정규"] = ldf[r_col].map(lambda x: normalize_to_code(x, "R"))
+                        r_df = ldf[ldf["R정규"] != ""].drop_duplicates(subset=["코드5"], keep="first")
+                        leadji_r_map = r_df.set_index("코드5")["R정규"].to_dict()
+                    if u_col is not None and u_col in ldf.columns:
+                        ldf["U정규"] = ldf[u_col].map(lambda x: normalize_to_code(x, "U"))
+                        u_df = ldf[ldf["U정규"] != ""].drop_duplicates(subset=["코드5"], keep="first")
+                        leadji_u_map = u_df.set_index("코드5")["U정규"].to_dict()
 
     result = (
         product_name_map,
@@ -2140,6 +2160,7 @@ def load_reference_maps_bundle(
         bom_q_exact_map,
         leadji_r_map,
         leadji_q_map,
+        leadji_u_map,
     )
     write_pickle_cache(cache_path, result)
     return result
@@ -2223,7 +2244,7 @@ def pick_fixed_column_width_px(column_name: str, max_length: int, numeric_like: 
         return int(max(90, min(145, 24 + max_length * 7)))
 
     long_text_columns = {"제품명", "R코드 제품명", "리드지명", "제품명 예시", "분류 판단 근거"}
-    medium_text_columns = {"품목코드", "R코드", "Q코드", "생산코드", "리드지코드", "P코드 예시"}
+    medium_text_columns = {"품목코드", "R코드", "Q코드", "U코드", "생산코드", "리드지코드", "P코드 예시"}
     status_columns = {"상태", "재작업", "확인구분"}
     date_columns = {"납기일", "입고예상일자", "생산 최소 납기일", "최소납기일"}
 
@@ -2491,6 +2512,8 @@ def add_rq_group_columns(df: pd.DataFrame) -> pd.DataFrame:
         enriched["R코드"] = enriched["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "R"))
     if "Q코드" not in enriched.columns:
         enriched["Q코드"] = enriched["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "Q"))
+    if "U코드" not in enriched.columns:
+        enriched["U코드"] = ""
     if "R코드 제품명" not in enriched.columns:
         enriched["R코드 제품명"] = enriched.get("제품명", "-")
     enriched["R코드5"] = enriched["R코드"].astype(str).str[:5]
@@ -3001,6 +3024,7 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
         bom_q_exact_map,
         leadji_r_map,
         leadji_q_map,
+        leadji_u_map,
     ) = load_reference_maps_bundle(data_base_dir, reference_refresh_key)
     process_code_map = demand_read_plan.get("process_code_map", {})
     qty_col_indices = list(demand_read_plan.get("qty_col_indices", []))
@@ -3320,6 +3344,16 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
     grouped_demand["R코드 제품명"] = grouped_demand["R코드 제품명"].fillna(grouped_demand["제품명"])
     grouped_demand["R코드 제품명"] = grouped_demand["R코드 제품명"].fillna(grouped_demand["R코드5"])
     grouped_demand["R코드 제품명"] = grouped_demand["R코드 제품명"].replace({"": "-", "nan": "-", "None": "-"}).fillna("-")
+    mapped_u_base = grouped_demand["코드5"].map(leadji_u_map)
+    grouped_demand["U코드"] = pd.Series(
+        [
+            merge_mapped_base_code(map_demand_code_to_process_code(q_code, "U"), mapped, "U")
+            if str(mapped).strip() and str(mapped).strip().lower() != "nan"
+            else ""
+            for q_code, mapped in zip(grouped_demand["Q코드"], mapped_u_base)
+        ],
+        index=grouped_demand.index,
+    )
     grouped_demand["분류별요약"] = grouped_demand["코드5"].map(product_group_map).fillna("기타")
     grouped_demand["시트분류"] = grouped_demand["코드5"].map(sheet2_group_map)
     grouped_demand = grouped_demand.drop(columns=["코드5", "R코드5"])
@@ -3335,7 +3369,9 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
         )
 
     code_stock = pd.DataFrame({"품목코드": grouped_demand["품목코드"].drop_duplicates()})
-    rq_by_p = grouped_demand.drop_duplicates(subset=["품목코드"], keep="first").set_index("품목코드")[["R코드", "Q코드"]]
+    rq_by_p = grouped_demand.drop_duplicates(subset=["품목코드"], keep="first").set_index("품목코드")[
+        ["R코드", "Q코드", "U코드"]
+    ]
     r_by_p = {
         item_code: resolve_process_code_for_stock(stock_lookup["사출창고"], process_code)
         for item_code, process_code in rq_by_p["R코드"].to_dict().items()
@@ -3344,6 +3380,10 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
         item_code: resolve_process_code_for_stock(stock_lookup["분리창고"], process_code)
         for item_code, process_code in rq_by_p["Q코드"].to_dict().items()
     }
+    u_by_p = {
+        item_code: resolve_process_code_for_stock(stock_lookup["분리창고"], process_code)
+        for item_code, process_code in rq_by_p["U코드"].to_dict().items()
+    }
 
     grouped_demand["R코드"] = grouped_demand["품목코드"].map(
         lambda x: r_by_p.get(x, map_demand_code_to_process_code(x, "R"))
@@ -3351,6 +3391,7 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
     grouped_demand["Q코드"] = grouped_demand["품목코드"].map(
         lambda x: q_by_p.get(x, map_demand_code_to_process_code(x, "Q"))
     )
+    grouped_demand["U코드"] = grouped_demand["품목코드"].map(lambda x: u_by_p.get(x, ""))
     grouped_demand["R코드5"] = grouped_demand["R코드"].astype(str).str[:5]
     grouped_demand["R코드 제품명"] = grouped_demand["R코드5"].map(r_name_map)
     grouped_demand["R코드 제품명"] = grouped_demand["R코드 제품명"].fillna(grouped_demand["제품명"])
@@ -3382,7 +3423,13 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
         lambda x: lookup_stock_qty(stock_lookup["사출창고"], r_by_p.get(x, map_demand_code_to_process_code(x, "R")))
     )
     code_stock["분리창고"] = code_stock["품목코드"].map(
-        lambda x: lookup_stock_qty(stock_lookup["분리창고"], q_by_p.get(x, map_demand_code_to_process_code(x, "Q")))
+        lambda x: lookup_stock_qty_from_candidates(
+            stock_lookup["분리창고"],
+            [
+                q_by_p.get(x, map_demand_code_to_process_code(x, "Q")),
+                u_by_p.get(x, ""),
+            ],
+        )
     )
     code_stock["검사접착창고"] = code_stock["품목코드"].map(
         lambda x: stock_lookup["검사접착창고"].get(x, 0)
@@ -3496,7 +3543,7 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
             ],
             "재고코드 매핑 규칙": [
                 "리드지정보 우선, 없으면 분류정보, 그래도 없으면 P코드->R코드 유추 (BUL1/BUL2는 BUL로 보정)",
-                "리드지정보 우선, 없으면 분류정보, 그래도 없으면 P코드->Q코드 유추 (BUL1/BUL2는 BUL로 보정)",
+                "리드지정보/분류정보 Q코드 우선, 없으면 P코드->Q코드 유추, Q재고가 없으면 리드지정보 외주(U) 코드로 보정",
                 "P코드 그대로 사용",
                 "WH_NAME=검사접착 중 재공 코드 끝부분 -C 계열은 별도 분류, 재작업가능은 재작업리스트 이동요청 수량",
                 "P코드 그대로 사용",
@@ -3603,7 +3650,18 @@ def filter_data(
 
     search_cols = [
         c
-        for c in ["사이트코드", ORDER_NO_COL, "이니셜", "거래처", "품목코드", "제품명", "R코드 제품명", "R코드", "Q코드"]
+        for c in [
+            "사이트코드",
+            ORDER_NO_COL,
+            "이니셜",
+            "거래처",
+            "품목코드",
+            "제품명",
+            "R코드 제품명",
+            "R코드",
+            "Q코드",
+            "U코드",
+        ]
         if c in base_filtered.columns
     ]
     base_filtered = filter_with_terms_any(base_filtered, search_cols, unified_query)
@@ -3931,6 +3989,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
         "품목코드",
         "R코드",
         "Q코드",
+        "U코드",
         "제품명",
         "파워",
         "납기일",
