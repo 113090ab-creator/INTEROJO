@@ -2182,6 +2182,86 @@ def format_pill_label(option: str, value_map: dict[str, float]) -> str:
     return f"{option} ({value:,.0f})"
 
 
+def _multi_pill_previous_key(key: str) -> str:
+    return f"{key}__previous_selection"
+
+
+def _as_pill_selection_list(selection: object) -> list[str]:
+    if selection is None:
+        return []
+    if isinstance(selection, str):
+        raw_selection = [selection]
+    else:
+        try:
+            raw_selection = list(selection)  # type: ignore[arg-type]
+        except TypeError:
+            raw_selection = [selection]
+
+    selections: list[str] = []
+    for item in raw_selection:
+        label = str(item).strip()
+        if label and label not in selections:
+            selections.append(label)
+    return selections
+
+
+def normalize_multi_pill_selection(
+    selection: object,
+    previous_selection: object = None,
+    all_option: str = "전체",
+) -> list[str]:
+    current = _as_pill_selection_list(selection)
+    previous = _as_pill_selection_list(previous_selection)
+    if not current:
+        return [all_option]
+    if all_option in current and len(current) > 1:
+        if all_option not in previous:
+            return [all_option]
+        return [value for value in current if value != all_option]
+    return current
+
+
+def prepare_multi_pill_state(key: str, options: list[str], all_option: str = "전체") -> None:
+    valid_options = {str(option).strip() for option in options}
+    previous_key = _multi_pill_previous_key(key)
+    selection = normalize_multi_pill_selection(
+        st.session_state.get(key, [all_option]),
+        st.session_state.get(previous_key, [all_option]),
+        all_option,
+    )
+    selection = [value for value in selection if value in valid_options]
+    if not selection:
+        selection = [all_option]
+    st.session_state[key] = selection
+    st.session_state[previous_key] = selection
+
+
+def sync_multi_pill_state(key: str, all_option: str = "전체") -> None:
+    previous_key = _multi_pill_previous_key(key)
+    selection = normalize_multi_pill_selection(
+        st.session_state.get(key),
+        st.session_state.get(previous_key, [all_option]),
+        all_option,
+    )
+    st.session_state[key] = selection
+    st.session_state[previous_key] = selection
+
+
+def finalize_multi_pill_selection(key: str, selection: object, all_option: str = "전체") -> tuple[str, ...]:
+    previous_key = _multi_pill_previous_key(key)
+    normalized = normalize_multi_pill_selection(
+        selection,
+        st.session_state.get(previous_key, [all_option]),
+        all_option,
+    )
+    st.session_state[previous_key] = normalized
+    return tuple(normalized)
+
+
+def is_specific_pill_selection(selection: tuple[str, ...], all_option: str = "전체") -> bool:
+    return bool(selection) and all_option not in selection
+
+
 def build_thousand_separator_config(df: pd.DataFrame) -> dict[str, st.column_config.NumberColumn]:
     config: dict[str, st.column_config.NumberColumn] = {}
     for col in df.columns:
@@ -3633,8 +3713,8 @@ def filter_data(
     selected_site_option: str,
     unified_query: str,
     exclude_safe_initial: bool,
-    selected_sheet_option: str,
-    selected_summary_option: str,
+    selected_sheet_options: tuple[str, ...],
+    selected_summary_options: tuple[str, ...],
     only_same_rq_group: bool,
     only_with_stock: bool,
     only_rework_available: bool,
@@ -3667,10 +3747,10 @@ def filter_data(
     base_filtered = filter_with_terms_any(base_filtered, search_cols, unified_query)
     if exclude_safe_initial and "이니셜" in base_filtered.columns:
         base_filtered = base_filtered[~base_filtered["이니셜"].astype(str).str.contains("안전", na=False)]
-    if selected_sheet_option and selected_sheet_option != "전체" and "시트분류" in base_filtered.columns:
-        base_filtered = base_filtered[base_filtered["시트분류"] == selected_sheet_option]
-    if selected_summary_option and selected_summary_option != "전체" and "분류별요약" in base_filtered.columns:
-        base_filtered = base_filtered[base_filtered["분류별요약"] == selected_summary_option]
+    if is_specific_pill_selection(selected_sheet_options) and "시트분류" in base_filtered.columns:
+        base_filtered = base_filtered[base_filtered["시트분류"].isin(selected_sheet_options)]
+    if is_specific_pill_selection(selected_summary_options) and "분류별요약" in base_filtered.columns:
+        base_filtered = base_filtered[base_filtered["분류별요약"].isin(selected_summary_options)]
     if only_same_rq_group and {"R코드5", "Q코드5", "P코드5"}.issubset(base_filtered.columns):
         p_count_per_group = base_filtered.groupby(["R코드5", "Q코드5"])["P코드5"].transform("nunique")
         base_filtered = base_filtered[p_count_per_group >= 2]
@@ -3723,19 +3803,33 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
         summary_count_map = {"전체": scoped_total, **summary_sum_map}
 
         st.divider()
-        selected_sheet_option = st.pills(
-            "시트 분류",
-            options=sheet_options,
-            default="전체",
-            key="flt_sheet_pills",
-            format_func=lambda x: format_pill_label(x, sheet_count_map),
+        sheet_pills_key = "flt_sheet_pills"
+        prepare_multi_pill_state(sheet_pills_key, sheet_options)
+        selected_sheet_options = finalize_multi_pill_selection(
+            sheet_pills_key,
+            st.pills(
+                "시트 분류",
+                options=sheet_options,
+                selection_mode="multi",
+                key=sheet_pills_key,
+                format_func=lambda x: format_pill_label(x, sheet_count_map),
+                on_change=sync_multi_pill_state,
+                args=(sheet_pills_key,),
+            ),
         )
-        selected_summary_option = st.pills(
-            "분류별 요약",
-            options=summary_options,
-            default="전체",
-            key="flt_summary_pills",
-            format_func=lambda x: format_pill_label(x, summary_count_map),
+        summary_pills_key = "flt_summary_pills"
+        prepare_multi_pill_state(summary_pills_key, summary_options)
+        selected_summary_options = finalize_multi_pill_selection(
+            summary_pills_key,
+            st.pills(
+                "분류별 요약",
+                options=summary_options,
+                selection_mode="multi",
+                key=summary_pills_key,
+                format_func=lambda x: format_pill_label(x, summary_count_map),
+                on_change=sync_multi_pill_state,
+                args=(summary_pills_key,),
+            ),
         )
 
     return filter_data(
@@ -3743,8 +3837,8 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
         selected_site_option or "전체",
         unified_query,
         exclude_safe_initial,
-        selected_sheet_option or "전체",
-        selected_summary_option or "전체",
+        selected_sheet_options,
+        selected_summary_options,
         only_same_rq_group,
         only_with_stock,
         only_rework_available,
