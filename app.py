@@ -2985,8 +2985,6 @@ def build_summary_group_totals_with_safe_split(df: pd.DataFrame) -> pd.DataFrame
     columns = [
         "분류별요약",
         "오더 기준 부족수량",
-        "오더 기준 국내 부족수량",
-        "오더 기준 해외 부족수량",
         "오더 기준 사출부족수량",
         "안전재고 기준 부족수량",
         "안전재고 기준 사출부족수량",
@@ -3010,8 +3008,6 @@ def build_summary_group_totals_with_safe_split(df: pd.DataFrame) -> pd.DataFrame
     initial_text = base["이니셜"].map(clean_text_value)
     safe_mask = initial_text.str.contains("안전", na=False)
     order_mask = ~safe_mask
-    order_domestic_mask = order_mask & (initial_text == "")
-    order_overseas_mask = order_mask & (initial_text != "")
 
     order_qty = (
         base[order_mask]
@@ -3023,18 +3019,6 @@ def build_summary_group_totals_with_safe_split(df: pd.DataFrame) -> pd.DataFrame
                 "사출생산필요수량": "오더 기준 사출부족수량",
             }
         )
-    )
-    order_domestic_qty = (
-        base[order_domestic_mask]
-        .groupby("분류별요약", as_index=False)[["부족수량"]]
-        .sum()
-        .rename(columns={"부족수량": "오더 기준 국내 부족수량"})
-    )
-    order_overseas_qty = (
-        base[order_overseas_mask]
-        .groupby("분류별요약", as_index=False)[["부족수량"]]
-        .sum()
-        .rename(columns={"부족수량": "오더 기준 해외 부족수량"})
     )
     safe_qty = (
         base[safe_mask]
@@ -3048,12 +3032,7 @@ def build_summary_group_totals_with_safe_split(df: pd.DataFrame) -> pd.DataFrame
         )
     )
 
-    grouped = (
-        order_qty.merge(order_domestic_qty, on="분류별요약", how="outer")
-        .merge(order_overseas_qty, on="분류별요약", how="outer")
-        .merge(safe_qty, on="분류별요약", how="outer")
-        .fillna(0)
-    )
+    grouped = order_qty.merge(safe_qty, on="분류별요약", how="outer").fillna(0)
     grouped["_정렬합계"] = (
         grouped["오더 기준 부족수량"]
         + grouped["오더 기준 사출부족수량"]
@@ -3068,8 +3047,6 @@ def build_summary_group_totals_with_safe_split(df: pd.DataFrame) -> pd.DataFrame
             {
                 "분류별요약": "전체",
                 "오더 기준 부족수량": grouped["오더 기준 부족수량"].sum(),
-                "오더 기준 국내 부족수량": grouped["오더 기준 국내 부족수량"].sum(),
-                "오더 기준 해외 부족수량": grouped["오더 기준 해외 부족수량"].sum(),
                 "오더 기준 사출부족수량": grouped["오더 기준 사출부족수량"].sum(),
                 "안전재고 기준 부족수량": grouped["안전재고 기준 부족수량"].sum(),
                 "안전재고 기준 사출부족수량": grouped["안전재고 기준 사출부족수량"].sum(),
@@ -4158,7 +4135,6 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
         with st.expander("분류별요약 기준 부족수량 요약", expanded=False):
             st.caption(
                 "오더 기준 = 이니셜에 안전 미포함, 안전재고 기준 = 이니셜에 안전 포함, "
-                "오더 국내/해외 = 안전 미포함 중 이니셜 공란/입력 건, "
                 "사출부족수량 = 사출생산필요수량 합계"
             )
             if full_demand_summary.empty:
