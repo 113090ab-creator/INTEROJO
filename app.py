@@ -37,7 +37,7 @@ WAREHOUSE_MAP = {
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 12000
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260616-u-process-stock-v24"
+APP_CACHE_VERSION = "20260629-inventory-risk-v1"
 POWER_VALUE_PATTERN = re.compile(r"([+-]\d{1,2}(?:\.\d{1,2})?)")
 UNCLASSIFIED_SHEET_CATEGORY = "미분류"
 INVALID_CATEGORY_VALUES = {"", "-", "nan", "none", "nat", "null", "na", "<na>"}
@@ -113,6 +113,16 @@ COLUMN_LABEL_ALIASES = {
     "최소납기일": "생산 최소 납기일",
     "재작업가능": "재작업가능",
     "확인구분": "확인구분",
+    "리스크구분": "리스크",
+    "제품군키": "제품군",
+    "재고수량": "재고",
+    "현재수요수량": "현재수요",
+    "초과수량": "초과",
+    "수요코드수": "수요코드",
+    "제품명 예시": "제품명",
+    "이니셜 예시": "이니셜",
+    "재공코드 예시": "재공코드",
+    "LOT 예시": "LOT",
 }
 
 
@@ -996,7 +1006,7 @@ def write_pickle_cache(cache_path: Path, value: object) -> None:
 
 
 def read_inventory_excel_subset(inv_path: Path) -> pd.DataFrame:
-    cache_path = build_dashboard_cache_path(inv_path, "inventory_subset", "v2")
+    cache_path = build_dashboard_cache_path(inv_path, "inventory_subset", "v3")
     cached = read_pickle_cache(cache_path)
     if isinstance(cached, pd.DataFrame):
         return cached.copy()
@@ -1035,7 +1045,16 @@ def read_inventory_excel_subset(inv_path: Path) -> pd.DataFrame:
             )
         )
         wip_code_idx = columns.index(wip_code_col) if wip_code_col in columns else (3 if len(columns) > 3 else item_idx)
-        usecols = sorted({qty_idx, item_idx, warehouse_idx, wip_code_idx})
+        optional_cols = [
+            "LOT_NO",
+            "사용가능한 날짜",
+            "생성 일시",
+            "수정 일시",
+            "BASE_SALES_CD",
+            "재공 제품 구분",
+        ]
+        optional_indices = {columns.index(col) for col in optional_cols if col in columns}
+        usecols = sorted({qty_idx, item_idx, warehouse_idx, wip_code_idx, *optional_indices})
         selected_columns = [columns[i] for i in usecols]
 
         records: list[list[object]] = []
@@ -2439,6 +2458,22 @@ def style_operational_table(display_df: pd.DataFrame, source_df: pd.DataFrame | 
             ),
             subset=["확인구분"],
         )
+    if "리스크구분" in display_df.columns:
+        styler = styler.set_properties(subset=["리스크구분"], **{"text-align": "center"})
+        styler = styler.map(
+            lambda v: (
+                "background-color: #FEE2E2; color: #B91C1C; font-weight: 850;"
+                if str(v).strip() == "현재수요 제품군 없음"
+                else "background-color: #FEF3C7; color: #92400E; font-weight: 850;"
+                if str(v).strip() == "동일제품 타도수 재고"
+                else "background-color: #FFEDD5; color: #C2410C; font-weight: 850;"
+                if str(v).strip() == "수요초과 재고"
+                else "background-color: #DCFCE7; color: #166534; font-weight: 800;"
+                if str(v).strip() == "수요코드 직접매칭"
+                else ""
+            ),
+            subset=["리스크구분"],
+        )
     if "재작업" in display_df.columns:
         styler = styler.set_properties(subset=["재작업"], **{"text-align": "center"})
         styler = styler.map(
@@ -3669,6 +3704,253 @@ def load_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[pd.Dat
     return preprocess_data(refresh_key, base_dir_str)
 
 
+def normalize_inventory_family_code(item_code: object) -> str:
+    code = re.sub(r"\s+", "", str(item_code).strip().upper())
+    if not code or code.lower() in {"nan", "none", "-"}:
+        return ""
+    family_code = POWER_VALUE_PATTERN.sub("", code)
+    family_code = re.sub(r"[+-]+$", "", family_code).strip()
+    return family_code or code
+
+
+def format_optional_date_series(series: pd.Series) -> pd.Series:
+    parsed = parse_mixed_excel_date(series)
+    return pd.to_datetime(parsed, errors="coerce").dt.strftime("%Y-%m-%d").fillna("")
+
+
+def first_nonempty_text(values: pd.Series) -> str:
+    for value in values.astype(str):
+        text = value.strip()
+        if text and text.lower() not in {"nan", "none", "nat", "-"}:
+            return text
+    return ""
+
+
+def build_inventory_risk_source_df(inv: pd.DataFrame) -> pd.DataFrame:
+    if inv.empty:
+        return pd.DataFrame()
+
+    inv = inv.copy()
+    inv.columns = [str(c).strip() for c in inv.columns]
+    columns = inv.columns.tolist()
+    index = inv.index
+
+    qty_col = pick_first_existing_column(columns, ["총 재공 수량", "WIP_QTY", "재고량"])
+    item_col = pick_first_existing_column(columns, ["제품 코드", "ITEM_ID", "제품코드", "품목코드"])
+    warehouse_col = pick_first_existing_column(columns, ["WH_NAME", "창고명", "버퍼 코드", "제품위치(창고)", "PROP02", "창고"])
+    wip_code_col = pick_first_existing_column(columns, ["재공 코드", "재공코드", "WIP_CODE", "WIP ID", "WIP_ID"])
+    lot_col = pick_first_existing_column(columns, ["LOT_NO", "Lot no.", "LOT NO", "LOT"])
+    available_col = pick_first_existing_column(columns, ["사용가능한 날짜", "사용가능일", "AVAILABLE_DATE"])
+    created_col = pick_first_existing_column(columns, ["생성 일시", "생성일시", "CREATED_AT"])
+
+    if qty_col is None:
+        qty_col = columns[6] if len(columns) > 6 else columns[0]
+    if item_col is None:
+        item_col = columns[8] if len(columns) > 8 else (columns[1] if len(columns) > 1 else columns[0])
+    if warehouse_col is None:
+        warehouse_col = (
+            columns[23]
+            if len(columns) > 23
+            else (columns[10] if len(columns) > 10 else (columns[5] if len(columns) > 5 else columns[0]))
+        )
+    if wip_code_col is None:
+        wip_code_col = columns[3] if len(columns) > 3 else item_col
+
+    def optional_text(col: str | None) -> pd.Series:
+        if col and col in inv.columns:
+            return inv[col].astype(str).str.strip()
+        return pd.Series("", index=index)
+
+    source = pd.DataFrame(
+        {
+            "품목코드": inv[item_col].astype(str).str.strip(),
+            "창고": inv[warehouse_col].astype(str).str.strip().map(canonicalize_warehouse_label),
+            "재공코드": inv[wip_code_col].astype(str).str.strip(),
+            "재고수량": parse_mixed_numeric(inv[qty_col]),
+            "LOT_NO": optional_text(lot_col),
+            "사용가능일": format_optional_date_series(inv[available_col]) if available_col in inv.columns else pd.Series("", index=index),
+            "생성일시": format_optional_date_series(inv[created_col]) if created_col in inv.columns else pd.Series("", index=index),
+        }
+    )
+
+    rework_mask = (source["창고"] == "검사접착") & source["재공코드"].map(is_inspection_rework_wip_code)
+    source.loc[rework_mask, "창고"] = "검사접착재작업"
+    source = source[(source["품목코드"] != "") & (source["품목코드"].str.lower() != "nan")]
+    source = source[source["창고"].isin(TARGET_WAREHOUSES)]
+    source = source[source["재고수량"] > 0]
+    return source
+
+
+def build_inventory_demand_code_scope(demand_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if demand_df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    base_index = demand_df.index
+
+    def text_col(col: str) -> pd.Series:
+        if col in demand_df.columns:
+            return demand_df[col].astype(str).str.strip()
+        return pd.Series("", index=base_index)
+
+    def numeric_col(col: str) -> pd.Series:
+        if col in demand_df.columns:
+            return parse_mixed_numeric(demand_df[col])
+        return pd.Series(0.0, index=base_index)
+
+    demand_qty = numeric_col(DEMAND_QTY_COL)
+    shortage_qty = numeric_col("부족수량")
+    injection_qty = numeric_col("사출생산필요수량")
+    separation_qty = numeric_col(SEPARATION_REQUIRED_QTY_COL)
+    leadji_qty = numeric_col(LEADJI_REQUIRED_QTY_COL)
+    adhesion_qty = numeric_col(ADHESION_REQUIRED_QTY_COL)
+    p_need_qty = pd.concat([demand_qty, shortage_qty, leadji_qty, adhesion_qty], axis=1).max(axis=1).fillna(0)
+
+    common = pd.DataFrame(
+        {
+            "제품명": text_col("제품명"),
+            "이니셜": text_col("이니셜"),
+            "거래처": text_col("거래처"),
+            "납기일": text_col("납기일"),
+            "시트분류": text_col("시트분류"),
+            "분류별요약": text_col("분류별요약"),
+        },
+        index=base_index,
+    )
+
+    scope_frames: list[pd.DataFrame] = []
+    code_specs = [
+        ("품목코드", p_need_qty),
+        ("R코드", injection_qty),
+        ("Q코드", separation_qty),
+        ("U코드", separation_qty),
+    ]
+    for code_col, qty_series in code_specs:
+        if code_col not in demand_df.columns:
+            continue
+        frame = common.copy()
+        frame["매칭코드"] = demand_df[code_col].astype(str).str.strip()
+        frame["현재수요수량"] = qty_series
+        frame = frame[(frame["매칭코드"] != "") & (~frame["매칭코드"].str.lower().isin({"nan", "none", "-"}))]
+        if not frame.empty:
+            scope_frames.append(frame)
+
+    if not scope_frames:
+        return pd.DataFrame(), pd.DataFrame()
+
+    code_scope = pd.concat(scope_frames, ignore_index=True, sort=False)
+    code_scope["제품군키"] = code_scope["매칭코드"].map(normalize_inventory_family_code)
+    code_summary = (
+        code_scope.groupby("매칭코드", as_index=False)
+        .agg(
+            {
+                "현재수요수량": "sum",
+                "제품군키": first_nonempty_text,
+                "제품명": lambda s: summarize_unique(s, 3),
+                "이니셜": lambda s: summarize_unique(s, 3),
+                "거래처": lambda s: summarize_unique(s, 2),
+                "납기일": first_nonempty_text,
+                "시트분류": first_nonempty_text,
+                "분류별요약": first_nonempty_text,
+            }
+        )
+        .rename(columns={"제품명": "제품명 예시", "이니셜": "이니셜 예시"})
+    )
+    family_summary = (
+        code_scope.groupby("제품군키", as_index=False)
+        .agg(
+            {
+                "매칭코드": "nunique",
+                "현재수요수량": "sum",
+                "제품명": lambda s: summarize_unique(s, 3),
+                "이니셜": lambda s: summarize_unique(s, 3),
+                "거래처": lambda s: summarize_unique(s, 2),
+                "납기일": first_nonempty_text,
+                "시트분류": first_nonempty_text,
+                "분류별요약": first_nonempty_text,
+            }
+        )
+        .rename(columns={"매칭코드": "수요코드수", "제품명": "제품명 예시", "이니셜": "이니셜 예시"})
+    )
+    return code_summary, family_summary
+
+
+@st.cache_data(show_spinner=False, persist="disk")
+def build_inventory_risk_snapshot(refresh_key: str, base_dir_str: str | None = None) -> pd.DataFrame:
+    data_base_dir = Path(base_dir_str) if base_dir_str else BASE_DIR
+    inv_path, _ = find_excel_files(data_base_dir)
+    demand_df, _, _ = load_data(refresh_key, base_dir_str)
+    inv_raw = read_inventory_excel_subset(inv_path)
+    inv_source = build_inventory_risk_source_df(inv_raw)
+    if inv_source.empty:
+        return pd.DataFrame()
+
+    code_summary, family_summary = build_inventory_demand_code_scope(demand_df)
+    code_lookup = code_summary.set_index("매칭코드") if not code_summary.empty else pd.DataFrame()
+    family_lookup = family_summary.set_index("제품군키") if not family_summary.empty else pd.DataFrame()
+
+    inventory_group = (
+        inv_source.groupby(["품목코드", "창고"], as_index=False)
+        .agg(
+            {
+                "재고수량": "sum",
+                "재공코드": lambda s: summarize_unique(s, 3),
+                "LOT_NO": lambda s: summarize_unique(s, 3),
+                "사용가능일": first_nonempty_text,
+                "생성일시": first_nonempty_text,
+            }
+        )
+        .rename(columns={"재공코드": "재공코드 예시", "LOT_NO": "LOT 예시"})
+    )
+    inventory_group["창고"] = inventory_group["창고"].map(lambda x: WAREHOUSE_MAP.get(x, x))
+    inventory_group["제품군키"] = inventory_group["품목코드"].map(normalize_inventory_family_code)
+    inventory_group["파워"] = inventory_group["품목코드"].map(extract_power_from_code)
+
+    exact_codes = set(code_summary["매칭코드"].astype(str)) if not code_summary.empty else set()
+    family_codes = set(family_summary["제품군키"].astype(str)) if not family_summary.empty else set()
+    exact_match = inventory_group["품목코드"].astype(str).isin(exact_codes)
+    family_match = inventory_group["제품군키"].astype(str).isin(family_codes)
+
+    def map_from_lookup(lookup: pd.DataFrame, column: str, keys: pd.Series, default: object = "") -> pd.Series:
+        if lookup.empty or column not in lookup.columns:
+            return pd.Series(default, index=keys.index)
+        return keys.map(lookup[column]).fillna(default)
+
+    inventory_group["현재수요수량"] = map_from_lookup(code_lookup, "현재수요수량", inventory_group["품목코드"], 0.0)
+    inventory_group["제품명 예시"] = map_from_lookup(code_lookup, "제품명 예시", inventory_group["품목코드"], "")
+    inventory_group["이니셜 예시"] = map_from_lookup(code_lookup, "이니셜 예시", inventory_group["품목코드"], "")
+    inventory_group["납기일"] = map_from_lookup(code_lookup, "납기일", inventory_group["품목코드"], "")
+    inventory_group["시트분류"] = map_from_lookup(code_lookup, "시트분류", inventory_group["품목코드"], "")
+    inventory_group["분류별요약"] = map_from_lookup(code_lookup, "분류별요약", inventory_group["품목코드"], "")
+    inventory_group["수요코드수"] = 1
+
+    family_keys = inventory_group["제품군키"]
+    for target_col in ["제품명 예시", "이니셜 예시", "납기일", "시트분류", "분류별요약"]:
+        fallback = map_from_lookup(family_lookup, target_col, family_keys, "")
+        missing = inventory_group[target_col].astype(str).str.strip().isin({"", "nan", "None"})
+        inventory_group.loc[missing, target_col] = fallback.loc[missing]
+    inventory_group["수요코드수"] = map_from_lookup(family_lookup, "수요코드수", family_keys, 0).where(
+        ~exact_match, inventory_group["수요코드수"]
+    )
+
+    inventory_group["현재수요수량"] = parse_mixed_numeric(inventory_group["현재수요수량"]).fillna(0)
+    inventory_group["초과수량"] = (inventory_group["재고수량"] - inventory_group["현재수요수량"]).clip(lower=0)
+    inventory_group["리스크구분"] = "현재수요 제품군 없음"
+    inventory_group.loc[family_match, "리스크구분"] = "동일제품 타도수 재고"
+    inventory_group.loc[exact_match, "리스크구분"] = "수요코드 직접매칭"
+    inventory_group.loc[exact_match & (inventory_group["초과수량"] > 0), "리스크구분"] = "수요초과 재고"
+
+    priority = {
+        "현재수요 제품군 없음": 1,
+        "동일제품 타도수 재고": 2,
+        "수요초과 재고": 3,
+        "수요코드 직접매칭": 4,
+    }
+    inventory_group["정렬순위"] = inventory_group["리스크구분"].map(priority).fillna(9)
+    for col in ["제품명 예시", "이니셜 예시", "납기일", "시트분류", "분류별요약", "재공코드 예시", "LOT 예시"]:
+        inventory_group[col] = inventory_group[col].replace({"": "-", "nan": "-", "None": "-"}).fillna("-")
+    return inventory_group.sort_values(["정렬순위", "재고수량", "품목코드"], ascending=[True, False, True])
+
+
 @st.cache_data(show_spinner=False, max_entries=CACHE_MAX_ENTRIES)
 def build_filter_option_maps(
     df: pd.DataFrame, selected_site_option: str = "전체"
@@ -4073,6 +4355,154 @@ def render_rework_match_debug(file_info_df: pd.DataFrame | None) -> None:
             st.dataframe(pd.DataFrame({"매칭 이니셜/품목코드 샘플": sample_codes[:10]}), use_container_width=True, hide_index=True)
         else:
             st.caption("매칭된 재작업 이니셜/품목코드 샘플이 없습니다.")
+
+
+def render_inventory_risk_dashboard(risk_df: pd.DataFrame, updated_at: str) -> None:
+    st.subheader("공정재고 리스크")
+    st.caption(f"업데이트: {updated_at}")
+    st.caption("ODV_WIP 원장 전체를 기준으로 현재 수요코드 직접매칭, 동일제품 타도수, 현재수요 제품군 없음, 수요초과 재고를 분리합니다.")
+
+    if risk_df.empty:
+        st.warning("공정재고 리스크를 계산할 데이터가 없습니다.")
+        return
+
+    download_stamp = datetime.now(DISPLAY_TZ).strftime("%Y%m%d_%H%M%S")
+    working = risk_df.copy()
+
+    risk_options = ["전체", "현재수요 제품군 없음", "동일제품 타도수 재고", "수요초과 재고", "수요코드 직접매칭"]
+    selected_risk = st.segmented_control(
+        "리스크 구분",
+        options=risk_options,
+        default="전체",
+        key="inventory_risk_selector_v1",
+        width="stretch",
+    )
+
+    filter_col, search_col = st.columns([1.35, 2.65])
+    with filter_col:
+        warehouse_options = sorted(working["창고"].astype(str).dropna().unique().tolist())
+        selected_warehouses = st.multiselect(
+            "공정창고",
+            options=warehouse_options,
+            default=warehouse_options,
+            key="inventory_risk_warehouse_filter_v1",
+        )
+    with search_col:
+        direct_query = st.text_input(
+            "직접 검색",
+            value="",
+            key="inventory_risk_direct_query_v1",
+            placeholder="품목코드, 제품군, 제품명, LOT, 재공코드 검색",
+            help="콤마(,)로 여러 키워드를 입력하면 OR 조건으로 검색합니다.",
+        ).strip()
+
+    if selected_risk != "전체":
+        working = working[working["리스크구분"] == selected_risk]
+    if selected_warehouses:
+        working = working[working["창고"].isin(selected_warehouses)]
+    if direct_query:
+        working = filter_display_table_with_query(working, direct_query).copy()
+
+    total_stock = parse_mixed_numeric(working["재고수량"]).sum()
+    no_demand_stock = parse_mixed_numeric(
+        working.loc[working["리스크구분"].isin(["현재수요 제품군 없음", "동일제품 타도수 재고"]), "재고수량"]
+    ).sum()
+    same_family_stock = parse_mixed_numeric(
+        working.loc[working["리스크구분"] == "동일제품 타도수 재고", "재고수량"]
+    ).sum()
+    no_family_stock = parse_mixed_numeric(
+        working.loc[working["리스크구분"] == "현재수요 제품군 없음", "재고수량"]
+    ).sum()
+    excess_stock = parse_mixed_numeric(
+        working.loc[working["리스크구분"] == "수요초과 재고", "초과수량"]
+    ).sum()
+
+    c1, c2, c3, c4, c5 = st.columns(5, gap="medium")
+    with c1:
+        render_dashboard_kpi("전체 공정재고", f"{total_stock:,.0f}", "stock")
+    with c2:
+        render_dashboard_kpi("수요외 재고", f"{no_demand_stock:,.0f}", "risk")
+    with c3:
+        render_dashboard_kpi("동일제품 타도수", f"{same_family_stock:,.0f}", "risk")
+    with c4:
+        render_dashboard_kpi("현재수요 없음", f"{no_family_stock:,.0f}", "risk")
+    with c5:
+        render_dashboard_kpi("수요초과", f"{excess_stock:,.0f}", "risk")
+
+    summary = (
+        working.groupby(["리스크구분", "창고"], as_index=False)
+        .agg(
+            {
+                "품목코드": "nunique",
+                "재고수량": "sum",
+                "현재수요수량": "sum",
+                "초과수량": "sum",
+            }
+        )
+        .rename(columns={"품목코드": "품목수"})
+        .sort_values(["리스크구분", "재고수량"], ascending=[True, False])
+    )
+    with st.expander("리스크 구분/공정창고 요약", expanded=False):
+        if summary.empty:
+            st.info("요약할 데이터가 없습니다.")
+        else:
+            summary_display = format_numeric_columns_for_display(summary)
+            summary_column_config = build_auto_column_config(
+                summary_display, summary_display.columns.tolist(), source_df=summary
+            )
+            st.dataframe(
+                style_operational_table(summary_display, summary),
+                use_container_width=True,
+                height=320,
+                column_config=summary_column_config,
+                hide_index=True,
+            )
+
+    detail_columns = [
+        "리스크구분",
+        "창고",
+        "품목코드",
+        "제품군키",
+        "파워",
+        "재고수량",
+        "현재수요수량",
+        "초과수량",
+        "수요코드수",
+        "제품명 예시",
+        "이니셜 예시",
+        "납기일",
+        "분류별요약",
+        "시트분류",
+        "재공코드 예시",
+        "LOT 예시",
+        "사용가능일",
+        "생성일시",
+    ]
+    detail_columns = [col for col in detail_columns if col in working.columns]
+    detail = working.sort_values(["정렬순위", "재고수량", "품목코드"], ascending=[True, False, True])[detail_columns]
+
+    st.caption(f"표시 {len(detail):,}건 / 전체 {len(risk_df):,}건")
+    render_lazy_excel_download_button(
+        "엑셀 다운로드",
+        detail,
+        "공정재고리스크",
+        f"inventory_risk_{download_stamp}.xlsx",
+        "download_inventory_risk_v1",
+    )
+
+    detail_display_source, _ = limit_dataframe_for_display(detail)
+    detail_display = format_numeric_columns_for_display(detail_display_source)
+    detail_column_config = build_auto_column_config(
+        detail_display, detail_display.columns.tolist(), source_df=detail_display_source
+    )
+    st.dataframe(
+        style_operational_table(detail_display, detail_display_source),
+        use_container_width=True,
+        height=720,
+        column_config=detail_column_config,
+        hide_index=True,
+        key="inventory_risk_table_v1",
+    )
 
 
 def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: pd.DataFrame | None = None) -> None:
@@ -5388,7 +5818,7 @@ def main() -> None:
         """,
         unsafe_allow_html=True,
     )
-    top_views = ["생산 부족 현황", "리드지 현황", "생산코드별 리드지"]
+    top_views = ["생산 부족 현황", "공정재고 리스크", "리드지 현황", "생산코드별 리드지"]
     with st.sidebar:
         st.markdown(
             """
@@ -5422,14 +5852,18 @@ def main() -> None:
     try:
         df = pd.DataFrame()
         file_info_df = pd.DataFrame()
+        inventory_risk_df = pd.DataFrame()
         if selected_top_view == top_views[0]:
             refresh_key = build_data_refresh_key(data_base_dir)
             df, file_info_df, _ = load_data(refresh_key, str(data_base_dir))
+        elif selected_top_view == "공정재고 리스크":
+            refresh_key = build_data_refresh_key(data_base_dir)
+            inventory_risk_df = build_inventory_risk_snapshot(refresh_key, str(data_base_dir))
 
         leadji_info = pd.DataFrame()
         leadji_stock = pd.DataFrame()
         leadji_order_df = pd.DataFrame()
-        if selected_top_view in {top_views[1], top_views[2]}:
+        if selected_top_view in {"리드지 현황", "생산코드별 리드지"}:
             leadji_status_refresh_key = build_leadji_order_refresh_key(data_base_dir)
             df, leadji_info, leadji_stock, leadji_order_df = load_leadji_status_snapshot(
                 leadji_status_refresh_key, str(data_base_dir)
@@ -5441,6 +5875,8 @@ def main() -> None:
 
     if selected_top_view == "생산 부족 현황":
         render_shortage_dashboard(df, updated_at, file_info_df)
+    elif selected_top_view == "공정재고 리스크":
+        render_inventory_risk_dashboard(inventory_risk_df, updated_at)
     elif selected_top_view == "리드지 현황":
         render_leadji_dashboard(updated_at, df, leadji_info, leadji_stock, leadji_order_df)
     else:
