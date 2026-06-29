@@ -37,7 +37,7 @@ WAREHOUSE_MAP = {
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 12000
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260629-inventory-risk-v1"
+APP_CACHE_VERSION = "20260629-inventory-risk-rq-v1"
 POWER_VALUE_PATTERN = re.compile(r"([+-]\d{1,2}(?:\.\d{1,2})?)")
 UNCLASSIFIED_SHEET_CATEGORY = "미분류"
 INVALID_CATEGORY_VALUES = {"", "-", "nan", "none", "nat", "null", "na", "<na>"}
@@ -3778,6 +3778,11 @@ def build_inventory_risk_source_df(inv: pd.DataFrame) -> pd.DataFrame:
     source = source[(source["품목코드"] != "") & (source["품목코드"].str.lower() != "nan")]
     source = source[source["창고"].isin(TARGET_WAREHOUSES)]
     source = source[source["재고수량"] > 0]
+    code_prefix = source["품목코드"].astype(str).str.strip().str.upper().str[:1]
+    rq_process_mask = ((source["창고"] == "사출창고") & (code_prefix == "R")) | (
+        (source["창고"] == "분리창고") & (code_prefix == "Q")
+    )
+    source = source[rq_process_mask]
     return source
 
 
@@ -3797,13 +3802,8 @@ def build_inventory_demand_code_scope(demand_df: pd.DataFrame) -> tuple[pd.DataF
             return parse_mixed_numeric(demand_df[col])
         return pd.Series(0.0, index=base_index)
 
-    demand_qty = numeric_col(DEMAND_QTY_COL)
-    shortage_qty = numeric_col("부족수량")
     injection_qty = numeric_col("사출생산필요수량")
     separation_qty = numeric_col(SEPARATION_REQUIRED_QTY_COL)
-    leadji_qty = numeric_col(LEADJI_REQUIRED_QTY_COL)
-    adhesion_qty = numeric_col(ADHESION_REQUIRED_QTY_COL)
-    p_need_qty = pd.concat([demand_qty, shortage_qty, leadji_qty, adhesion_qty], axis=1).max(axis=1).fillna(0)
 
     common = pd.DataFrame(
         {
@@ -3819,10 +3819,8 @@ def build_inventory_demand_code_scope(demand_df: pd.DataFrame) -> tuple[pd.DataF
 
     scope_frames: list[pd.DataFrame] = []
     code_specs = [
-        ("품목코드", p_need_qty),
         ("R코드", injection_qty),
         ("Q코드", separation_qty),
-        ("U코드", separation_qty),
     ]
     for code_col, qty_series in code_specs:
         if code_col not in demand_df.columns:
@@ -4360,7 +4358,7 @@ def render_rework_match_debug(file_info_df: pd.DataFrame | None) -> None:
 def render_inventory_risk_dashboard(risk_df: pd.DataFrame, updated_at: str) -> None:
     st.subheader("공정재고 리스크")
     st.caption(f"업데이트: {updated_at}")
-    st.caption("ODV_WIP 원장 전체를 기준으로 현재 수요코드 직접매칭, 동일제품 타도수, 현재수요 제품군 없음, 수요초과 재고를 분리합니다.")
+    st.caption("ODV_WIP 원장 중 사출창고 R코드와 분리창고 Q코드만 기준으로 현재 수요코드 직접매칭, 동일제품 타도수, 현재수요 제품군 없음, 수요초과 재고를 분리합니다.")
 
     if risk_df.empty:
         st.warning("공정재고 리스크를 계산할 데이터가 없습니다.")
@@ -4419,9 +4417,9 @@ def render_inventory_risk_dashboard(risk_df: pd.DataFrame, updated_at: str) -> N
 
     c1, c2, c3, c4, c5 = st.columns(5, gap="medium")
     with c1:
-        render_dashboard_kpi("전체 공정재고", f"{total_stock:,.0f}", "stock")
+        render_dashboard_kpi("R/Q 공정재고", f"{total_stock:,.0f}", "stock")
     with c2:
-        render_dashboard_kpi("수요외 재고", f"{no_demand_stock:,.0f}", "risk")
+        render_dashboard_kpi("R/Q 수요외 재고", f"{no_demand_stock:,.0f}", "risk")
     with c3:
         render_dashboard_kpi("동일제품 타도수", f"{same_family_stock:,.0f}", "risk")
     with c4:
