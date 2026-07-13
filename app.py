@@ -1774,7 +1774,6 @@ def get_row_value(row: tuple[object, ...], idx: int | None) -> str:
     return str(value).strip()
 
 
-@st.cache_data(show_spinner=False, persist="disk")
 def load_bom_maps_streaming(
     ref_path_str: str, reference_refresh_key: str, bom_sheet: str
 ) -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, str]]:
@@ -1886,7 +1885,6 @@ def load_bom_maps_streaming(
         wb.close()
 
 
-@st.cache_data(show_spinner=False, persist="disk")
 def load_reference_maps_bundle(
     base_dir: Path, reference_refresh_key: str
 ) -> tuple[
@@ -3091,7 +3089,6 @@ def build_summary_group_totals_with_safe_split(df: pd.DataFrame) -> pd.DataFrame
     return pd.concat([total_row, grouped], ignore_index=True)
 
 
-@st.cache_data(show_spinner=False, persist="disk")
 def load_raw_data(
     refresh_key: str, base_dir_str: str | None = None
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, object], set[str], dict[str, object], str, str]:
@@ -3121,7 +3118,7 @@ def load_raw_data(
     return inv, dem, demand_read_plan, rework_item_qty_map, rework_meta, inv_path.name, dem_path.name
 
 
-@st.cache_data(show_spinner=False, persist="disk")
+@st.cache_resource(show_spinner=False)
 def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     _ = refresh_key
     data_base_dir = Path(base_dir_str) if base_dir_str else BASE_DIR
@@ -3872,7 +3869,7 @@ def build_inventory_demand_code_scope(demand_df: pd.DataFrame) -> tuple[pd.DataF
     return code_summary, family_summary
 
 
-@st.cache_data(show_spinner=False, persist="disk")
+@st.cache_resource(show_spinner=False)
 def build_inventory_risk_snapshot(refresh_key: str, base_dir_str: str | None = None) -> pd.DataFrame:
     data_base_dir = Path(base_dir_str) if base_dir_str else BASE_DIR
     inv_path, _ = find_excel_files(data_base_dir)
@@ -4128,7 +4125,7 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
     )
 
 
-@st.cache_data(show_spinner=False, persist="disk")
+@st.cache_resource(show_spinner=False)
 def load_leadji_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
     _ = refresh_key
     data_base_dir = Path(base_dir_str) if base_dir_str else BASE_DIR
@@ -4203,7 +4200,7 @@ def load_leadji_data(refresh_key: str, base_dir_str: str | None = None) -> tuple
     return leadji_info, leadji_stock
 
 
-@st.cache_data(show_spinner=False, persist="disk")
+@st.cache_resource(show_spinner=False)
 def load_leadji_order_data(refresh_key: str, base_dir_str: str | None = None) -> pd.DataFrame:
     _ = refresh_key
     data_base_dir = Path(base_dir_str) if base_dir_str else BASE_DIR
@@ -4307,7 +4304,7 @@ def load_leadji_order_data(refresh_key: str, base_dir_str: str | None = None) ->
     ]
 
 
-@st.cache_data(show_spinner=False, persist="disk")
+@st.cache_resource(show_spinner=False)
 def load_leadji_status_snapshot(
     leadji_status_refresh_key: str, base_dir_str: str | None = None
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
