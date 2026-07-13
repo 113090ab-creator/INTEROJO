@@ -1,4 +1,5 @@
 import hashlib
+import os
 import pickle
 import re
 import shutil
@@ -16,6 +17,7 @@ st.set_page_config(page_title="생산현황", layout="wide")
 
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_WORKSPACE_ROOT = BASE_DIR / ".uploaded_workspaces"
+CLOUD_SNAPSHOT_DIR = BASE_DIR / "cloud_snapshots"
 DISPLAY_TZ = ZoneInfo("Asia/Seoul")
 ORDER_NO_COL = "수주번호"
 LEADJI_REQUIRED_QTY_COL = "[45]하이드레이션/전면검사 필요수량"
@@ -636,6 +638,83 @@ def select_data_source(base_dir: Path) -> tuple[Path, str, str]:
     source_label = f"업로드 파일 ({inv_file.name}, {dem_file.name})"
     updated_at = get_data_updated_at(workspace_dir)
     return workspace_dir, source_label, updated_at
+
+
+def is_streamlit_cloud_runtime() -> bool:
+    return (
+        bool(os.environ.get("STREAMLIT_CLOUD"))
+        or bool(os.environ.get("STREAMLIT_SHARING_MODE"))
+        or Path("/mount/src").exists()
+    )
+
+
+def should_use_cloud_snapshots(data_base_dir: Path) -> bool:
+    try:
+        is_default_source = Path(data_base_dir).resolve() == BASE_DIR.resolve()
+    except OSError:
+        is_default_source = False
+    return (
+        is_streamlit_cloud_runtime()
+        and is_default_source
+        and (CLOUD_SNAPSHOT_DIR / "shortage_snapshot.csv.gz").exists()
+    )
+
+
+def build_cloud_snapshot_refresh_key(*names: str) -> str:
+    parts: list[str] = []
+    for name in names:
+        path = CLOUD_SNAPSHOT_DIR / name
+        try:
+            stat = path.stat()
+            parts.append(f"{name}:{stat.st_size}:{stat.st_mtime_ns}")
+        except OSError:
+            parts.append(f"{name}:missing")
+    return "|".join(parts)
+
+
+@st.cache_data(show_spinner=False)
+def read_cloud_snapshot_csv(name: str, refresh_key: str) -> pd.DataFrame:
+    _ = refresh_key
+    path = CLOUD_SNAPSHOT_DIR / name
+    if not path.exists():
+        return pd.DataFrame()
+    return pd.read_csv(path, encoding="utf-8-sig", compression="infer")
+
+
+def load_cloud_snapshot_csv(name: str) -> pd.DataFrame:
+    refresh_key = build_cloud_snapshot_refresh_key(name)
+    return read_cloud_snapshot_csv(name, refresh_key)
+
+
+def get_cloud_snapshot_meta_value(key: str, default: str = "-") -> str:
+    meta = load_cloud_snapshot_csv("snapshot_meta.csv")
+    if meta.empty or not {"key", "value"}.issubset(meta.columns):
+        return default
+    values = meta.loc[meta["key"].astype(str) == key, "value"]
+    if values.empty:
+        return default
+    return str(values.iloc[0])
+
+
+def load_cloud_shortage_snapshot() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    return (
+        load_cloud_snapshot_csv("shortage_snapshot.csv.gz"),
+        load_cloud_snapshot_csv("shortage_file_info.csv.gz"),
+        load_cloud_snapshot_csv("process_map.csv.gz"),
+    )
+
+
+def load_cloud_inventory_risk_snapshot() -> pd.DataFrame:
+    return load_cloud_snapshot_csv("inventory_risk_snapshot.csv.gz")
+
+
+def load_cloud_leadji_status_snapshot() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    return (
+        load_cloud_snapshot_csv("leadji_shortage_snapshot.csv.gz"),
+        load_cloud_snapshot_csv("leadji_info.csv.gz"),
+        load_cloud_snapshot_csv("leadji_stock.csv.gz"),
+        load_cloud_snapshot_csv("leadji_order.csv.gz"),
+    )
 
 
 def pick_first_existing_column(columns: list[str], candidates: list[str]) -> str | None:
@@ -5842,6 +5921,10 @@ def main() -> None:
         )
         st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
         data_base_dir, _, updated_at = select_data_source(BASE_DIR)
+        use_cloud_snapshots = should_use_cloud_snapshots(data_base_dir)
+        if use_cloud_snapshots:
+            updated_at = get_cloud_snapshot_meta_value("data_updated_at", updated_at)
+            st.caption("Cloud 모드: 사전 계산 스냅샷 사용")
         st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
 
     try:
@@ -5849,21 +5932,31 @@ def main() -> None:
         file_info_df = pd.DataFrame()
         inventory_risk_df = pd.DataFrame()
         if selected_top_view == top_views[0]:
-            refresh_key = build_data_refresh_key(data_base_dir)
-            df, file_info_df, _ = load_data(refresh_key, str(data_base_dir))
+            if use_cloud_snapshots:
+                df, file_info_df, _ = load_cloud_shortage_snapshot()
+            else:
+                refresh_key = build_data_refresh_key(data_base_dir)
+                df, file_info_df, _ = load_data(refresh_key, str(data_base_dir))
         elif selected_top_view == "공정재고 리스크":
-            refresh_key = build_data_refresh_key(data_base_dir)
-            inventory_risk_df = build_inventory_risk_snapshot(refresh_key, str(data_base_dir))
+            if use_cloud_snapshots:
+                inventory_risk_df = load_cloud_inventory_risk_snapshot()
+            else:
+                refresh_key = build_data_refresh_key(data_base_dir)
+                inventory_risk_df = build_inventory_risk_snapshot(refresh_key, str(data_base_dir))
 
         leadji_info = pd.DataFrame()
         leadji_stock = pd.DataFrame()
         leadji_order_df = pd.DataFrame()
         if selected_top_view in {"리드지 현황", "생산코드별 리드지"}:
-            leadji_status_refresh_key = build_leadji_order_refresh_key(data_base_dir)
-            df, leadji_info, leadji_stock, leadji_order_df = load_leadji_status_snapshot(
-                leadji_status_refresh_key, str(data_base_dir)
-            )
-            updated_at = get_leadji_order_updated_at(data_base_dir)
+            if use_cloud_snapshots:
+                df, leadji_info, leadji_stock, leadji_order_df = load_cloud_leadji_status_snapshot()
+                updated_at = get_cloud_snapshot_meta_value("leadji_updated_at", updated_at)
+            else:
+                leadji_status_refresh_key = build_leadji_order_refresh_key(data_base_dir)
+                df, leadji_info, leadji_stock, leadji_order_df = load_leadji_status_snapshot(
+                    leadji_status_refresh_key, str(data_base_dir)
+                )
+                updated_at = get_leadji_order_updated_at(data_base_dir)
     except Exception as exc:
         st.error(f"데이터 로드 실패: {exc}")
         st.stop()
