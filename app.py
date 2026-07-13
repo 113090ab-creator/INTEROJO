@@ -653,9 +653,10 @@ def should_use_cloud_snapshots(data_base_dir: Path) -> bool:
         is_default_source = Path(data_base_dir).resolve() == BASE_DIR.resolve()
     except OSError:
         is_default_source = False
+    live_data_override = os.environ.get("INTEROJO_USE_LIVE_DATA", "").strip().lower()
     return (
-        is_streamlit_cloud_runtime()
-        and is_default_source
+        is_default_source
+        and live_data_override not in {"1", "true", "yes", "on"}
         and (CLOUD_SNAPSHOT_DIR / "shortage_snapshot.csv.gz").exists()
     )
 
