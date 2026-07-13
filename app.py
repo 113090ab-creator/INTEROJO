@@ -2589,7 +2589,7 @@ def render_lazy_excel_download_button(
     key: str,
 ) -> None:
     prepare_key = f"{key}_prepare"
-    if st.button("엑셀 파일 생성", key=f"{key}_prepare_button", use_container_width=False):
+    if st.button("엑셀 파일 생성", key=f"{key}_prepare_button", width="content"):
         st.session_state[prepare_key] = True
     if not st.session_state.get(prepare_key, False):
         st.caption("다운로드가 필요할 때만 엑셀 파일을 생성합니다.")
@@ -2600,7 +2600,7 @@ def render_lazy_excel_download_button(
         file_name=file_name,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key=key,
-        use_container_width=False,
+        width="content",
     )
 
 
@@ -4427,7 +4427,7 @@ def render_rework_match_debug(file_info_df: pd.DataFrame | None) -> None:
         if sheet_columns:
             st.caption(f"재작업 시트 전체 컬럼: {sheet_columns}")
         if sample_codes:
-            st.dataframe(pd.DataFrame({"매칭 이니셜/품목코드 샘플": sample_codes[:10]}), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame({"매칭 이니셜/품목코드 샘플": sample_codes[:10]}), width="stretch", hide_index=True)
         else:
             st.caption("매칭된 재작업 이니셜/품목코드 샘플이 없습니다.")
 
@@ -4527,7 +4527,7 @@ def render_inventory_risk_dashboard(risk_df: pd.DataFrame, updated_at: str) -> N
             )
             st.dataframe(
                 style_operational_table(summary_display, summary),
-                use_container_width=True,
+                width="stretch",
                 height=320,
                 column_config=summary_column_config,
                 hide_index=True,
@@ -4572,7 +4572,7 @@ def render_inventory_risk_dashboard(risk_df: pd.DataFrame, updated_at: str) -> N
     )
     st.dataframe(
         style_operational_table(detail_display, detail_display_source),
-        use_container_width=True,
+        width="stretch",
         height=720,
         column_config=detail_column_config,
         hide_index=True,
@@ -4653,7 +4653,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
                 )
                 st.dataframe(
                     full_demand_summary_display,
-                    use_container_width=True,
+                    width="stretch",
                     height=320,
                     column_config=full_demand_summary_column_config,
                     hide_index=True,
@@ -4698,7 +4698,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
                 )
                 st.dataframe(
                     initial_inj_summary_display,
-                    use_container_width=True,
+                    width="stretch",
                     height=320,
                     column_config=initial_inj_summary_column_config,
                     hide_index=True,
@@ -4974,7 +4974,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
 
         st.dataframe(
             style_operational_table(p_table_display, p_table_display_source),
-            use_container_width=True,
+            width="stretch",
             height=700,
             column_order=p_display_columns,
             column_config=p_detail_column_config,
@@ -5012,7 +5012,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
 
         st.dataframe(
             style_operational_table(r_summary_display, r_summary_display_source),
-            use_container_width=True,
+            width="stretch",
             height=700,
             column_config=r_summary_column_config,
             hide_index=True,
@@ -5150,7 +5150,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
             )
             st.dataframe(
                 style_operational_table(rq_table_display, rq_table_display_source),
-                use_container_width=True,
+                width="stretch",
                 height=700,
                 column_order=rq_display_columns,
                 column_config=rq_detail_column_config,
@@ -5731,7 +5731,7 @@ def render_leadji_dashboard(
             ordered_styled = style_leadji_shortage_table(ordered_display, ordered_display_source)
             st.dataframe(
                 ordered_styled,
-                use_container_width=True,
+                width="stretch",
                 height=min(520, 78 + len(ordered_display_source) * 38),
                 column_config=ordered_column_config,
                 hide_index=True,
@@ -5767,7 +5767,7 @@ def render_leadji_dashboard(
             file_name=f"leadji_status_{download_stamp}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key="download_leadji_summary",
-            use_container_width=False,
+            width="content",
         )
 
         table_display_source, _ = limit_dataframe_for_display(table_df)
@@ -5780,7 +5780,7 @@ def render_leadji_dashboard(
         leadji_styled = style_leadji_shortage_table(leadji_display, table_display_source)
         st.dataframe(
             leadji_styled,
-            use_container_width=True,
+            width="stretch",
             height=620,
             column_config=leadji_column_config,
             hide_index=True,
@@ -5802,7 +5802,7 @@ def render_leadji_dashboard(
             )
             st.dataframe(
                 stock_display,
-                use_container_width=True,
+                width="stretch",
                 height=420,
                 column_config=stock_column_config,
                 hide_index=True,
@@ -5863,7 +5863,7 @@ def render_leadji_pcode5_dashboard(
         file_name=f"leadji_status_by_production_code_{download_stamp}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key="download_leadji_pcode5_summary",
-        use_container_width=False,
+        width="content",
     )
 
     leadji_p_display_source, _ = limit_dataframe_for_display(filtered_summary)
@@ -5874,7 +5874,7 @@ def render_leadji_pcode5_dashboard(
     )
     st.dataframe(
         leadji_p_display,
-        use_container_width=True,
+        width="stretch",
         height=700,
         column_config=leadji_p_column_config,
         hide_index=True,
