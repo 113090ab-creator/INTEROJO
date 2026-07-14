@@ -39,7 +39,7 @@ WAREHOUSE_MAP = {
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 12000
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260714-all-items-v1"
+APP_CACHE_VERSION = "20260714-all-items-v2"
 ALL_ITEM_MASTER_SHEET = "생성가능_P코드"
 ALL_ITEM_SNAPSHOT_FILE = "all_item_status_snapshot.csv.gz"
 CODE_MISMATCH_SNAPSHOT_FILE = "code_mismatch_snapshot.csv.gz"
@@ -53,7 +53,6 @@ ALL_ITEM_DOWNLOAD_COLUMNS = [
     "분리코드",
     "생산코드",
     "실수요수량",
-    "안전재고수량",
     "총수요수량",
     "사출창고",
     "분리창고",
@@ -67,7 +66,6 @@ ALL_ITEM_DOWNLOAD_COLUMNS = [
 ]
 ALL_ITEM_NUMERIC_COLUMNS = [
     "실수요수량",
-    "안전재고수량",
     "총수요수량",
     "사출창고",
     "분리창고",
@@ -4284,8 +4282,7 @@ def build_all_item_status_snapshot(refresh_key: str, base_dir_str: str | None = 
     all_items["이니셜"] = apply_nonempty_override(all_items["이니셜"], all_items.get("이니셜_수요", pd.Series("", index=all_items.index)))
     all_items["제품명"] = apply_nonempty_override(all_items["제품명"], all_items.get("제품명_수요", pd.Series("", index=all_items.index)))
     all_items["실수요수량"] = parse_mixed_numeric(all_items.get("실수요수량", pd.Series(0, index=all_items.index))).fillna(0)
-    all_items["안전재고수량"] = 0.0
-    all_items["총수요수량"] = all_items["실수요수량"] + all_items["안전재고수량"]
+    all_items["총수요수량"] = all_items["실수요수량"]
 
     all_items["사출창고"] = all_items["사출코드"].map(lambda x: lookup_stock_qty(stock_lookup.get("사출창고", {}), x))
     all_items["분리창고"] = all_items.apply(
@@ -4997,7 +4994,6 @@ def build_new_class_summary(df: pd.DataFrame) -> pd.DataFrame:
         "신규분류",
         "품목 수",
         "실수요수량 합계",
-        "안전재고수량 합계",
         "총수요수량 합계",
         "사출창고 합계",
         "분리창고 합계",
@@ -5016,7 +5012,6 @@ def build_new_class_summary(df: pd.DataFrame) -> pd.DataFrame:
             {
                 "생산코드": "count",
                 "실수요수량": "sum",
-                "안전재고수량": "sum",
                 "총수요수량": "sum",
                 "사출창고": "sum",
                 "분리창고": "sum",
@@ -5031,7 +5026,6 @@ def build_new_class_summary(df: pd.DataFrame) -> pd.DataFrame:
             columns={
                 "생산코드": "품목 수",
                 "실수요수량": "실수요수량 합계",
-                "안전재고수량": "안전재고수량 합계",
                 "총수요수량": "총수요수량 합계",
                 "사출창고": "사출창고 합계",
                 "분리창고": "분리창고 합계",
