@@ -5893,7 +5893,7 @@ def main() -> None:
         """,
         unsafe_allow_html=True,
     )
-    top_views = ["생산 부족 현황", "공정재고 리스크", "리드지 현황", "생산코드별 리드지"]
+    top_views = ["생산 부족 현황", "리드지 현황", "생산코드별 리드지"]
     with st.sidebar:
         st.markdown(
             """
@@ -5931,19 +5931,12 @@ def main() -> None:
     try:
         df = pd.DataFrame()
         file_info_df = pd.DataFrame()
-        inventory_risk_df = pd.DataFrame()
         if selected_top_view == top_views[0]:
             if use_cloud_snapshots:
                 df, file_info_df, _ = load_cloud_shortage_snapshot()
             else:
                 refresh_key = build_data_refresh_key(data_base_dir)
                 df, file_info_df, _ = load_data(refresh_key, str(data_base_dir))
-        elif selected_top_view == "공정재고 리스크":
-            if use_cloud_snapshots:
-                inventory_risk_df = load_cloud_inventory_risk_snapshot()
-            else:
-                refresh_key = build_data_refresh_key(data_base_dir)
-                inventory_risk_df = build_inventory_risk_snapshot(refresh_key, str(data_base_dir))
 
         leadji_info = pd.DataFrame()
         leadji_stock = pd.DataFrame()
@@ -5964,8 +5957,6 @@ def main() -> None:
 
     if selected_top_view == "생산 부족 현황":
         render_shortage_dashboard(df, updated_at, file_info_df)
-    elif selected_top_view == "공정재고 리스크":
-        render_inventory_risk_dashboard(inventory_risk_df, updated_at)
     elif selected_top_view == "리드지 현황":
         render_leadji_dashboard(updated_at, df, leadji_info, leadji_stock, leadji_order_df)
     else:
