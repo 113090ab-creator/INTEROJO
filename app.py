@@ -39,7 +39,7 @@ WAREHOUSE_MAP = {
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 12000
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260714-all-items-v2"
+APP_CACHE_VERSION = "20260714-all-items-v3"
 ALL_ITEM_MASTER_SHEET = "생성가능_P코드"
 ALL_ITEM_SNAPSHOT_FILE = "all_item_status_snapshot.csv.gz"
 CODE_MISMATCH_SNAPSHOT_FILE = "code_mismatch_snapshot.csv.gz"
@@ -59,8 +59,10 @@ ALL_ITEM_DOWNLOAD_COLUMNS = [
     "검사접착창고",
     "누수규격검사",
     "공정재고합계",
+    "초과재고수량",
     "부족수량",
     "샘플 신청가능수량",
+    "판단",
     "상태",
     "코드매칭상태",
 ]
@@ -72,14 +74,17 @@ ALL_ITEM_NUMERIC_COLUMNS = [
     "검사접착창고",
     "누수규격검사",
     "공정재고합계",
+    "초과재고수량",
     "부족수량",
     "샘플 신청가능수량",
 ]
 ALL_ITEM_STATUS_OPTIONS = [
     "전체",
+    "주의 필요",
     "수요 있음",
     "수요 없음",
     "수요 없음 + 공정재고 있음",
+    "수요 대비 재고 초과",
     "수요 없음 + 샘플 신청가능수량 있음",
     "재고 있음",
     "코드미매칭",
@@ -4297,6 +4302,7 @@ def build_all_item_status_snapshot(refresh_key: str, base_dir_str: str | None = 
     all_items["공정재고합계"] = (
         all_items["사출창고"] + all_items["분리창고"] + all_items["검사접착창고"] + all_items["누수규격검사"]
     )
+    all_items["초과재고수량"] = (all_items["공정재고합계"] - all_items["총수요수량"]).clip(lower=0)
     all_items["부족수량"] = (all_items["총수요수량"] - all_items["공정재고합계"]).clip(lower=0)
 
     for col in ALL_ITEM_NUMERIC_COLUMNS:
@@ -4308,17 +4314,36 @@ def build_all_item_status_snapshot(refresh_key: str, base_dir_str: str | None = 
     all_items.loc[all_items["공정재고합계"] > 0, "상태"] = "수요 없음 + 공정재고 있음"
     all_items.loc[all_items["총수요수량"] > 0, "상태"] = "수요 있음"
     all_items.loc[all_items["코드매칭상태"] == "코드미매칭", "상태"] = "코드미매칭"
+    all_items["판단"] = "재고 없음"
+    all_items.loc[all_items["샘플 신청가능수량"] > 0, "판단"] = "샘플 가능 수량 있음"
+    all_items.loc[all_items["총수요수량"] > 0, "판단"] = "수요 있음"
+    all_items.loc[
+        (all_items["총수요수량"] > 0) & (all_items["초과재고수량"] > 0),
+        "판단",
+    ] = "수요 대비 재고 초과"
+    all_items.loc[
+        (all_items["총수요수량"] <= 0) & (all_items["공정재고합계"] > 0),
+        "판단",
+    ] = "수요 없음 + 공정재고 있음"
+    all_items.loc[all_items["코드매칭상태"] == "코드미매칭", "판단"] = "코드 확인 필요"
+    all_items["주의정렬순위"] = 5
+    all_items.loc[all_items["판단"] == "샘플 가능 수량 있음", "주의정렬순위"] = 4
+    all_items.loc[all_items["판단"] == "수요 있음", "주의정렬순위"] = 3
+    all_items.loc[all_items["판단"] == "수요 대비 재고 초과", "주의정렬순위"] = 2
+    all_items.loc[all_items["판단"] == "수요 없음 + 공정재고 있음", "주의정렬순위"] = 1
+    all_items.loc[all_items["판단"] == "코드 확인 필요", "주의정렬순위"] = 0
 
-    for col in ["거래처", "이니셜", "신규분류", "제품명", "파워", "사출코드", "분리코드", "생산코드"]:
+    for col in ["거래처", "이니셜", "신규분류", "제품명", "파워", "사출코드", "분리코드", "생산코드", "판단"]:
         all_items[col] = all_items[col].astype(str).replace({"nan": "", "None": ""}).fillna("")
     all_items.loc[all_items["신규분류"].str.strip().str.lower().isin({"", "nan", "none"}), "신규분류"] = "기타"
     all_items.loc[all_items["제품명"].str.strip().str.lower().isin({"", "nan", "none"}), "제품명"] = "-"
 
     code_mismatch_df = build_code_mismatch_df(all_items, target_inv, code_to_p)
-    result = all_items[ALL_ITEM_DOWNLOAD_COLUMNS].sort_values(
-        ["총수요수량", "공정재고합계", "신규분류", "생산코드"],
-        ascending=[False, False, True, True],
+    result = all_items[[*ALL_ITEM_DOWNLOAD_COLUMNS, "주의정렬순위"]].sort_values(
+        ["주의정렬순위", "초과재고수량", "공정재고합계", "총수요수량", "신규분류", "생산코드"],
+        ascending=[True, False, False, False, True, True],
     )
+    result = result.drop(columns=["주의정렬순위"], errors="ignore")
     return result.reset_index(drop=True), code_mismatch_df.reset_index(drop=True)
 
 
@@ -4974,12 +4999,18 @@ def render_rework_match_debug(file_info_df: pd.DataFrame | None) -> None:
 
 
 def filter_all_item_status(df: pd.DataFrame, selected_status: str) -> pd.DataFrame:
+    if selected_status == "주의 필요":
+        return df[
+            df["판단"].isin(["수요 없음 + 공정재고 있음", "수요 대비 재고 초과", "코드 확인 필요"])
+        ]
     if selected_status == "수요 있음":
         return df[df["총수요수량"] > 0]
     if selected_status == "수요 없음":
         return df[df["총수요수량"] <= 0]
     if selected_status == "수요 없음 + 공정재고 있음":
         return df[(df["총수요수량"] <= 0) & (df["공정재고합계"] > 0)]
+    if selected_status == "수요 대비 재고 초과":
+        return df[(df["총수요수량"] > 0) & (df["초과재고수량"] > 0)]
     if selected_status == "수요 없음 + 샘플 신청가능수량 있음":
         return df[(df["총수요수량"] <= 0) & (df["샘플 신청가능수량"] > 0)]
     if selected_status == "재고 있음":
@@ -5000,6 +5031,7 @@ def build_new_class_summary(df: pd.DataFrame) -> pd.DataFrame:
         "검사접착창고 합계",
         "누수규격검사 합계",
         "공정재고합계",
+        "초과재고수량 합계",
         "부족수량 합계",
         "샘플 신청가능수량 합계",
     ]
@@ -5018,6 +5050,7 @@ def build_new_class_summary(df: pd.DataFrame) -> pd.DataFrame:
                 "검사접착창고": "sum",
                 "누수규격검사": "sum",
                 "공정재고합계": "sum",
+                "초과재고수량": "sum",
                 "부족수량": "sum",
                 "샘플 신청가능수량": "sum",
             }
@@ -5031,6 +5064,7 @@ def build_new_class_summary(df: pd.DataFrame) -> pd.DataFrame:
                 "분리창고": "분리창고 합계",
                 "검사접착창고": "검사접착창고 합계",
                 "누수규격검사": "누수규격검사 합계",
+                "초과재고수량": "초과재고수량 합계",
                 "부족수량": "부족수량 합계",
                 "샘플 신청가능수량": "샘플 신청가능수량 합계",
             }
@@ -5038,6 +5072,75 @@ def build_new_class_summary(df: pd.DataFrame) -> pd.DataFrame:
         .sort_values(["총수요수량 합계", "공정재고합계", "품목 수"], ascending=[False, False, False])
     )
     return summary[summary_columns]
+
+
+def render_all_item_alert_panel(working: pd.DataFrame) -> None:
+    no_demand_stock = working[(working["총수요수량"] <= 0) & (working["공정재고합계"] > 0)].copy()
+    excess_stock = working[(working["총수요수량"] > 0) & (working["초과재고수량"] > 0)].copy()
+    code_mismatch = working[working["코드매칭상태"] == "코드미매칭"].copy()
+
+    st.markdown("#### 주의 필요")
+    st.caption("현재 수요가 연결되지 않았거나 수요보다 재고가 많은 공정재고입니다. 생산/이동 전 확인이 필요합니다.")
+    a1, a2, a3, a4 = st.columns(4, gap="medium")
+    with a1:
+        render_dashboard_kpi("수요 없는 공정재고 품목", f"{len(no_demand_stock):,}", "risk")
+    with a2:
+        render_dashboard_kpi("수요 없는 공정재고 수량", f"{no_demand_stock['공정재고합계'].sum():,.0f}", "risk")
+    with a3:
+        render_dashboard_kpi("수요 대비 초과재고", f"{excess_stock['초과재고수량'].sum():,.0f}", "risk")
+    with a4:
+        render_dashboard_kpi("코드 확인 필요", f"{len(code_mismatch):,}", "risk")
+
+    status_key = "all_item_status_filter_v2"
+    b1, b2, b3, b4 = st.columns([1.35, 1.25, 1.0, 1.0])
+    with b1:
+        if st.button("수요 없는 공정재고만 보기", key="all_item_quick_no_demand_stock_v1", width="stretch"):
+            st.session_state[status_key] = "수요 없음 + 공정재고 있음"
+    with b2:
+        if st.button("수요 대비 초과재고만 보기", key="all_item_quick_excess_stock_v1", width="stretch"):
+            st.session_state[status_key] = "수요 대비 재고 초과"
+    with b3:
+        if st.button("주의 필요만 보기", key="all_item_quick_attention_v1", width="stretch"):
+            st.session_state[status_key] = "주의 필요"
+    with b4:
+        if st.button("전체 보기", key="all_item_quick_all_v1", width="stretch"):
+            st.session_state[status_key] = "전체"
+
+    top_columns = [
+        "판단",
+        "신규분류",
+        "제품명",
+        "파워",
+        "생산코드",
+        "사출코드",
+        "분리코드",
+        "공정재고합계",
+        "사출창고",
+        "분리창고",
+        "검사접착창고",
+        "누수규격검사",
+        "샘플 신청가능수량",
+    ]
+    top_columns = [col for col in top_columns if col in no_demand_stock.columns]
+    top_no_demand_stock = no_demand_stock.sort_values(
+        ["공정재고합계", "샘플 신청가능수량", "신규분류", "생산코드"],
+        ascending=[False, False, True, True],
+    ).head(50)
+    with st.expander("수요 없는 공정재고 TOP 50", expanded=True):
+        if top_no_demand_stock.empty:
+            st.success("수요 없는 공정재고가 없습니다.")
+        else:
+            top_view = top_no_demand_stock[top_columns].copy()
+            top_display = format_numeric_columns_for_display(top_view)
+            top_config = build_auto_column_config(top_display, top_display.columns.tolist(), source_df=top_view)
+            st.dataframe(
+                style_operational_table(top_display, top_view),
+                width="stretch",
+                height=300,
+                column_config=top_config,
+                hide_index=True,
+                key="all_item_no_demand_stock_top50_v1",
+            )
 
 
 def render_all_items_dashboard(all_items_df: pd.DataFrame, updated_at: str) -> None:
@@ -5051,18 +5154,34 @@ def render_all_items_dashboard(all_items_df: pd.DataFrame, updated_at: str) -> N
 
     download_stamp = datetime.now(DISPLAY_TZ).strftime("%Y%m%d_%H%M%S")
     working = all_items_df.copy()
+    for col in ALL_ITEM_DOWNLOAD_COLUMNS:
+        if col not in working.columns:
+            working[col] = 0 if col in ALL_ITEM_NUMERIC_COLUMNS else ""
     if "파워" in working.columns:
         working["파워"] = working["파워"].map(format_power_value)
     for col in ALL_ITEM_NUMERIC_COLUMNS:
         working[col] = parse_mixed_numeric(working[col]).fillna(0)
+    if working["초과재고수량"].sum() == 0:
+        working["초과재고수량"] = (working["공정재고합계"] - working["총수요수량"]).clip(lower=0)
+    if working["판단"].astype(str).str.strip().eq("").all():
+        working["판단"] = "재고 없음"
+        working.loc[working["샘플 신청가능수량"] > 0, "판단"] = "샘플 가능 수량 있음"
+        working.loc[working["총수요수량"] > 0, "판단"] = "수요 있음"
+        working.loc[(working["총수요수량"] > 0) & (working["초과재고수량"] > 0), "판단"] = "수요 대비 재고 초과"
+        working.loc[(working["총수요수량"] <= 0) & (working["공정재고합계"] > 0), "판단"] = "수요 없음 + 공정재고 있음"
+        working.loc[working["코드매칭상태"] == "코드미매칭", "판단"] = "코드 확인 필요"
+    render_all_item_alert_panel(working)
 
     filter_col1, filter_col2, search_col = st.columns([1.6, 1.8, 2.4])
     with filter_col1:
+        status_key = "all_item_status_filter_v2"
+        if status_key not in st.session_state:
+            st.session_state[status_key] = "전체"
         selected_status = st.segmented_control(
             "상태",
             options=ALL_ITEM_STATUS_OPTIONS,
-            default="전체",
-            key="all_item_status_filter_v1",
+            default=st.session_state.get(status_key, "전체"),
+            key=status_key,
             width="stretch",
         )
     with filter_col2:
