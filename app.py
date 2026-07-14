@@ -6793,7 +6793,7 @@ def main() -> None:
         """,
         unsafe_allow_html=True,
     )
-    top_views = ["전체 품목 현황", "생산 부족 현황", "리드지 현황", "생산코드별 리드지", "코드미매칭 확인"]
+    top_views = ["생산 부족 현황", "리드지 현황", "생산코드별 리드지", "코드미매칭 확인", "전체 품목 현황"]
     with st.sidebar:
         st.markdown(
             """
