@@ -39,7 +39,53 @@ WAREHOUSE_MAP = {
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 12000
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260629-inventory-risk-rq-v1"
+APP_CACHE_VERSION = "20260714-all-items-v1"
+ALL_ITEM_MASTER_SHEET = "생성가능_P코드"
+ALL_ITEM_SNAPSHOT_FILE = "all_item_status_snapshot.csv.gz"
+CODE_MISMATCH_SNAPSHOT_FILE = "code_mismatch_snapshot.csv.gz"
+ALL_ITEM_DOWNLOAD_COLUMNS = [
+    "거래처",
+    "이니셜",
+    "신규분류",
+    "제품명",
+    "파워",
+    "사출코드",
+    "분리코드",
+    "생산코드",
+    "실수요수량",
+    "안전재고수량",
+    "총수요수량",
+    "사출창고",
+    "분리창고",
+    "검사접착창고",
+    "누수규격검사",
+    "공정재고합계",
+    "부족수량",
+    "샘플 신청가능수량",
+    "상태",
+    "코드매칭상태",
+]
+ALL_ITEM_NUMERIC_COLUMNS = [
+    "실수요수량",
+    "안전재고수량",
+    "총수요수량",
+    "사출창고",
+    "분리창고",
+    "검사접착창고",
+    "누수규격검사",
+    "공정재고합계",
+    "부족수량",
+    "샘플 신청가능수량",
+]
+ALL_ITEM_STATUS_OPTIONS = [
+    "전체",
+    "수요 있음",
+    "수요 없음",
+    "수요 없음 + 공정재고 있음",
+    "수요 없음 + 샘플 신청가능수량 있음",
+    "재고 있음",
+    "코드미매칭",
+]
 POWER_VALUE_PATTERN = re.compile(r"([+-]\d{1,2}(?:\.\d{1,2})?)")
 UNCLASSIFIED_SHEET_CATEGORY = "미분류"
 INVALID_CATEGORY_VALUES = {"", "-", "nan", "none", "nat", "null", "na", "<na>"}
@@ -456,6 +502,35 @@ def find_demand_update_file(base_dir: Path) -> Path | None:
     return None
 
 
+def workbook_has_sheet(path: Path, sheet_name: str) -> bool:
+    try:
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    except Exception:
+        return False
+    try:
+        return sheet_name in wb.sheetnames
+    finally:
+        wb.close()
+
+
+def find_all_item_master_file(base_dir: Path) -> Path | None:
+    search_dirs = [base_dir]
+    if base_dir.resolve() != BASE_DIR.resolve():
+        search_dirs.append(BASE_DIR)
+
+    candidates: list[Path] = []
+    for search_dir in search_dirs:
+        for path in search_dir.glob("*.xlsx"):
+            if path.name.startswith("~$") or path in candidates:
+                continue
+            if workbook_has_sheet(path, ALL_ITEM_MASTER_SHEET):
+                candidates.append(path)
+
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
 def find_leadji_order_status_file(base_dir: Path) -> Path | None:
     xlsx_files = [p for p in base_dir.glob("*.xlsx") if not p.name.startswith("~$")]
     if not xlsx_files:
@@ -509,6 +584,25 @@ def get_data_updated_at_cached(refresh_key: str, base_dir_str: str) -> str:
         latest_dt = datetime.fromtimestamp(dem_path.stat().st_mtime, tz=DISPLAY_TZ)
 
     return latest_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def get_all_item_updated_at(base_dir: Path) -> str:
+    paths = [p for p in [find_demand_update_file(base_dir), find_all_item_master_file(base_dir)] if p is not None]
+    if not paths:
+        return "-"
+    newest = max(paths, key=lambda p: p.stat().st_mtime)
+    stat = newest.stat()
+    refresh_key = f"{newest.name}:{stat.st_size}:{stat.st_mtime_ns}"
+    return get_all_item_updated_at_cached(refresh_key, str(newest))
+
+
+@st.cache_data(show_spinner=False)
+def get_all_item_updated_at_cached(refresh_key: str, newest_path_str: str) -> str:
+    _ = refresh_key
+    newest = Path(newest_path_str)
+    if not newest.exists():
+        return "-"
+    return datetime.fromtimestamp(newest.stat().st_mtime, tz=DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def get_leadji_order_updated_at(base_dir: Path) -> str:
@@ -707,6 +801,13 @@ def load_cloud_shortage_snapshot() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataF
 
 def load_cloud_inventory_risk_snapshot() -> pd.DataFrame:
     return load_cloud_snapshot_csv("inventory_risk_snapshot.csv.gz")
+
+
+def load_cloud_all_item_status_snapshot() -> tuple[pd.DataFrame, pd.DataFrame]:
+    return (
+        load_cloud_snapshot_csv(ALL_ITEM_SNAPSHOT_FILE),
+        load_cloud_snapshot_csv(CODE_MISMATCH_SNAPSHOT_FILE),
+    )
 
 
 def load_cloud_leadji_status_snapshot() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -1834,6 +1935,24 @@ def build_leadji_order_refresh_key(base_dir: Path) -> str:
         return "-"
     stat = order_path.stat()
     return f"{order_path.name}:{stat.st_size}:{stat.st_mtime_ns}"
+
+
+def build_all_item_refresh_key(base_dir: Path) -> str:
+    parts = [f"all-items:{APP_CACHE_VERSION}"]
+    try:
+        parts.append(build_data_refresh_key(base_dir))
+    except Exception as exc:
+        parts.append(f"data-error:{exc}")
+    parts.append(f"reference:{build_reference_refresh_key(base_dir)}")
+
+    master_path = find_all_item_master_file(base_dir)
+    if master_path is None:
+        parts.append("all-item-master:missing")
+    else:
+        stat = master_path.stat()
+        parts.append(f"{master_path.name}:{stat.st_size}:{stat.st_mtime_ns}")
+
+    return "|".join(parts)
 
 
 def parse_sequence_priority(value: object) -> float:
@@ -3781,6 +3900,431 @@ def load_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[pd.Dat
     return preprocess_data(refresh_key, base_dir_str)
 
 
+def normalize_item_code_value(value: object) -> str:
+    code = re.sub(r"\s+", "", str(value).strip().upper())
+    if not code or code.lower() in INVALID_CATEGORY_VALUES:
+        return ""
+    return code
+
+
+def normalize_to_master_p_code(value: object) -> str:
+    code = normalize_item_code_value(value)
+    if not code:
+        return ""
+    if code.startswith("P"):
+        return code
+    if code[0] in {"Q", "R"} and len(code) > 1:
+        return f"P{code[1:]}"
+    return code
+
+
+@st.cache_data(show_spinner=False, max_entries=CACHE_MAX_ENTRIES)
+def read_all_item_master(master_path_str: str, refresh_key: str) -> pd.DataFrame:
+    _ = refresh_key
+    master_path = Path(master_path_str)
+    if not master_path.exists():
+        return pd.DataFrame()
+
+    wanted_columns = {
+        "품목코드",
+        "코드구분",
+        "제품명코드",
+        "제품명",
+        "제품군",
+        "샘플가능수량",
+        "신규분류",
+    }
+    try:
+        master = pd.read_excel(
+            master_path,
+            sheet_name=ALL_ITEM_MASTER_SHEET,
+            usecols=lambda c: str(c).strip() in wanted_columns,
+        )
+    except Exception:
+        return pd.DataFrame()
+
+    master.columns = [str(c).strip() for c in master.columns]
+    for col in wanted_columns:
+        if col not in master.columns:
+            master[col] = ""
+    master["품목코드"] = master["품목코드"].map(normalize_item_code_value)
+    master = master[master["품목코드"].str.startswith("P", na=False)].copy()
+    master = master.drop_duplicates(subset=["품목코드"], keep="first")
+    return master
+
+
+@st.cache_data(show_spinner=False, max_entries=CACHE_MAX_ENTRIES)
+def load_product_info_lookup(base_dir_str: str, reference_refresh_key: str) -> pd.DataFrame:
+    _ = reference_refresh_key
+    ref_path = find_product_name_reference_file(Path(base_dir_str))
+    if ref_path is None:
+        return pd.DataFrame(columns=["제품명코드", "제품명_기준", "신규분류_기준", "거래처_기준"])
+
+    wanted_columns = {"제품명코드", "제품명", "분류요약", "거래처명"}
+    try:
+        info = pd.read_excel(
+            ref_path,
+            sheet_name="제품명정보",
+            usecols=lambda c: str(c).strip() in wanted_columns,
+        )
+    except Exception:
+        return pd.DataFrame(columns=["제품명코드", "제품명_기준", "신규분류_기준", "거래처_기준"])
+
+    info.columns = [str(c).strip() for c in info.columns]
+    for col in wanted_columns:
+        if col not in info.columns:
+            info[col] = ""
+    info["제품명코드"] = info["제품명코드"].map(normalize_item_code_value).str[:5]
+    info = info[info["제품명코드"].str.startswith("P", na=False)].copy()
+    info = info.drop_duplicates(subset=["제품명코드"], keep="first")
+    return info.rename(
+        columns={
+            "제품명": "제품명_기준",
+            "분류요약": "신규분류_기준",
+            "거래처명": "거래처_기준",
+        }
+    )[["제품명코드", "제품명_기준", "신규분류_기준", "거래처_기준"]]
+
+
+def build_target_stock_lookup(inv_df: pd.DataFrame) -> tuple[dict[str, dict[str, float]], pd.DataFrame]:
+    if inv_df.empty:
+        return {display_name: {} for display_name in WAREHOUSE_MAP.values()}, pd.DataFrame()
+
+    target_inv = inv_df[inv_df["창고"].isin(TARGET_WAREHOUSES)].copy()
+    target_inv["품목코드"] = target_inv["품목코드"].map(normalize_item_code_value)
+    target_inv = target_inv[target_inv["품목코드"] != ""]
+    target_inv["재고량"] = parse_mixed_numeric(target_inv["재고량"])
+
+    stock_lookup: dict[str, dict[str, float]] = {}
+    for raw_name, display_name in WAREHOUSE_MAP.items():
+        stock_lookup[display_name] = (
+            target_inv[target_inv["창고"] == raw_name]
+            .groupby("품목코드")["재고량"]
+            .sum()
+            .to_dict()
+        )
+    return stock_lookup, target_inv
+
+
+def build_process_code_scope(
+    all_items: pd.DataFrame,
+    data_base_dir: Path,
+    stock_lookup: dict[str, dict[str, float]],
+) -> pd.DataFrame:
+    reference_refresh_key = build_reference_refresh_key(data_base_dir)
+    (
+        _product_name_map,
+        _product_group_map,
+        _sheet2_group_map,
+        r_ref_map,
+        q_ref_map,
+        _r_name_map,
+        bom_r_base_map,
+        bom_q_base_map,
+        bom_r_exact_map,
+        bom_q_exact_map,
+        leadji_r_map,
+        leadji_q_map,
+        leadji_u_map,
+    ) = load_reference_maps_bundle(data_base_dir, reference_refresh_key)
+
+    scope = all_items[["생산코드"]].copy()
+    scope["코드5"] = scope["생산코드"].str[:5]
+    inferred_r = scope["생산코드"].map(lambda x: map_demand_code_to_process_code(x, "R"))
+    inferred_q = scope["생산코드"].map(lambda x: map_demand_code_to_process_code(x, "Q"))
+
+    mapped_r_base = scope["코드5"].map(leadji_r_map).fillna(scope["코드5"].map(r_ref_map))
+    mapped_q_base = scope["코드5"].map(leadji_q_map).fillna(scope["코드5"].map(q_ref_map))
+    scope["사출코드"] = [
+        merge_mapped_base_code(inferred, mapped, "R") for inferred, mapped in zip(inferred_r, mapped_r_base)
+    ]
+    scope["분리코드"] = [
+        merge_mapped_base_code(inferred, mapped, "Q") for inferred, mapped in zip(inferred_q, mapped_q_base)
+    ]
+
+    if bom_r_exact_map or bom_q_exact_map:
+        exact_r = scope["생산코드"].map(bom_r_exact_map)
+        exact_q = scope["생산코드"].map(bom_q_exact_map)
+        exact_r_mask = exact_r.notna() & (exact_r.astype(str).str.strip() != "")
+        exact_q_mask = exact_q.notna() & (exact_q.astype(str).str.strip() != "")
+        scope.loc[exact_r_mask, "사출코드"] = exact_r.loc[exact_r_mask]
+        scope.loc[exact_q_mask, "분리코드"] = exact_q.loc[exact_q_mask]
+
+    if bom_r_base_map or bom_q_base_map:
+        bom_r_base = scope["코드5"].map(bom_r_base_map)
+        bom_q_base = scope["코드5"].map(bom_q_base_map)
+        bom_r = [merge_mapped_base_code(inferred, mapped, "R") for inferred, mapped in zip(inferred_r, bom_r_base)]
+        bom_q = [merge_mapped_base_code(inferred, mapped, "Q") for inferred, mapped in zip(inferred_q, bom_q_base)]
+        r_norm = scope["사출코드"].astype(str).str.strip()
+        q_norm = scope["분리코드"].astype(str).str.strip()
+        invalid_r = (r_norm == "") | (r_norm.str.lower() == "nan") | (~r_norm.str.startswith("R"))
+        invalid_q = (q_norm == "") | (q_norm.str.lower() == "nan") | (~q_norm.str.startswith("Q"))
+        scope.loc[invalid_r, "사출코드"] = pd.Series(bom_r, index=scope.index).loc[invalid_r]
+        scope.loc[invalid_q, "분리코드"] = pd.Series(bom_q, index=scope.index).loc[invalid_q]
+
+    mapped_u_base = scope["코드5"].map(leadji_u_map)
+    scope["U코드"] = [
+        merge_mapped_base_code(map_demand_code_to_process_code(q_code, "U"), mapped, "U")
+        if str(mapped).strip() and str(mapped).strip().lower() != "nan"
+        else ""
+        for q_code, mapped in zip(scope["분리코드"], mapped_u_base)
+    ]
+
+    scope["사출코드"] = scope["사출코드"].map(
+        lambda x: resolve_process_code_for_stock(stock_lookup.get("사출창고", {}), x)
+    )
+    scope["분리코드"] = scope["분리코드"].map(
+        lambda x: resolve_process_code_for_stock(stock_lookup.get("분리창고", {}), x)
+    )
+    scope["U코드"] = scope["U코드"].map(lambda x: resolve_process_code_for_stock(stock_lookup.get("분리창고", {}), x))
+
+    scope["코드매칭상태"] = "매칭"
+    valid_mask = (
+        scope["생산코드"].astype(str).str.startswith("P")
+        & scope["사출코드"].astype(str).str.startswith("R")
+        & scope["분리코드"].astype(str).str.startswith("Q")
+    )
+    scope.loc[~valid_mask, "코드매칭상태"] = "코드미매칭"
+    return scope.drop(columns=["코드5"], errors="ignore")
+
+
+def build_code_to_production_map(code_scope: pd.DataFrame) -> dict[str, str]:
+    code_to_p: dict[str, str] = {}
+    for row in code_scope[["생산코드", "사출코드", "분리코드", "U코드"]].itertuples(index=False):
+        production_code = normalize_item_code_value(row[0])
+        if not production_code:
+            continue
+        for raw_code in row:
+            code = normalize_item_code_value(raw_code)
+            if not code:
+                continue
+            for candidate in iter_inventory_code_candidates(code):
+                candidate = normalize_item_code_value(candidate)
+                if candidate and candidate not in code_to_p:
+                    code_to_p[candidate] = production_code
+    return code_to_p
+
+
+def resolve_master_code_from_process_candidates(values: list[object], code_to_p: dict[str, str]) -> str:
+    for value in values:
+        code = normalize_item_code_value(value)
+        if not code:
+            continue
+        if code in code_to_p:
+            return code_to_p[code]
+        for candidate in iter_inventory_code_candidates(code):
+            candidate = normalize_item_code_value(candidate)
+            if candidate in code_to_p:
+                return code_to_p[candidate]
+    fallback = normalize_to_master_p_code(values[0] if values else "")
+    return fallback if fallback.startswith("P") else ""
+
+
+def build_all_item_demand_summary(shortage_df: pd.DataFrame, code_to_p: dict[str, str]) -> pd.DataFrame:
+    if shortage_df.empty or "품목코드" not in shortage_df.columns:
+        return pd.DataFrame(columns=["생산코드", "거래처_수요", "이니셜_수요", "제품명_수요", "실수요수량"])
+
+    demand = shortage_df.copy()
+    for col in ["품목코드", "R코드", "Q코드", "거래처", "이니셜", "제품명"]:
+        if col not in demand.columns:
+            demand[col] = ""
+    qty_col = DEMAND_QTY_COL if DEMAND_QTY_COL in demand.columns else "수요수량"
+    if qty_col not in demand.columns:
+        demand[qty_col] = 0
+    demand["실수요수량"] = parse_mixed_numeric(demand[qty_col])
+    demand["생산코드"] = demand.apply(
+        lambda row: resolve_master_code_from_process_candidates(
+            [row.get("품목코드", ""), row.get("R코드", ""), row.get("Q코드", "")],
+            code_to_p,
+        ),
+        axis=1,
+    )
+    demand = demand[demand["생산코드"].str.startswith("P", na=False)].copy()
+    if demand.empty:
+        return pd.DataFrame(columns=["생산코드", "거래처_수요", "이니셜_수요", "제품명_수요", "실수요수량"])
+
+    return (
+        demand.groupby("생산코드", as_index=False)
+        .agg(
+            {
+                "거래처": summarize_unique,
+                "이니셜": summarize_unique,
+                "제품명": summarize_unique,
+                "실수요수량": "sum",
+            }
+        )
+        .rename(columns={"거래처": "거래처_수요", "이니셜": "이니셜_수요", "제품명": "제품명_수요"})
+    )
+
+
+def apply_nonempty_override(base: pd.Series, override: pd.Series) -> pd.Series:
+    output = base.astype(str).replace({"nan": "", "None": "", "NaN": ""}).fillna("")
+    values = override.astype(str).replace({"nan": "", "None": "", "NaN": ""}).fillna("")
+    valid = ~values.str.strip().str.lower().isin({"", "-", "nan", "none", "nat", "<na>"})
+    output.loc[valid] = values.loc[valid]
+    return output
+
+
+def build_code_mismatch_df(
+    all_items: pd.DataFrame,
+    target_inv: pd.DataFrame,
+    code_to_p: dict[str, str],
+) -> pd.DataFrame:
+    records: list[dict[str, object]] = []
+
+    if not all_items.empty and "코드매칭상태" in all_items.columns:
+        mismatch_items = all_items[all_items["코드매칭상태"] == "코드미매칭"]
+        for _, row in mismatch_items.iterrows():
+            records.append(
+                {
+                    "유형": "전체품목 자동매칭 실패",
+                    "품목코드": row.get("생산코드", ""),
+                    "창고": "",
+                    "재고수량": 0,
+                    "생산코드": row.get("생산코드", ""),
+                    "사출코드": row.get("사출코드", ""),
+                    "분리코드": row.get("분리코드", ""),
+                    "제품명": row.get("제품명", ""),
+                    "사유": "P코드 기준 R/Q 공정코드를 생성하지 못했습니다.",
+                }
+            )
+
+    if not target_inv.empty:
+        inv_group = (
+            target_inv.groupby(["창고", "품목코드"], as_index=False)["재고량"]
+            .sum()
+            .sort_values(["창고", "재고량"], ascending=[True, False])
+        )
+        for _, row in inv_group.iterrows():
+            raw_warehouse = str(row.get("창고", ""))
+            item_code = normalize_item_code_value(row.get("품목코드", ""))
+            if not item_code:
+                continue
+            matched_p = resolve_master_code_from_process_candidates([item_code], code_to_p)
+            if matched_p:
+                continue
+            records.append(
+                {
+                    "유형": "재고원장 단독코드",
+                    "품목코드": item_code,
+                    "창고": WAREHOUSE_MAP.get(raw_warehouse, raw_warehouse),
+                    "재고수량": float(row.get("재고량", 0) or 0),
+                    "생산코드": "",
+                    "사출코드": item_code if item_code.startswith("R") else "",
+                    "분리코드": item_code if item_code.startswith("Q") else "",
+                    "제품명": "",
+                    "사유": "재고 원장에는 있으나 전체 품목리스트의 P/R/Q 생성 코드와 매칭되지 않습니다.",
+                }
+            )
+
+    columns = ["유형", "품목코드", "창고", "재고수량", "생산코드", "사출코드", "분리코드", "제품명", "사유"]
+    if not records:
+        return pd.DataFrame(columns=columns)
+    return pd.DataFrame.from_records(records, columns=columns)
+
+
+@st.cache_resource(show_spinner=False)
+def build_all_item_status_snapshot(refresh_key: str, base_dir_str: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    _ = refresh_key
+    data_base_dir = Path(base_dir_str) if base_dir_str else BASE_DIR
+    master_path = find_all_item_master_file(data_base_dir)
+    if master_path is None:
+        empty_items = pd.DataFrame(columns=ALL_ITEM_DOWNLOAD_COLUMNS)
+        empty_mismatch = pd.DataFrame(
+            columns=["유형", "품목코드", "창고", "재고수량", "생산코드", "사출코드", "분리코드", "제품명", "사유"]
+        )
+        return empty_items, empty_mismatch
+
+    master = read_all_item_master(str(master_path), refresh_key)
+    if master.empty:
+        return pd.DataFrame(columns=ALL_ITEM_DOWNLOAD_COLUMNS), pd.DataFrame()
+
+    inv_path, _ = find_excel_files(data_base_dir)
+    inv = read_inventory_excel_subset(inv_path)
+    inv_df = build_inventory_df(inv)
+    stock_lookup, target_inv = build_target_stock_lookup(inv_df)
+
+    all_items = pd.DataFrame(
+        {
+            "생산코드": master["품목코드"].map(normalize_item_code_value),
+            "제품명코드": master["제품명코드"].map(normalize_item_code_value).str[:5],
+            "제품명": master["제품명"].astype(str).str.strip(),
+            "제품군": master["제품군"].astype(str).str.strip(),
+            "신규분류": master["신규분류"].astype(str).str.strip(),
+            "샘플 신청가능수량": parse_mixed_numeric(master["샘플가능수량"]),
+        }
+    )
+
+    reference_refresh_key = build_reference_refresh_key(data_base_dir)
+    product_info = load_product_info_lookup(str(data_base_dir), reference_refresh_key)
+    if not product_info.empty:
+        all_items = all_items.merge(product_info, on="제품명코드", how="left")
+    else:
+        all_items["제품명_기준"] = ""
+        all_items["신규분류_기준"] = ""
+        all_items["거래처_기준"] = ""
+
+    all_items["제품명"] = apply_nonempty_override(all_items["제품명_기준"], all_items["제품명"])
+    all_items["신규분류"] = apply_nonempty_override(all_items["신규분류_기준"], all_items["신규분류"])
+    all_items["신규분류"] = apply_nonempty_override(all_items["제품군"], all_items["신규분류"])
+    all_items["거래처"] = all_items["거래처_기준"].astype(str).replace({"nan": "", "None": ""}).fillna("")
+    all_items["이니셜"] = ""
+    all_items["파워"] = all_items["생산코드"].map(extract_power_from_code)
+
+    code_scope = build_process_code_scope(all_items, data_base_dir, stock_lookup)
+    all_items = all_items.merge(code_scope, on="생산코드", how="left")
+    code_to_p = build_code_to_production_map(code_scope)
+
+    data_refresh_key = build_data_refresh_key(data_base_dir)
+    shortage_df, _, _ = load_data(data_refresh_key, str(data_base_dir))
+    demand_summary = build_all_item_demand_summary(shortage_df, code_to_p)
+    all_items = all_items.merge(demand_summary, on="생산코드", how="left")
+
+    all_items["거래처"] = apply_nonempty_override(all_items["거래처"], all_items.get("거래처_수요", pd.Series("", index=all_items.index)))
+    all_items["이니셜"] = apply_nonempty_override(all_items["이니셜"], all_items.get("이니셜_수요", pd.Series("", index=all_items.index)))
+    all_items["제품명"] = apply_nonempty_override(all_items["제품명"], all_items.get("제품명_수요", pd.Series("", index=all_items.index)))
+    all_items["실수요수량"] = parse_mixed_numeric(all_items.get("실수요수량", pd.Series(0, index=all_items.index))).fillna(0)
+    all_items["안전재고수량"] = 0.0
+    all_items["총수요수량"] = all_items["실수요수량"] + all_items["안전재고수량"]
+
+    all_items["사출창고"] = all_items["사출코드"].map(lambda x: lookup_stock_qty(stock_lookup.get("사출창고", {}), x))
+    all_items["분리창고"] = all_items.apply(
+        lambda row: lookup_stock_qty_from_candidates(
+            stock_lookup.get("분리창고", {}),
+            [row.get("분리코드", ""), row.get("U코드", "")],
+        ),
+        axis=1,
+    )
+    all_items["검사접착창고"] = all_items["생산코드"].map(lambda x: stock_lookup.get("검사접착창고", {}).get(x, 0))
+    all_items["누수규격검사"] = all_items["생산코드"].map(lambda x: stock_lookup.get("누수규격검사 창고", {}).get(x, 0))
+    all_items["공정재고합계"] = (
+        all_items["사출창고"] + all_items["분리창고"] + all_items["검사접착창고"] + all_items["누수규격검사"]
+    )
+    all_items["부족수량"] = (all_items["총수요수량"] - all_items["공정재고합계"]).clip(lower=0)
+
+    for col in ALL_ITEM_NUMERIC_COLUMNS:
+        all_items[col] = parse_mixed_numeric(all_items[col]).fillna(0)
+    all_items["코드매칭상태"] = all_items["코드매칭상태"].fillna("코드미매칭")
+
+    all_items["상태"] = "수요 없음"
+    all_items.loc[all_items["샘플 신청가능수량"] > 0, "상태"] = "수요 없음 + 샘플 신청가능수량 있음"
+    all_items.loc[all_items["공정재고합계"] > 0, "상태"] = "수요 없음 + 공정재고 있음"
+    all_items.loc[all_items["총수요수량"] > 0, "상태"] = "수요 있음"
+    all_items.loc[all_items["코드매칭상태"] == "코드미매칭", "상태"] = "코드미매칭"
+
+    for col in ["거래처", "이니셜", "신규분류", "제품명", "파워", "사출코드", "분리코드", "생산코드"]:
+        all_items[col] = all_items[col].astype(str).replace({"nan": "", "None": ""}).fillna("")
+    all_items.loc[all_items["신규분류"].str.strip().str.lower().isin({"", "nan", "none"}), "신규분류"] = "기타"
+    all_items.loc[all_items["제품명"].str.strip().str.lower().isin({"", "nan", "none"}), "제품명"] = "-"
+
+    code_mismatch_df = build_code_mismatch_df(all_items, target_inv, code_to_p)
+    result = all_items[ALL_ITEM_DOWNLOAD_COLUMNS].sort_values(
+        ["총수요수량", "공정재고합계", "신규분류", "생산코드"],
+        ascending=[False, False, True, True],
+    )
+    return result.reset_index(drop=True), code_mismatch_df.reset_index(drop=True)
+
+
 def normalize_inventory_family_code(item_code: object) -> str:
     code = re.sub(r"\s+", "", str(item_code).strip().upper())
     if not code or code.lower() in {"nan", "none", "-"}:
@@ -4430,6 +4974,249 @@ def render_rework_match_debug(file_info_df: pd.DataFrame | None) -> None:
             st.dataframe(pd.DataFrame({"매칭 이니셜/품목코드 샘플": sample_codes[:10]}), width="stretch", hide_index=True)
         else:
             st.caption("매칭된 재작업 이니셜/품목코드 샘플이 없습니다.")
+
+
+def filter_all_item_status(df: pd.DataFrame, selected_status: str) -> pd.DataFrame:
+    if selected_status == "수요 있음":
+        return df[df["총수요수량"] > 0]
+    if selected_status == "수요 없음":
+        return df[df["총수요수량"] <= 0]
+    if selected_status == "수요 없음 + 공정재고 있음":
+        return df[(df["총수요수량"] <= 0) & (df["공정재고합계"] > 0)]
+    if selected_status == "수요 없음 + 샘플 신청가능수량 있음":
+        return df[(df["총수요수량"] <= 0) & (df["샘플 신청가능수량"] > 0)]
+    if selected_status == "재고 있음":
+        return df[df["공정재고합계"] > 0]
+    if selected_status == "코드미매칭":
+        return df[df["코드매칭상태"] == "코드미매칭"]
+    return df
+
+
+def build_new_class_summary(df: pd.DataFrame) -> pd.DataFrame:
+    summary_columns = [
+        "신규분류",
+        "품목 수",
+        "실수요수량 합계",
+        "안전재고수량 합계",
+        "총수요수량 합계",
+        "사출창고 합계",
+        "분리창고 합계",
+        "검사접착창고 합계",
+        "누수규격검사 합계",
+        "공정재고합계",
+        "부족수량 합계",
+        "샘플 신청가능수량 합계",
+    ]
+    if df.empty:
+        return pd.DataFrame(columns=summary_columns)
+
+    summary = (
+        df.groupby("신규분류", as_index=False)
+        .agg(
+            {
+                "생산코드": "count",
+                "실수요수량": "sum",
+                "안전재고수량": "sum",
+                "총수요수량": "sum",
+                "사출창고": "sum",
+                "분리창고": "sum",
+                "검사접착창고": "sum",
+                "누수규격검사": "sum",
+                "공정재고합계": "sum",
+                "부족수량": "sum",
+                "샘플 신청가능수량": "sum",
+            }
+        )
+        .rename(
+            columns={
+                "생산코드": "품목 수",
+                "실수요수량": "실수요수량 합계",
+                "안전재고수량": "안전재고수량 합계",
+                "총수요수량": "총수요수량 합계",
+                "사출창고": "사출창고 합계",
+                "분리창고": "분리창고 합계",
+                "검사접착창고": "검사접착창고 합계",
+                "누수규격검사": "누수규격검사 합계",
+                "부족수량": "부족수량 합계",
+                "샘플 신청가능수량": "샘플 신청가능수량 합계",
+            }
+        )
+        .sort_values(["총수요수량 합계", "공정재고합계", "품목 수"], ascending=[False, False, False])
+    )
+    return summary[summary_columns]
+
+
+def render_all_items_dashboard(all_items_df: pd.DataFrame, updated_at: str) -> None:
+    st.subheader("전체 품목 현황")
+    st.caption(f"업데이트: {updated_at}")
+    st.caption("전체 품목리스트를 기준으로 수요 0 품목과 공정재고 보유 품목까지 표시합니다.")
+
+    if all_items_df.empty:
+        st.warning("전체 품목 현황을 계산할 데이터가 없습니다. 전체 품목리스트 파일을 확인해주세요.")
+        return
+
+    download_stamp = datetime.now(DISPLAY_TZ).strftime("%Y%m%d_%H%M%S")
+    working = all_items_df.copy()
+    if "파워" in working.columns:
+        working["파워"] = working["파워"].map(format_power_value)
+    for col in ALL_ITEM_NUMERIC_COLUMNS:
+        working[col] = parse_mixed_numeric(working[col]).fillna(0)
+
+    filter_col1, filter_col2, search_col = st.columns([1.6, 1.8, 2.4])
+    with filter_col1:
+        selected_status = st.segmented_control(
+            "상태",
+            options=ALL_ITEM_STATUS_OPTIONS,
+            default="전체",
+            key="all_item_status_filter_v1",
+            width="stretch",
+        )
+    with filter_col2:
+        class_options = sorted(
+            [v for v in working["신규분류"].astype(str).dropna().unique().tolist() if v.strip()]
+        )
+        selected_classes = st.multiselect(
+            "신규분류",
+            options=class_options,
+            default=[],
+            key="all_item_new_class_filter_v1",
+            placeholder="전체",
+        )
+    with search_col:
+        query = st.text_input(
+            "통합 검색",
+            value="",
+            key="all_item_query_v1",
+            placeholder="거래처, 이니셜, 제품명, P/R/Q 코드 검색",
+            help="콤마(,)로 여러 키워드를 입력하면 OR 조건으로 검색합니다.",
+        ).strip()
+
+    filtered = filter_all_item_status(working, selected_status)
+    if selected_classes:
+        filtered = filtered[filtered["신규분류"].isin(selected_classes)]
+    if query:
+        filtered = filter_display_table_with_query(filtered, query).copy()
+
+    k1, k2, k3, k4, k5 = st.columns(5, gap="medium")
+    with k1:
+        render_dashboard_kpi("품목 수", f"{len(filtered):,}", "stock")
+    with k2:
+        render_dashboard_kpi("총수요수량", f"{filtered['총수요수량'].sum():,.0f}", "stock")
+    with k3:
+        render_dashboard_kpi("공정재고합계", f"{filtered['공정재고합계'].sum():,.0f}", "stock")
+    with k4:
+        render_dashboard_kpi("부족수량", f"{filtered['부족수량'].sum():,.0f}", "risk")
+    with k5:
+        render_dashboard_kpi("샘플 신청가능", f"{filtered['샘플 신청가능수량'].sum():,.0f}", "stock")
+
+    summary = build_new_class_summary(filtered)
+    with st.expander("신규분류 요약", expanded=True):
+        summary_display = format_numeric_columns_for_display(summary)
+        summary_config = build_auto_column_config(
+            summary_display,
+            summary_display.columns.tolist(),
+            source_df=summary,
+        )
+        st.dataframe(
+            style_operational_table(summary_display, summary),
+            width="stretch",
+            height=320,
+            column_config=summary_config,
+            hide_index=True,
+            key="all_item_new_class_summary_v1",
+        )
+
+    detail = filtered[ALL_ITEM_DOWNLOAD_COLUMNS].copy()
+    st.caption(f"표시 {len(detail):,}건 / 전체 {len(all_items_df):,}건")
+    render_lazy_excel_download_button(
+        "엑셀 다운로드",
+        detail,
+        "전체품목현황",
+        f"all_item_status_{download_stamp}.xlsx",
+        "download_all_item_status_v1",
+    )
+
+    detail_display_source, _ = limit_dataframe_for_display(detail)
+    caption_limited_rows(len(detail), len(detail_display_source))
+    display_columns = detail_display_source.columns.tolist()
+    detail_display = format_numeric_columns_for_display(detail_display_source)
+    detail_config = build_auto_column_config(detail_display, display_columns, source_df=detail_display_source)
+    st.dataframe(
+        style_operational_table(detail_display, detail_display_source),
+        width="stretch",
+        height=720,
+        column_order=display_columns,
+        column_config=detail_config,
+        hide_index=True,
+        key="all_item_status_table_v1",
+    )
+
+
+def render_code_mismatch_dashboard(code_mismatch_df: pd.DataFrame, updated_at: str) -> None:
+    st.subheader("코드미매칭 확인")
+    st.caption(f"업데이트: {updated_at}")
+    st.caption("전체 품목리스트에서 자동 생성한 P/R/Q 코드와 재고 원장 코드가 매칭되지 않은 항목입니다.")
+
+    download_stamp = datetime.now(DISPLAY_TZ).strftime("%Y%m%d_%H%M%S")
+    working = code_mismatch_df.copy()
+    if working.empty:
+        st.success("코드미매칭으로 확인할 항목이 없습니다.")
+        render_lazy_excel_download_button(
+            "엑셀 다운로드",
+            working,
+            "코드미매칭",
+            f"code_mismatch_{download_stamp}.xlsx",
+            "download_code_mismatch_empty_v1",
+        )
+        return
+
+    filter_col, search_col = st.columns([1.4, 2.6])
+    with filter_col:
+        type_options = ["전체"] + sorted(working["유형"].astype(str).dropna().unique().tolist())
+        selected_type = st.selectbox("유형", options=type_options, index=0, key="code_mismatch_type_v1")
+    with search_col:
+        query = st.text_input(
+            "통합 검색",
+            value="",
+            key="code_mismatch_query_v1",
+            placeholder="품목코드, 창고, 사유 검색",
+            help="콤마(,)로 여러 키워드를 입력하면 OR 조건으로 검색합니다.",
+        ).strip()
+
+    filtered = working
+    if selected_type != "전체":
+        filtered = filtered[filtered["유형"] == selected_type]
+    if query:
+        filtered = filter_display_table_with_query(filtered, query).copy()
+
+    c1, c2 = st.columns(2, gap="medium")
+    with c1:
+        render_dashboard_kpi("미매칭 행수", f"{len(filtered):,}", "risk")
+    with c2:
+        stock_total = parse_mixed_numeric(filtered["재고수량"]).sum() if "재고수량" in filtered.columns else 0
+        render_dashboard_kpi("미매칭 재고수량", f"{stock_total:,.0f}", "risk")
+
+    st.caption(f"표시 {len(filtered):,}건 / 전체 {len(working):,}건")
+    render_lazy_excel_download_button(
+        "엑셀 다운로드",
+        filtered,
+        "코드미매칭",
+        f"code_mismatch_{download_stamp}.xlsx",
+        "download_code_mismatch_v1",
+    )
+
+    display_source, _ = limit_dataframe_for_display(filtered)
+    caption_limited_rows(len(filtered), len(display_source))
+    display_df = format_numeric_columns_for_display(display_source)
+    column_config = build_auto_column_config(display_df, display_df.columns.tolist(), source_df=display_source)
+    st.dataframe(
+        style_operational_table(display_df, display_source),
+        width="stretch",
+        height=720,
+        column_config=column_config,
+        hide_index=True,
+        key="code_mismatch_table_v1",
+    )
 
 
 def render_inventory_risk_dashboard(risk_df: pd.DataFrame, updated_at: str) -> None:
@@ -5893,7 +6680,7 @@ def main() -> None:
         """,
         unsafe_allow_html=True,
     )
-    top_views = ["생산 부족 현황", "리드지 현황", "생산코드별 리드지"]
+    top_views = ["전체 품목 현황", "생산 부족 현황", "리드지 현황", "생산코드별 리드지", "코드미매칭 확인"]
     with st.sidebar:
         st.markdown(
             """
@@ -5931,7 +6718,21 @@ def main() -> None:
     try:
         df = pd.DataFrame()
         file_info_df = pd.DataFrame()
-        if selected_top_view == top_views[0]:
+        all_items_df = pd.DataFrame()
+        code_mismatch_df = pd.DataFrame()
+        if selected_top_view in {"전체 품목 현황", "코드미매칭 확인"}:
+            if use_cloud_snapshots:
+                all_items_df, code_mismatch_df = load_cloud_all_item_status_snapshot()
+                updated_at = get_cloud_snapshot_meta_value("all_item_updated_at", updated_at)
+            else:
+                all_item_refresh_key = build_all_item_refresh_key(data_base_dir)
+                all_items_df, code_mismatch_df = build_all_item_status_snapshot(
+                    all_item_refresh_key,
+                    str(data_base_dir),
+                )
+                updated_at = get_all_item_updated_at(data_base_dir)
+
+        if selected_top_view == "생산 부족 현황":
             if use_cloud_snapshots:
                 df, file_info_df, _ = load_cloud_shortage_snapshot()
             else:
@@ -5955,12 +6756,16 @@ def main() -> None:
         st.error(f"데이터 로드 실패: {exc}")
         st.stop()
 
-    if selected_top_view == "생산 부족 현황":
+    if selected_top_view == "전체 품목 현황":
+        render_all_items_dashboard(all_items_df, updated_at)
+    elif selected_top_view == "생산 부족 현황":
         render_shortage_dashboard(df, updated_at, file_info_df)
     elif selected_top_view == "리드지 현황":
         render_leadji_dashboard(updated_at, df, leadji_info, leadji_stock, leadji_order_df)
-    else:
+    elif selected_top_view == "생산코드별 리드지":
         render_leadji_pcode5_dashboard(updated_at, df, leadji_info, leadji_stock)
+    else:
+        render_code_mismatch_dashboard(code_mismatch_df, updated_at)
 
 
 if __name__ == "__main__":

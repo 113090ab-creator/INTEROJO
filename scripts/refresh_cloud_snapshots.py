@@ -29,9 +29,11 @@ def main() -> None:
 
     data_refresh_key = app.build_data_refresh_key(REPO_ROOT)
     leadji_refresh_key = app.build_leadji_order_refresh_key(REPO_ROOT)
+    all_item_refresh_key = app.build_all_item_refresh_key(REPO_ROOT)
 
     shortage_df, file_info_df, process_map_df = app.load_data(data_refresh_key, str(REPO_ROOT))
     inventory_risk_df = app.build_inventory_risk_snapshot(data_refresh_key, str(REPO_ROOT))
+    all_item_df, code_mismatch_df = app.build_all_item_status_snapshot(all_item_refresh_key, str(REPO_ROOT))
     leadji_shortage_df, leadji_info_df, leadji_stock_df, leadji_order_df = app.load_leadji_status_snapshot(
         leadji_refresh_key, str(REPO_ROOT)
     )
@@ -40,6 +42,8 @@ def main() -> None:
     write_snapshot("shortage_file_info.csv.gz", file_info_df)
     write_snapshot("process_map.csv.gz", process_map_df)
     write_snapshot("inventory_risk_snapshot.csv.gz", inventory_risk_df)
+    write_snapshot(app.ALL_ITEM_SNAPSHOT_FILE, all_item_df)
+    write_snapshot(app.CODE_MISMATCH_SNAPSHOT_FILE, code_mismatch_df)
     write_snapshot("leadji_shortage_snapshot.csv.gz", leadji_shortage_df)
     write_snapshot("leadji_info.csv.gz", leadji_info_df)
     write_snapshot("leadji_stock.csv.gz", leadji_stock_df)
@@ -48,6 +52,7 @@ def main() -> None:
     meta = pd.DataFrame(
         [
             {"key": "data_updated_at", "value": app.get_data_updated_at(REPO_ROOT)},
+            {"key": "all_item_updated_at", "value": app.get_all_item_updated_at(REPO_ROOT)},
             {"key": "leadji_updated_at", "value": app.get_leadji_order_updated_at(REPO_ROOT)},
         ]
     )
