@@ -550,62 +550,81 @@ def find_leadji_order_status_file(base_dir: Path) -> Path | None:
     return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
-def get_data_updated_at(base_dir: Path) -> str:
-    dem_path = base_dir / "수요정보(전공정).xlsx"
-    if not dem_path.exists():
-        return "-"
-    stat = dem_path.stat()
-    refresh_key = f"{dem_path.name}:{stat.st_size}:{stat.st_mtime_ns}"
-    return get_data_updated_at_cached(refresh_key, str(base_dir))
+def unique_existing_paths(paths: list[Path | None]) -> list[Path]:
+    result: list[Path] = []
+    seen: set[Path] = set()
+    for path in paths:
+        if path is None or not path.exists():
+            continue
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        result.append(path)
+    return result
 
 
-@st.cache_data(show_spinner=False)
-def get_data_updated_at_cached(refresh_key: str, base_dir_str: str) -> str:
-    _ = refresh_key
-    base_dir = Path(base_dir_str)
-    dem_path = base_dir / "수요정보(전공정).xlsx"
-    if not dem_path.exists():
-        return "-"
+def build_files_refresh_key(paths: list[Path]) -> str:
+    parts: list[str] = []
+    for path in paths:
+        stat = path.stat()
+        parts.append(f"{path.name}:{stat.st_size}:{stat.st_mtime_ns}")
+    return "|".join(parts)
 
-    # 배포 환경에서는 파일시스템 mtime이 배포 시각으로 바뀔 수 있어
-    # 엑셀 내부 문서 속성(modified)을 우선 사용한다.
-    latest_dt: datetime | None = None
+
+def get_file_updated_datetime(path: Path) -> datetime:
     try:
-        wb = openpyxl.load_workbook(dem_path, read_only=True, data_only=True)
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
         modified = wb.properties.modified
         wb.close()
         if isinstance(modified, datetime):
             if modified.tzinfo is None:
-                # Excel core property is commonly stored as UTC naive datetime.
-                latest_dt = modified.replace(tzinfo=ZoneInfo("UTC")).astimezone(DISPLAY_TZ)
-            else:
-                latest_dt = modified.astimezone(DISPLAY_TZ)
+                return modified.replace(tzinfo=ZoneInfo("UTC")).astimezone(DISPLAY_TZ)
+            return modified.astimezone(DISPLAY_TZ)
     except Exception:
-        latest_dt = None
-
-    if latest_dt is None:
-        latest_dt = datetime.fromtimestamp(dem_path.stat().st_mtime, tz=DISPLAY_TZ)
-
-    return latest_dt.strftime("%Y-%m-%d %H:%M:%S")
+        pass
+    return datetime.fromtimestamp(path.stat().st_mtime, tz=DISPLAY_TZ)
 
 
-def get_all_item_updated_at(base_dir: Path) -> str:
-    paths = [p for p in [find_demand_update_file(base_dir), find_all_item_master_file(base_dir)] if p is not None]
+def get_latest_files_updated_at(paths: list[Path]) -> str:
     if not paths:
         return "-"
-    newest = max(paths, key=lambda p: p.stat().st_mtime)
-    stat = newest.stat()
-    refresh_key = f"{newest.name}:{stat.st_size}:{stat.st_mtime_ns}"
-    return get_all_item_updated_at_cached(refresh_key, str(newest))
+    refresh_key = build_files_refresh_key(paths)
+    return get_latest_files_updated_at_cached(refresh_key, tuple(str(path) for path in paths))
 
 
 @st.cache_data(show_spinner=False)
-def get_all_item_updated_at_cached(refresh_key: str, newest_path_str: str) -> str:
+def get_latest_files_updated_at_cached(refresh_key: str, path_strs: tuple[str, ...]) -> str:
     _ = refresh_key
-    newest = Path(newest_path_str)
-    if not newest.exists():
+    paths = [Path(path_str) for path_str in path_strs]
+    existing_paths = [path for path in paths if path.exists()]
+    if not existing_paths:
         return "-"
-    return datetime.fromtimestamp(newest.stat().st_mtime, tz=DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    latest_dt = max(get_file_updated_datetime(path) for path in existing_paths)
+    return latest_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def get_data_updated_at(base_dir: Path) -> str:
+    try:
+        inv_path, dem_path = find_excel_files(base_dir)
+    except Exception:
+        inv_path = None
+        dem_path = find_demand_update_file(base_dir)
+    ref_path = find_product_name_reference_file(base_dir)
+
+    return get_latest_files_updated_at(unique_existing_paths([inv_path, dem_path, ref_path]))
+
+
+def get_all_item_updated_at(base_dir: Path) -> str:
+    try:
+        inv_path, dem_path = find_excel_files(base_dir)
+    except Exception:
+        inv_path = None
+        dem_path = find_demand_update_file(base_dir)
+    paths = unique_existing_paths(
+        [inv_path, dem_path, find_product_name_reference_file(base_dir), find_all_item_master_file(base_dir)]
+    )
+    return get_latest_files_updated_at(paths)
 
 
 def get_leadji_order_updated_at(base_dir: Path) -> str:
@@ -623,24 +642,7 @@ def get_leadji_order_updated_at_cached(refresh_key: str, order_path_str: str) ->
     order_path = Path(order_path_str)
     if not order_path.exists():
         return "-"
-
-    latest_dt: datetime | None = None
-    try:
-        wb = openpyxl.load_workbook(order_path, read_only=True, data_only=True)
-        modified = wb.properties.modified
-        wb.close()
-        if isinstance(modified, datetime):
-            if modified.tzinfo is None:
-                latest_dt = modified.replace(tzinfo=ZoneInfo("UTC")).astimezone(DISPLAY_TZ)
-            else:
-                latest_dt = modified.astimezone(DISPLAY_TZ)
-    except Exception:
-        latest_dt = None
-
-    if latest_dt is None:
-        latest_dt = datetime.fromtimestamp(order_path.stat().st_mtime, tz=DISPLAY_TZ)
-
-    return latest_dt.strftime("%Y-%m-%d %H:%M:%S")
+    return get_file_updated_datetime(order_path).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def get_or_create_upload_session_id() -> str:
