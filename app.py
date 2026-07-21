@@ -5223,7 +5223,6 @@ def render_all_items_dashboard(all_items_df: pd.DataFrame, updated_at: str) -> N
         selected_status = st.segmented_control(
             "상태",
             options=ALL_ITEM_STATUS_OPTIONS,
-            default=st.session_state.get(status_key, "전체"),
             key=status_key,
             width="stretch",
         )
