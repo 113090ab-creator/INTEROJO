@@ -627,6 +627,18 @@ def get_all_item_updated_at(base_dir: Path) -> str:
     return get_latest_files_updated_at(paths)
 
 
+def get_leadji_status_updated_at(base_dir: Path) -> str:
+    try:
+        inv_path, dem_path = find_excel_files(base_dir)
+    except Exception:
+        inv_path = None
+        dem_path = find_demand_update_file(base_dir)
+    paths = unique_existing_paths(
+        [inv_path, dem_path, find_product_name_reference_file(base_dir), find_leadji_order_status_file(base_dir)]
+    )
+    return get_latest_files_updated_at(paths)
+
+
 def get_leadji_order_updated_at(base_dir: Path) -> str:
     order_path = find_leadji_order_status_file(base_dir)
     if order_path is None:
@@ -794,6 +806,24 @@ def get_cloud_snapshot_meta_value(key: str, default: str = "-") -> str:
     if values.empty:
         return default
     return str(values.iloc[0])
+
+
+def parse_updated_at_value(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text or text == "-":
+        return None
+    try:
+        return datetime.strptime(text[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=DISPLAY_TZ)
+    except ValueError:
+        return None
+
+
+def is_cloud_snapshot_fresh(meta_key: str, live_updated_at: str) -> bool:
+    cloud_dt = parse_updated_at_value(get_cloud_snapshot_meta_value(meta_key, "-"))
+    live_dt = parse_updated_at_value(live_updated_at)
+    if cloud_dt is None or live_dt is None:
+        return False
+    return cloud_dt.timestamp() + 1 >= live_dt.timestamp()
 
 
 def load_cloud_shortage_snapshot() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -1940,6 +1970,17 @@ def build_leadji_order_refresh_key(base_dir: Path) -> str:
         return "-"
     stat = order_path.stat()
     return f"{order_path.name}:{stat.st_size}:{stat.st_mtime_ns}"
+
+
+def build_leadji_status_refresh_key(base_dir: Path) -> str:
+    parts = [f"leadji-status:{APP_CACHE_VERSION}"]
+    try:
+        parts.append(build_data_refresh_key(base_dir))
+    except Exception as exc:
+        parts.append(f"data-error:{exc}")
+    parts.append(f"reference:{build_reference_refresh_key(base_dir)}")
+    parts.append(f"leadji-order:{build_leadji_order_refresh_key(base_dir)}")
+    return "|".join(parts)
 
 
 def build_all_item_refresh_key(base_dir: Path) -> str:
@@ -6824,10 +6865,24 @@ def main() -> None:
         )
         st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
         data_base_dir, _, updated_at = select_data_source(BASE_DIR)
-        use_cloud_snapshots = should_use_cloud_snapshots(data_base_dir)
-        if use_cloud_snapshots:
-            updated_at = get_cloud_snapshot_meta_value("data_updated_at", updated_at)
+        cloud_snapshots_available = should_use_cloud_snapshots(data_base_dir)
+        data_live_updated_at = updated_at
+        if selected_top_view in {"전체 품목 현황", "코드미매칭 확인"}:
+            sidebar_meta_key = "all_item_updated_at"
+            sidebar_live_updated_at = get_all_item_updated_at(data_base_dir)
+        elif selected_top_view in {"리드지 현황", "생산코드별 리드지"}:
+            sidebar_meta_key = "leadji_updated_at"
+            sidebar_live_updated_at = get_leadji_status_updated_at(data_base_dir)
+        else:
+            sidebar_meta_key = "data_updated_at"
+            sidebar_live_updated_at = data_live_updated_at
+
+        if cloud_snapshots_available and is_cloud_snapshot_fresh(sidebar_meta_key, sidebar_live_updated_at):
+            updated_at = get_cloud_snapshot_meta_value(sidebar_meta_key, sidebar_live_updated_at)
             st.caption("Cloud 모드: 사전 계산 스냅샷 사용")
+        elif cloud_snapshots_available:
+            updated_at = sidebar_live_updated_at
+            st.caption("Cloud 모드: 원본 엑셀 자동 반영")
         st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
 
     try:
@@ -6836,37 +6891,71 @@ def main() -> None:
         all_items_df = pd.DataFrame()
         code_mismatch_df = pd.DataFrame()
         if selected_top_view in {"전체 품목 현황", "코드미매칭 확인"}:
-            if use_cloud_snapshots:
+            all_item_live_updated_at = get_all_item_updated_at(data_base_dir)
+            use_all_item_cloud_snapshot = cloud_snapshots_available and is_cloud_snapshot_fresh(
+                "all_item_updated_at", all_item_live_updated_at
+            )
+            if use_all_item_cloud_snapshot:
                 all_items_df, code_mismatch_df = load_cloud_all_item_status_snapshot()
-                updated_at = get_cloud_snapshot_meta_value("all_item_updated_at", updated_at)
+                updated_at = get_cloud_snapshot_meta_value("all_item_updated_at", all_item_live_updated_at)
             else:
-                all_item_refresh_key = build_all_item_refresh_key(data_base_dir)
-                all_items_df, code_mismatch_df = build_all_item_status_snapshot(
-                    all_item_refresh_key,
-                    str(data_base_dir),
-                )
-                updated_at = get_all_item_updated_at(data_base_dir)
+                try:
+                    all_item_refresh_key = build_all_item_refresh_key(data_base_dir)
+                    all_items_df, code_mismatch_df = build_all_item_status_snapshot(
+                        all_item_refresh_key,
+                        str(data_base_dir),
+                    )
+                    updated_at = all_item_live_updated_at
+                except Exception as live_exc:
+                    if not cloud_snapshots_available:
+                        raise
+                    st.warning(f"원본 엑셀 자동 반영 실패로 기존 스냅샷을 표시합니다: {live_exc}")
+                    all_items_df, code_mismatch_df = load_cloud_all_item_status_snapshot()
+                    updated_at = get_cloud_snapshot_meta_value("all_item_updated_at", all_item_live_updated_at)
 
         if selected_top_view == "생산 부족 현황":
-            if use_cloud_snapshots:
+            use_data_cloud_snapshot = cloud_snapshots_available and is_cloud_snapshot_fresh(
+                "data_updated_at", data_live_updated_at
+            )
+            if use_data_cloud_snapshot:
                 df, file_info_df, _ = load_cloud_shortage_snapshot()
+                updated_at = get_cloud_snapshot_meta_value("data_updated_at", data_live_updated_at)
             else:
-                refresh_key = build_data_refresh_key(data_base_dir)
-                df, file_info_df, _ = load_data(refresh_key, str(data_base_dir))
+                try:
+                    refresh_key = build_data_refresh_key(data_base_dir)
+                    df, file_info_df, _ = load_data(refresh_key, str(data_base_dir))
+                    updated_at = data_live_updated_at
+                except Exception as live_exc:
+                    if not cloud_snapshots_available:
+                        raise
+                    st.warning(f"원본 엑셀 자동 반영 실패로 기존 스냅샷을 표시합니다: {live_exc}")
+                    df, file_info_df, _ = load_cloud_shortage_snapshot()
+                    updated_at = get_cloud_snapshot_meta_value("data_updated_at", data_live_updated_at)
 
         leadji_info = pd.DataFrame()
         leadji_stock = pd.DataFrame()
         leadji_order_df = pd.DataFrame()
         if selected_top_view in {"리드지 현황", "생산코드별 리드지"}:
-            if use_cloud_snapshots:
+            leadji_live_updated_at = get_leadji_status_updated_at(data_base_dir)
+            use_leadji_cloud_snapshot = cloud_snapshots_available and is_cloud_snapshot_fresh(
+                "leadji_updated_at", leadji_live_updated_at
+            )
+            if use_leadji_cloud_snapshot:
                 df, leadji_info, leadji_stock, leadji_order_df = load_cloud_leadji_status_snapshot()
-                updated_at = get_cloud_snapshot_meta_value("leadji_updated_at", updated_at)
+                updated_at = get_cloud_snapshot_meta_value("leadji_updated_at", leadji_live_updated_at)
             else:
-                leadji_status_refresh_key = build_leadji_order_refresh_key(data_base_dir)
-                df, leadji_info, leadji_stock, leadji_order_df = load_leadji_status_snapshot(
-                    leadji_status_refresh_key, str(data_base_dir)
-                )
-                updated_at = get_leadji_order_updated_at(data_base_dir)
+                try:
+                    leadji_status_refresh_key = build_leadji_status_refresh_key(data_base_dir)
+                    df, leadji_info, leadji_stock, leadji_order_df = load_leadji_status_snapshot(
+                        leadji_status_refresh_key, str(data_base_dir)
+                    )
+                    updated_at = leadji_live_updated_at
+                except Exception as live_exc:
+                    if not cloud_snapshots_available:
+                        raise
+                    st.warning(f"원본 엑셀 자동 반영 실패로 기존 스냅샷을 표시합니다: {live_exc}")
+                    df, leadji_info, leadji_stock, leadji_order_df = load_cloud_leadji_status_snapshot()
+                    updated_at = get_cloud_snapshot_meta_value("leadji_updated_at", leadji_live_updated_at)
     except Exception as exc:
         st.error(f"데이터 로드 실패: {exc}")
         st.stop()
