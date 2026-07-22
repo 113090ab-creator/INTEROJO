@@ -222,3 +222,7 @@ __marimo__/
 ~$*.xls
 ~$*.xlsx
 ~$*.xlsm
+
+# Local generated analysis artifacts
+outputs/
+*.inspect.ndjson
