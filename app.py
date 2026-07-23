@@ -3111,7 +3111,7 @@ def build_rq_group_summary(df: pd.DataFrame) -> pd.DataFrame:
     p_count = df.groupby(["R코드5", "Q코드5"])["P코드5"].nunique().rename("P코드5 수").reset_index()
     p_count = p_count.rename(columns={"R코드5": "R코드", "Q코드5": "Q코드"})
     grouped = grouped.merge(p_count, on=["R코드", "Q코드"], how="left")
-    grouped["사출 부족수량"] = (grouped["사출 생산 필요수량 합계"] - grouped["사출창고 합계"]).clip(lower=0)
+    grouped["사출 부족수량"] = grouped["사출 생산 필요수량 합계"]
     grouped = grouped.sort_values(["부족수량 합계", "P코드5 수"], ascending=[False, False])
     return grouped[columns]
 
@@ -3187,7 +3187,7 @@ def build_initial_injection_summary(df: pd.DataFrame) -> pd.DataFrame:
         .rename(columns={"거래처": "거래처 수"})
     )
     summary = summary.merge(customer_count, on="이니셜", how="left")
-    summary["사출 부족수량"] = (summary["사출 생산 필요수량 합계"] - summary["사출창고 합계"]).clip(lower=0)
+    summary["사출 부족수량"] = summary["사출 생산 필요수량 합계"]
     summary = summary[columns].sort_values(
         ["사출 부족수량", "사출 생산 필요수량 합계", "부족수량 합계", "이니셜"],
         ascending=[False, False, False, True],
@@ -5628,7 +5628,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
 
         initial_inj_summary = build_initial_injection_summary(filtered)
         with st.expander("이니셜별 사출부족수량 요약", expanded=False):
-            st.caption("사출 부족수량 = 이니셜별(품목코드 단위) 사출 생산 필요수량 합계 - 사출창고 합계 (0 미만은 0)")
+            st.caption("사출 부족수량 = 이니셜별(품목코드 단위) 사출 생산 필요수량 합계")
             if initial_inj_summary.empty:
                 st.info("이니셜별 사출부족수량 요약을 계산할 데이터가 없습니다.")
             else:
@@ -5962,7 +5962,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
         )
 
     else:
-        st.caption("사출 부족수량 = 수요정보 사출 생산 수량 합계 - 사출창고 합계 (0 미만은 0)")
+        st.caption("사출 부족수량 = 수요정보 사출 생산 필요수량 합계")
         st.caption("표시 기준: 품목코드는 P코드만, 납기일/부족수량은 누수규격검사 기준")
         rq_filtered = filtered.copy()
         if "품목코드" in rq_filtered.columns:
