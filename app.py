@@ -30,6 +30,8 @@ LEADJI_COMPLETED_STOCK_COL = "누수규격검사 창고"
 DEMAND_QTY_COL = "수요수량"
 SEPARATION_REQUIRED_QTY_COL = "분리생산필요수량"
 SEPARATION_REQUIRED_DUE_COL = "분리납기일"
+DEMAND_DATA_SHEET_NAME = "Sheet1"
+REWORK_SHEET_NAMES = ("재작업", "재작업리스트")
 
 WAREHOUSE_MAP = {
     "사출창고": "사출창고",
@@ -516,6 +518,20 @@ def workbook_has_sheet(path: Path, sheet_name: str) -> bool:
         return sheet_name in wb.sheetnames
     finally:
         wb.close()
+
+
+def normalize_excel_sheet_name(value: object) -> str:
+    return str(value).replace(" ", "").strip()
+
+
+def find_workbook_sheet_name(wb, preferred_names: tuple[str, ...] | list[str], fallback_first: bool = True) -> str | None:
+    sheet_names = list(wb.sheetnames)
+    for preferred in preferred_names:
+        preferred_norm = normalize_excel_sheet_name(preferred)
+        for sheet_name in sheet_names:
+            if normalize_excel_sheet_name(sheet_name) == preferred_norm:
+                return sheet_name
+    return sheet_names[0] if fallback_first and sheet_names else None
 
 
 def find_all_item_master_file(base_dir: Path) -> Path | None:
@@ -1099,7 +1115,10 @@ def extract_demand_header_info(dem_path: Path) -> tuple[
     except Exception:
         return {}, {}, [], [], {}, {}
     try:
-        ws = wb.worksheets[0]
+        demand_sheet = find_workbook_sheet_name(wb, [DEMAND_DATA_SHEET_NAME])
+        if demand_sheet is None:
+            return {}, {}, [], [], {}, {}
+        ws = wb[demand_sheet]
         rows = ws.iter_rows(min_row=1, max_row=2, values_only=True)
         header_values = [list(row) for row in rows]
     finally:
@@ -1384,12 +1403,29 @@ def read_inventory_excel_subset(inv_path: Path) -> pd.DataFrame:
 def read_demand_excel_subset(dem_path: Path, usecols: list[int]) -> pd.DataFrame:
     if not usecols:
         return pd.DataFrame()
-    cache_path = build_dashboard_cache_path(dem_path, "demand_subset", "v2", ",".join(map(str, usecols)))
+    try:
+        wb = openpyxl.load_workbook(dem_path, read_only=True, data_only=True)
+    except Exception:
+        return pd.DataFrame()
+    try:
+        demand_sheet = find_workbook_sheet_name(wb, [DEMAND_DATA_SHEET_NAME])
+    finally:
+        wb.close()
+    if demand_sheet is None:
+        return pd.DataFrame()
+
+    cache_path = build_dashboard_cache_path(
+        dem_path,
+        "demand_subset",
+        "v3",
+        f"sheet:{demand_sheet}",
+        ",".join(map(str, usecols)),
+    )
     cached = read_pickle_cache(cache_path)
     if isinstance(cached, pd.DataFrame):
         return cached.copy()
 
-    dem = pd.read_excel(dem_path, sheet_name=0, header=None, skiprows=2, usecols=usecols)
+    dem = pd.read_excel(dem_path, sheet_name=demand_sheet, header=None, skiprows=2, usecols=usecols)
     if len(dem.columns) == len(usecols):
         dem.columns = usecols
     write_pickle_cache(cache_path, dem)
@@ -1489,7 +1525,7 @@ def read_rework_item_keys_from_demand_file(dem_path: Path) -> tuple[dict[tuple[s
         return {}, empty_meta
 
     try:
-        rework_sheet = next((s for s in wb.sheetnames if str(s).replace(" ", "") == "재작업리스트"), None)
+        rework_sheet = find_workbook_sheet_name(wb, REWORK_SHEET_NAMES, fallback_first=False)
         if rework_sheet is None:
             return {}, empty_meta
 
@@ -4043,7 +4079,7 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
                 "리드지정보 우선, 없으면 분류정보, 그래도 없으면 P코드->R코드 유추 (BUL1/BUL2는 BUL로 보정)",
                 "리드지정보/분류정보 Q코드 우선, 없으면 P코드->Q코드 유추, Q재고가 없으면 리드지정보 외주(U) 코드로 보정",
                 "P코드 그대로 사용",
-                "WH_NAME=검사접착 중 재공 코드 끝부분 -C 계열은 별도 분류, 재작업가능은 재작업리스트 이동요청 수량",
+                "WH_NAME=검사접착 중 재공 코드 끝부분 -C 계열은 별도 분류, 재작업가능은 재작업 시트 이동요청 수량",
                 "P코드 그대로 사용",
             ],
             "재고>0 품목수": [
@@ -4063,7 +4099,7 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
             "행수(현황표)": [len(result)],
             "재작업 시트명": [str(rework_meta.get("sheet", "-"))],
             "재작업 기준 컬럼": [
-                f"재작업리스트 이니셜={rework_meta.get('initial_col', '')}, "
+                f"재작업 시트 이니셜={rework_meta.get('initial_col', '')}, "
                 f"제품코드={rework_meta.get('product_col', '')}, "
                 f"수량={rework_meta.get('quantity_col', '')}, "
                 f"생산현황 이니셜=이니셜, 품목코드=품목코드"
@@ -5165,9 +5201,9 @@ def render_rework_match_debug(file_info_df: pd.DataFrame | None) -> None:
 
     with st.expander("재작업 매칭 디버그", expanded=False):
         d1, d2, d3, d4 = st.columns(4)
-        d1.metric("재작업리스트 이니셜+제품코드 수", f"{source_count:,}")
+        d1.metric("재작업 시트 이니셜+제품코드 수", f"{source_count:,}")
         d2.metric("생산현황 매칭 이니셜+품목코드 수", f"{matched_count:,}")
-        d3.metric("재작업리스트 수량 합계", f"{source_qty_total:,.0f}")
+        d3.metric("재작업 시트 수량 합계", f"{source_qty_total:,.0f}")
         d4.metric("생산현황 매칭 수량 합계", f"{matched_qty_total:,.0f}")
         st.caption(f"재작업 시트: {rework_sheet}")
         st.caption(f"매칭 기준 컬럼: {basis_columns if basis_columns else '없음'}")
