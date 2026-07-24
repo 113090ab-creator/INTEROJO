@@ -17,6 +17,7 @@ st.set_page_config(page_title="생산현황", layout="wide")
 
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_WORKSPACE_ROOT = BASE_DIR / ".uploaded_workspaces"
+LATEST_UPLOAD_SESSION_FILE = UPLOAD_WORKSPACE_ROOT / "latest_session.txt"
 CLOUD_SNAPSHOT_DIR = BASE_DIR / "cloud_snapshots"
 DISPLAY_TZ = ZoneInfo("Asia/Seoul")
 ORDER_NO_COL = "수주번호"
@@ -664,6 +665,44 @@ def get_or_create_upload_session_id() -> str:
     return str(st.session_state[key])
 
 
+def is_valid_uploaded_workspace(path: Path) -> bool:
+    return (
+        path.is_dir()
+        and (path / "ODV_WIP_uploaded.xlsx").exists()
+        and (path / "수요정보(전공정).xlsx").exists()
+    )
+
+
+def get_latest_uploaded_workspace() -> Path | None:
+    try:
+        session_id = LATEST_UPLOAD_SESSION_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        session_id = ""
+    if session_id:
+        candidate = UPLOAD_WORKSPACE_ROOT / session_id
+        if is_valid_uploaded_workspace(candidate):
+            return candidate
+
+    if not UPLOAD_WORKSPACE_ROOT.exists():
+        return None
+    candidates = [p for p in UPLOAD_WORKSPACE_ROOT.iterdir() if is_valid_uploaded_workspace(p)]
+    if not candidates:
+        return None
+
+    def latest_xlsx_mtime(path: Path) -> float:
+        return max((p.stat().st_mtime for p in path.glob("*.xlsx")), default=0.0)
+
+    return max(candidates, key=latest_xlsx_mtime)
+
+
+def mark_latest_uploaded_workspace(session_id: str) -> None:
+    try:
+        UPLOAD_WORKSPACE_ROOT.mkdir(parents=True, exist_ok=True)
+        LATEST_UPLOAD_SESSION_FILE.write_text(session_id, encoding="utf-8")
+    except OSError:
+        pass
+
+
 def stage_uploaded_data_files(
     base_dir: Path,
     inventory_file,
@@ -702,6 +741,7 @@ def stage_uploaded_data_files(
         and dem_staged.exists()
         and (reference_file is not None or ref_staged.exists() or local_ref is None)
     ):
+        mark_latest_uploaded_workspace(session_id)
         return session_dir
 
     for old_xlsx in session_dir.glob("*.xlsx"):
@@ -717,6 +757,7 @@ def stage_uploaded_data_files(
             shutil.copy2(local_ref, ref_dst)
 
     st.session_state[signature_key] = upload_signature
+    mark_latest_uploaded_workspace(session_id)
     return session_dir
 
 
@@ -740,6 +781,13 @@ def select_data_source(base_dir: Path) -> tuple[Path, str, str]:
 
     if not use_uploaded:
         return base_dir, "로컬 파일", get_data_updated_at(base_dir)
+
+    if inv_file is None and dem_file is None:
+        latest_workspace = get_latest_uploaded_workspace()
+        if latest_workspace is not None:
+            st.warning("새 업로드 파일이 없어 최근 업로드 파일을 다시 사용합니다.")
+            updated_at = get_data_updated_at(latest_workspace)
+            return latest_workspace, f"최근 업로드 파일 ({latest_workspace.name})", updated_at
 
     if inv_file is None or dem_file is None:
         st.info("업로드 모드에서는 재고/수요 파일 2개 업로드가 필요합니다.")
@@ -6863,7 +6911,7 @@ def main() -> None:
             label_visibility="collapsed",
         )
         st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
-        data_base_dir, _, updated_at = select_data_source(BASE_DIR)
+        data_base_dir, source_label, updated_at = select_data_source(BASE_DIR)
         cloud_snapshots_available = should_use_cloud_snapshots(data_base_dir)
         data_live_updated_at = updated_at
         if selected_top_view in {"전체 품목 현황", "코드미매칭 확인"}:
@@ -6882,6 +6930,9 @@ def main() -> None:
         elif cloud_snapshots_available:
             updated_at = sidebar_live_updated_at
             st.caption("Cloud 모드: 원본 엑셀 자동 반영")
+        st.caption(f"적용 데이터: {source_label}")
+        if data_base_dir.resolve() != BASE_DIR.resolve():
+            st.caption(f"업로드 작업폴더: {data_base_dir.name}")
         st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
 
     try:
