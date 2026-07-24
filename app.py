@@ -2694,6 +2694,11 @@ def caption_limited_rows(total_rows: int, displayed_rows: int) -> None:
     _ = total_rows, displayed_rows
 
 
+def move_columns_to_end(columns: list[str], trailing_columns: list[str]) -> list[str]:
+    trailing = [col for col in trailing_columns if col in columns]
+    return [col for col in columns if col not in trailing] + trailing
+
+
 def infer_numeric_like_series(series: pd.Series) -> bool:
     sample = series.astype(str).str.replace(",", "", regex=False).str.strip()
     sample = sample[~sample.str.lower().isin({"", "nan", "none"})].head(200)
@@ -2845,7 +2850,7 @@ def style_operational_table(display_df: pd.DataFrame, source_df: pd.DataFrame | 
             lambda v: (
                 "background-color: #FED7AA; color: #C2410C; font-weight: 850; "
                 "border-radius: 999px;"
-                if str(v).strip() == "재작업 가능"
+                if str(v).strip() in {"재작업", "재작업 가능"}
                 else ""
             ),
             subset=["재작업"],
@@ -3885,18 +3890,29 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
         list(zip(rework_lookup_initials, rework_lookup_item_codes)),
         index=grouped_demand.index,
     )
+    rework_item_only_keys = pd.Series(
+        list(zip([""] * len(rework_lookup_item_codes), rework_lookup_item_codes)),
+        index=grouped_demand.index,
+    )
     rework_key_set = set(rework_item_qty_map.keys())
-    rework_match_mask = rework_lookup_keys.isin(rework_key_set)
-    rework_available_qty = rework_lookup_keys.map(lambda key: rework_item_qty_map.get(key, 0.0)).fillna(0.0)
+    rework_exact_match_mask = rework_lookup_keys.isin(rework_key_set)
+    rework_item_only_match_mask = rework_item_only_keys.isin(rework_key_set)
+    rework_match_mask = rework_exact_match_mask | rework_item_only_match_mask
+    rework_exact_qty = rework_lookup_keys.map(lambda key: rework_item_qty_map.get(key, 0.0)).fillna(0.0)
+    rework_item_only_qty = rework_item_only_keys.map(lambda key: rework_item_qty_map.get(key, 0.0)).fillna(0.0)
+    rework_available_qty = rework_exact_qty.where(rework_exact_match_mask, rework_item_only_qty)
     grouped_demand[REWORK_AVAILABLE_QTY_COL] = rework_available_qty
     has_rework_qty_basis = bool(str(rework_meta.get("quantity_col", "") or "").strip())
     rework_available_mask = rework_match_mask & ((rework_available_qty > 0) if has_rework_qty_basis else True)
-    grouped_demand["재작업"] = rework_available_mask.map({True: "재작업 가능", False: ""})
+    grouped_demand["재작업"] = rework_available_mask.map({True: "재작업", False: ""})
+    rework_sample_keys = rework_lookup_keys.where(rework_exact_match_mask, rework_item_only_keys)
     rework_matched_item_keys = sorted(
         {
             f"{initial} / {item_code}"
-            for initial, item_code in rework_lookup_keys[rework_available_mask].tolist()
-            if initial and item_code
+            if initial
+            else item_code
+            for initial, item_code in rework_sample_keys[rework_available_mask].tolist()
+            if item_code
         }
     )
     rework_matched_qty_total = float(rework_available_qty[rework_available_mask].sum())
@@ -4848,7 +4864,7 @@ def filter_data(
     if only_with_stock and "공정재고 합계" in base_filtered.columns:
         base_filtered = base_filtered[base_filtered["공정재고 합계"] > 0]
     if only_rework_available and "재작업" in base_filtered.columns:
-        base_filtered = base_filtered[base_filtered["재작업"].astype(str).str.strip() == "재작업 가능"]
+        base_filtered = base_filtered[base_filtered["재작업"].astype(str).str.strip().isin({"재작업", "재작업 가능"})]
 
     return base_filtered.copy()
 
@@ -4881,7 +4897,7 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
         ).strip()
 
         only_with_stock = st.checkbox("공정재고만", value=False, key="flt_only_stock")
-        only_rework_available = st.checkbox("재작업 가능만", value=False, key="flt_only_rework_available")
+        only_rework_available = st.checkbox("재작업만", value=False, key="flt_only_rework_available")
         exclude_safe_initial = st.checkbox("안전 이니셜 제외", value=False, key="flt_exclude_safe_initial")
         only_same_rq_group = st.checkbox("동일 RQ그룹만(R5/Q5, P5종류2+)", value=False, key="flt_only_same_rq_group")
 
@@ -5693,9 +5709,9 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
 
     render_rework_match_debug(file_info_df)
     if "재작업" in filtered.columns and "품목코드" in filtered.columns:
-        rework_scope = filtered[filtered["재작업"].astype(str).str.strip() == "재작업 가능"]
+        rework_scope = filtered[filtered["재작업"].astype(str).str.strip().isin({"재작업", "재작업 가능"})]
         st.caption(
-            f"현재 필터 범위 재작업 가능: {len(rework_scope):,}행 / "
+            f"현재 필터 범위 재작업: {len(rework_scope):,}행 / "
             f"{rework_scope['품목코드'].astype(str).str.strip().str.upper().nunique():,}개 품목코드"
         )
 
@@ -5989,7 +6005,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
             "확인구분",
         ] = "최종부족/재고없음"
         if "재작업" in p_view.columns:
-            rework_available = p_view["재작업"].astype(str).str.strip() == "재작업 가능"
+            rework_available = p_view["재작업"].astype(str).str.strip().isin({"재작업", "재작업 가능"})
             p_view.loc[rework_available & (p_view["확인구분"].astype(str).str.strip() == ""), "확인구분"] = "재작업가능"
         if "납기일" not in p_view.columns:
             p_view["납기일"] = "-"
@@ -6014,6 +6030,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
         if "사출 부족수량" not in p_detail_columns:
             insert_idx = p_detail_columns.index("부족수량") + 1 if "부족수량" in p_detail_columns else len(p_detail_columns)
             p_detail_columns.insert(insert_idx, "사출 부족수량")
+        p_detail_columns = move_columns_to_end(p_detail_columns, ["재작업"])
         p_table = p_view.sort_values(
             ["표시부족수량", "부족수량", "사출 부족수량", "이니셜", "거래처"],
             ascending=[False, False, False, True, True],
@@ -6193,6 +6210,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
             if "사출부족수량" not in rq_detail_columns:
                 insert_idx = rq_detail_columns.index("부족수량") + 1 if "부족수량" in rq_detail_columns else len(rq_detail_columns)
                 rq_detail_columns.insert(insert_idx, "사출부족수량")
+            rq_detail_columns = move_columns_to_end(rq_detail_columns, ["재작업"])
 
             rq_table = rq_view.sort_values(rq_sort_cols, ascending=rq_sort_asc)[rq_detail_columns]
             rq_table_ui = rq_table.drop(columns=["상태"], errors="ignore")
