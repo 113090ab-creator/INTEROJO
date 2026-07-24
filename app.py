@@ -18,6 +18,7 @@ st.set_page_config(page_title="생산현황", layout="wide")
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_WORKSPACE_ROOT = BASE_DIR / ".uploaded_workspaces"
 LATEST_UPLOAD_SESSION_FILE = UPLOAD_WORKSPACE_ROOT / "latest_session.txt"
+UPLOAD_SIGNATURE_FILE = "upload_signature.txt"
 CLOUD_SNAPSHOT_DIR = BASE_DIR / "cloud_snapshots"
 DISPLAY_TZ = ZoneInfo("Asia/Seoul")
 ORDER_NO_COL = "수주번호"
@@ -703,6 +704,50 @@ def mark_latest_uploaded_workspace(session_id: str) -> None:
         pass
 
 
+def write_upload_workspace_signature(session_dir: Path, upload_signature: str) -> None:
+    try:
+        (session_dir / UPLOAD_SIGNATURE_FILE).write_text(upload_signature, encoding="utf-8")
+    except OSError:
+        pass
+
+
+def hash_file_contents(path: Path) -> str:
+    try:
+        return hashlib.md5(path.read_bytes()).hexdigest()
+    except OSError:
+        return "-"
+
+
+def build_staged_upload_signature(base_dir: Path) -> str:
+    inv_staged = base_dir / "ODV_WIP_uploaded.xlsx"
+    dem_staged = base_dir / "수요정보(전공정).xlsx"
+    ref_staged = base_dir / "제품명 기준 정보.xlsx"
+    if not inv_staged.exists() or not dem_staged.exists():
+        return ""
+    return "|".join(
+        [
+            hash_file_contents(inv_staged),
+            hash_file_contents(dem_staged),
+            hash_file_contents(ref_staged) if ref_staged.exists() else "-",
+            "staged-upload",
+        ]
+    )
+
+
+def read_upload_workspace_signature(base_dir: Path) -> str:
+    try:
+        signature = (base_dir / UPLOAD_SIGNATURE_FILE).read_text(encoding="utf-8").strip()
+    except OSError:
+        signature = ""
+    if signature:
+        return signature
+
+    signature = build_staged_upload_signature(base_dir)
+    if signature:
+        write_upload_workspace_signature(base_dir, signature)
+    return signature
+
+
 def stage_uploaded_data_files(
     base_dir: Path,
     inventory_file,
@@ -741,6 +786,7 @@ def stage_uploaded_data_files(
         and dem_staged.exists()
         and (reference_file is not None or ref_staged.exists() or local_ref is None)
     ):
+        write_upload_workspace_signature(session_dir, upload_signature)
         mark_latest_uploaded_workspace(session_id)
         return session_dir
 
@@ -757,6 +803,7 @@ def stage_uploaded_data_files(
             shutil.copy2(local_ref, ref_dst)
 
     st.session_state[signature_key] = upload_signature
+    write_upload_workspace_signature(session_dir, upload_signature)
     mark_latest_uploaded_workspace(session_id)
     return session_dir
 
@@ -1998,6 +2045,9 @@ def build_data_refresh_key(base_dir: Path) -> str:
         paths.append(ref_path)
 
     parts = [f"app:{APP_CACHE_VERSION}"]
+    upload_signature = read_upload_workspace_signature(base_dir)
+    if upload_signature:
+        parts.append(f"upload:{upload_signature}")
     for p in paths:
         stat = p.stat()
         parts.append(f"{p.name}:{stat.st_size}:{stat.st_mtime_ns}")
@@ -6930,6 +6980,8 @@ def main() -> None:
         elif cloud_snapshots_available:
             updated_at = sidebar_live_updated_at
             st.caption("Cloud 모드: 원본 엑셀 자동 반영")
+        else:
+            st.caption("업로드 모드: 업로드 파일 직접 계산")
         st.caption(f"적용 데이터: {source_label}")
         if data_base_dir.resolve() != BASE_DIR.resolve():
             st.caption(f"업로드 작업폴더: {data_base_dir.name}")
