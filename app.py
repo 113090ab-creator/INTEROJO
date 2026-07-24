@@ -1444,6 +1444,35 @@ def find_rework_quantity_column_index(header: list[str]) -> tuple[int | None, st
     return None, ""
 
 
+def find_rework_header_info(ws) -> tuple[list[str], object, str | None, str | None, int | None, str]:
+    rows = ws.iter_rows(values_only=True)
+    last_header: list[str] = []
+    last_product_col: str | None = None
+    last_initial_col: str | None = None
+    last_quantity_idx: int | None = None
+    last_quantity_col = ""
+    product_candidates = ["제품코드", "제품 코드", "품목코드", "품목 코드", "생산코드", "생산 코드"]
+
+    for row_idx, row in enumerate(rows):
+        header = [str(c).strip() if c is not None else "" for c in row]
+        product_col = pick_first_existing_column(header, product_candidates)
+        initial_col = pick_first_existing_column(header, ["이니셜"])
+        quantity_idx, quantity_col = find_rework_quantity_column_index(header)
+        if product_col is not None:
+            return header, rows, initial_col, product_col, quantity_idx, quantity_col
+
+        if any(header):
+            last_header = header
+            last_product_col = product_col
+            last_initial_col = initial_col
+            last_quantity_idx = quantity_idx
+            last_quantity_col = quantity_col
+        if row_idx >= 30:
+            break
+
+    return last_header, rows, last_initial_col, last_product_col, last_quantity_idx, last_quantity_col
+
+
 def read_rework_item_keys_from_demand_file(dem_path: Path) -> tuple[dict[tuple[str, str], float], dict[str, object]]:
     empty_meta: dict[str, object] = {
         "sheet": "-",
@@ -1465,16 +1494,7 @@ def read_rework_item_keys_from_demand_file(dem_path: Path) -> tuple[dict[tuple[s
             return {}, empty_meta
 
         ws = wb[rework_sheet]
-        rows = ws.iter_rows(values_only=True)
-        try:
-            header = next(rows)
-        except StopIteration:
-            return {}, {**empty_meta, "sheet": rework_sheet}
-
-        preview_cols = [str(c).strip() if c is not None else "" for c in header]
-        initial_col = pick_first_existing_column(preview_cols, ["이니셜"])
-        product_col = pick_first_existing_column(preview_cols, ["제품코드", "제품 코드"])
-        quantity_idx, quantity_col = find_rework_quantity_column_index(preview_cols)
+        preview_cols, rows, initial_col, product_col, quantity_idx, quantity_col = find_rework_header_info(ws)
         meta = {
             "sheet": rework_sheet,
             "initial_col": initial_col or "",
@@ -1484,16 +1504,20 @@ def read_rework_item_keys_from_demand_file(dem_path: Path) -> tuple[dict[tuple[s
             "source_rows": 0,
             "source_qty_total": 0.0,
         }
-        if initial_col is None or product_col is None:
+        if product_col is None:
             return {}, meta
 
-        initial_idx = preview_cols.index(initial_col)
+        initial_idx = preview_cols.index(initial_col) if initial_col is not None else None
         product_idx = preview_cols.index(product_col)
         qty_by_key: dict[tuple[str, str], float] = {}
         for row in rows:
-            initial = normalize_rework_match_value(row[initial_idx] if initial_idx < len(row) else "")
+            initial = (
+                normalize_rework_match_value(row[initial_idx] if initial_idx < len(row) else "")
+                if initial_idx is not None
+                else ""
+            )
             product_code = normalize_rework_match_value(row[product_idx] if product_idx < len(row) else "")
-            if initial and product_code:
+            if product_code:
                 qty = (
                     parse_single_numeric_value(row[quantity_idx])
                     if quantity_idx is not None and quantity_idx < len(row)
