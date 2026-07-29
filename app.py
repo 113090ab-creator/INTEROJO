@@ -1650,6 +1650,24 @@ def normalize_keyword_key(value: object) -> str:
     return re.sub(r"[\s_\-./()]+", "", text)
 
 
+def normalize_flow_link_key_value(value: object) -> str:
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    text = str(value).strip()
+    return "" if text.lower() in {"nan", "none", "nat", "null", "<na>"} else text
+
+
+def normalize_flow_link_key_columns(df: pd.DataFrame, key_cols: list[str]) -> pd.DataFrame:
+    normalized = df.copy()
+    for col in key_cols:
+        if col in normalized.columns:
+            normalized[col] = normalized[col].map(normalize_flow_link_key_value)
+    return normalized
+
+
 def match_keyword_category(text: object, rules: dict[str, list[str]]) -> tuple[str, str]:
     normalized_text = normalize_keyword_key(text)
     if not normalized_text:
@@ -5874,6 +5892,8 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
                 for c in [ORDER_NO_COL, "거래처", "이니셜", "R코드", "Q코드"]
                 if c in p_view.columns
             ]
+            if key_cols:
+                p_view = normalize_flow_link_key_columns(p_view, key_cols)
             if key_cols and not r_rows.empty and "품목코드" in enriched_df.columns:
                 # Fallback: when current filters leave only R rows, recover representative P codes
                 # from the full scope using (사이트코드+이니셜+R코드+Q코드) keys.
@@ -5881,6 +5901,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
                 universe_prefix = p_universe["품목코드"].astype(str).str.upper().str[:1]
                 p_universe = p_universe[universe_prefix == "P"]
                 if not p_universe.empty and all(c in p_universe.columns for c in key_cols):
+                    p_universe = normalize_flow_link_key_columns(p_universe, key_cols)
                     if "부족수량" in p_universe.columns:
                         p_universe["부족수량_num"] = parse_mixed_numeric(p_universe["부족수량"])
                     else:
@@ -5923,8 +5944,10 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
             ]
 
             if key_cols and not r_scope.empty:
+                p_rows = normalize_flow_link_key_columns(p_rows, key_cols)
+                r_scope = normalize_flow_link_key_columns(r_scope, key_cols)
                 r_key_inj_all = (
-                    r_scope.groupby(key_cols, as_index=False)["사출생산필요수량"]
+                    r_scope.groupby(key_cols, as_index=False, dropna=False)["사출생산필요수량"]
                     .sum()
                     .rename(columns={"사출생산필요수량": "연결R 사출수량"})
                 )
@@ -5936,6 +5959,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
                     ]
                     if not synthetic_full_rows.empty:
                         full_p_scope = pd.concat([full_p_scope, synthetic_full_rows], ignore_index=True, sort=False)
+                    full_p_scope = normalize_flow_link_key_columns(full_p_scope, key_cols)
                     full_p_keys = full_p_scope[key_cols].drop_duplicates()
                 if not full_p_keys.empty:
                     unmatched_r = r_key_inj_all.merge(full_p_keys, on=key_cols, how="left", indicator=True)
@@ -5949,8 +5973,8 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
                 )
 
                 p_rows = p_rows.merge(r_key_inj, on=key_cols, how="left")
-                p_key_short_sum = p_rows.groupby(key_cols)["부족수량"].transform("sum")
-                p_key_count = p_rows.groupby(key_cols)["품목코드"].transform("count")
+                p_key_short_sum = p_rows.groupby(key_cols, dropna=False)["부족수량"].transform("sum")
+                p_key_count = p_rows.groupby(key_cols, dropna=False)["품목코드"].transform("count")
 
                 mapped_by_short = (
                     parse_mixed_numeric(p_rows["연결R 사출수량"])
@@ -5981,8 +6005,10 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
                     q_scope = q_scope[q_scope["품목코드"].astype(str).str.upper().str.startswith("Q")]
                 q_scope = q_scope[q_scope[SEPARATION_REQUIRED_QTY_COL] > 0]
                 if not q_scope.empty:
+                    p_rows = normalize_flow_link_key_columns(p_rows, q_link_cols)
+                    q_scope = normalize_flow_link_key_columns(q_scope, q_link_cols)
                     q_key_sep_all = (
-                        q_scope.groupby(q_link_cols, as_index=False)[SEPARATION_REQUIRED_QTY_COL]
+                        q_scope.groupby(q_link_cols, as_index=False, dropna=False)[SEPARATION_REQUIRED_QTY_COL]
                         .sum()
                         .rename(columns={SEPARATION_REQUIRED_QTY_COL: "연결Q 분리수량"})
                     )
@@ -5994,6 +6020,7 @@ def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: p
                         ]
                         if not synthetic_full_rows.empty:
                             full_p_scope = pd.concat([full_p_scope, synthetic_full_rows], ignore_index=True, sort=False)
+                        full_p_scope = normalize_flow_link_key_columns(full_p_scope, q_link_cols)
                         full_p_q_keys = full_p_scope[q_link_cols].drop_duplicates()
                     if not full_p_q_keys.empty:
                         unmatched_q = q_key_sep_all.merge(full_p_q_keys, on=q_link_cols, how="left", indicator=True)
