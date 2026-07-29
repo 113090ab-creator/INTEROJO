@@ -1058,6 +1058,15 @@ def build_inventory_df(inv: pd.DataFrame) -> pd.DataFrame:
     inv = inv.copy()
     inv.columns = [str(c).strip() for c in inv.columns]
     columns = inv.columns.tolist()
+    output_columns = ["품목코드", "창고", "재공코드", "재고량"]
+    if inv.empty or not columns:
+        return pd.DataFrame(columns=output_columns)
+
+    def column_as_series(column_name: str) -> pd.Series:
+        selected = inv[column_name]
+        if isinstance(selected, pd.DataFrame):
+            return selected.iloc[:, 0]
+        return selected
 
     qty_col = pick_first_existing_column(columns, ["총 재공 수량", "WIP_QTY", "재고량"])
     item_col = pick_first_existing_column(columns, ["제품 코드", "ITEM_ID", "제품코드", "품목코드"])
@@ -1080,10 +1089,10 @@ def build_inventory_df(inv: pd.DataFrame) -> pd.DataFrame:
 
     inv_df = pd.DataFrame(
         {
-            "품목코드": inv[item_col].astype(str).str.strip(),
-            "창고": inv[warehouse_col].astype(str).str.strip().map(canonicalize_warehouse_label),
-            "재공코드": inv[wip_code_col].astype(str).str.strip(),
-            "재고량": parse_mixed_numeric(inv[qty_col]),
+            "품목코드": column_as_series(item_col).astype(str).str.strip(),
+            "창고": column_as_series(warehouse_col).astype(str).str.strip().map(canonicalize_warehouse_label),
+            "재공코드": column_as_series(wip_code_col).astype(str).str.strip(),
+            "재고량": parse_mixed_numeric(column_as_series(qty_col)),
         }
     )
     rework_mask = (inv_df["창고"] == "검사접착") & inv_df["재공코드"].map(is_inspection_rework_wip_code)
@@ -1336,7 +1345,7 @@ def write_pickle_cache(cache_path: Path, value: object) -> None:
 
 
 def read_inventory_excel_subset(inv_path: Path) -> pd.DataFrame:
-    cache_path = build_dashboard_cache_path(inv_path, "inventory_subset", "v3")
+    cache_path = build_dashboard_cache_path(inv_path, "inventory_subset", "v4")
     cached = read_pickle_cache(cache_path)
     if isinstance(cached, pd.DataFrame):
         return cached.copy()
@@ -1349,19 +1358,26 @@ def read_inventory_excel_subset(inv_path: Path) -> pd.DataFrame:
     try:
         ws = wb.worksheets[0]
         rows = ws.iter_rows(values_only=True)
-        try:
-            header = next(rows)
-        except StopIteration:
-            return pd.DataFrame()
+        columns: list[str] = []
+        header_found = False
+        qty_col = item_col = warehouse_col = wip_code_col = None
+        for row_idx, row in enumerate(rows):
+            columns = [str(c).strip() if c is not None else "" for c in row]
+            if not any(columns):
+                continue
 
-        columns = [str(c).strip() if c is not None else "" for c in header]
-        if not columns:
-            return pd.DataFrame()
+            qty_col = pick_first_existing_column(columns, ["총 재공 수량", "WIP_QTY", "재고량"])
+            item_col = pick_first_existing_column(columns, ["제품 코드", "ITEM_ID", "제품코드", "품목코드"])
+            warehouse_col = pick_first_existing_column(columns, ["WH_NAME", "창고명", "버퍼 코드", "제품위치(창고)", "PROP02", "창고"])
+            wip_code_col = pick_first_existing_column(columns, ["재공 코드", "재공코드", "WIP_CODE", "WIP ID", "WIP_ID"])
+            if qty_col is not None and item_col is not None and warehouse_col is not None:
+                header_found = True
+                break
+            if row_idx >= 50:
+                break
 
-        qty_col = pick_first_existing_column(columns, ["총 재공 수량", "WIP_QTY", "재고량"])
-        item_col = pick_first_existing_column(columns, ["제품 코드", "ITEM_ID", "제품코드", "품목코드"])
-        warehouse_col = pick_first_existing_column(columns, ["WH_NAME", "창고명", "버퍼 코드", "제품위치(창고)", "PROP02", "창고"])
-        wip_code_col = pick_first_existing_column(columns, ["재공 코드", "재공코드", "WIP_CODE", "WIP ID", "WIP_ID"])
+        if not header_found or not columns:
+            return pd.DataFrame()
 
         qty_idx = columns.index(qty_col) if qty_col in columns else (6 if len(columns) > 6 else 0)
         item_idx = columns.index(item_col) if item_col in columns else (8 if len(columns) > 8 else (1 if len(columns) > 1 else 0))
