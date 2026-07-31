@@ -768,6 +768,9 @@ def get_plan_api_base_url() -> str:
 
 
 def get_plan_api_key() -> str:
+    session_key = get_session_value("plan_api_key_input", "")
+    if session_key is not None and str(session_key).strip():
+        return str(session_key).strip()
     return get_streamlit_or_env_secret(PLAN_API_KEY_ENV, "")
 
 
@@ -830,7 +833,7 @@ def normalize_api_records(payload: object) -> list[dict[str, object]]:
     if not isinstance(payload, dict):
         return []
 
-    for key in ("data", "rows", "items", "result", "results", "records", "list"):
+    for key in ("data", "rows", "orders", "items", "result", "results", "records", "list"):
         value = payload.get(key)
         if isinstance(value, list):
             return [row for row in value if isinstance(row, dict)]
@@ -958,6 +961,11 @@ def get_plan_api_updated_at() -> str:
             "updated_at",
             "last_updated_at",
             "lastUpdateAt",
+            "source_refreshed_at",
+            "sourceRefreshedAt",
+            "refreshed_at",
+            "load_dt",
+            "LOAD_DT",
             "snapshot_at",
             "generated_at",
             "created_at",
@@ -1232,7 +1240,15 @@ def stage_uploaded_data_files(
 def select_data_source(base_dir: Path) -> tuple[Path, str, str]:
     st.subheader("데이터 소스")
     api_configured = is_plan_api_configured()
-    use_api = st.toggle("APS API 자동조회 사용", value=api_configured, key="use_plan_api_data_mode")
+    if not api_configured and get_session_value("use_plan_api_data_mode", False):
+        set_session_value("use_plan_api_data_mode", False)
+    default_api_mode = api_configured and bool(get_session_value("use_plan_api_data_mode", api_configured))
+    use_api = st.toggle(
+        "APS API 자동조회 사용",
+        value=default_api_mode,
+        key="use_plan_api_data_mode",
+        disabled=not api_configured,
+    )
     if use_api:
         render_plan_api_status()
         if api_configured:
@@ -1245,7 +1261,19 @@ def select_data_source(base_dir: Path) -> tuple[Path, str, str]:
             api_updated_at = get_plan_api_updated_at()
             updated_at = api_updated_at if api_updated_at != "-" else get_data_updated_at(base_dir)
             return base_dir, "APS API + 로컬 기준정보", updated_at
-        st.warning("API 키가 없어 기존 파일 방식으로 전환합니다.")
+    elif not api_configured:
+        st.text_input(
+            "API Key",
+            value="",
+            type="password",
+            key="plan_api_key_input",
+            placeholder="X-API-Key 입력",
+            help="입력값은 현재 앱 세션에서만 사용합니다. 영구 적용은 PLAN_API_KEY 환경변수나 Streamlit secrets에 등록하세요.",
+        )
+        if get_plan_api_key():
+            st.caption("API 키가 입력되었습니다. APS API 자동조회를 켜면 바로 사용합니다.")
+        else:
+            st.caption("API 키 미설정: 기존 파일 기준으로 표시합니다.")
 
     use_uploaded = st.toggle("업로드 파일 사용", value=False, key="use_uploaded_data_mode")
     inv_file = None
@@ -4717,6 +4745,33 @@ def api_numeric_series(source: pd.DataFrame, column_name: str | None, default: f
     return pd.Series(default, index=source.index, dtype="float64")
 
 
+def combine_api_initial_and_type(initial: pd.Series, demand_type: pd.Series) -> pd.Series:
+    values: list[str] = []
+    for raw_initial, raw_type in zip(initial, demand_type):
+        parts: list[str] = []
+        for value in (raw_initial, raw_type):
+            text = clean_text_value(value)
+            if not text or text.lower() in INVALID_CATEGORY_VALUES:
+                continue
+            if text not in parts:
+                parts.append(text)
+        values.append(", ".join(parts))
+    return pd.Series(values, index=initial.index, dtype="object")
+
+
+def build_first_occurrence_mask(source: pd.DataFrame, key_columns: list[str | None], fallback_key: pd.Series) -> pd.Series:
+    key_frame = pd.DataFrame(index=source.index)
+    used = False
+    for idx, column_name in enumerate(key_columns):
+        if column_name and column_name in source.columns:
+            key_frame[f"k{idx}"] = source[column_name].astype(str).str.strip()
+            used = True
+    key_frame["fallback"] = fallback_key.astype(str).str.strip()
+    if not used:
+        return ~key_frame["fallback"].duplicated()
+    return ~key_frame.astype(str).agg("|".join, axis=1).duplicated()
+
+
 def load_api_wip_inventory_df() -> pd.DataFrame:
     raw, error = read_plan_api_dataframe(APS_WIP_ENDPOINT)
     if error or raw.empty:
@@ -4749,19 +4804,56 @@ def load_api_demand_like_df() -> pd.DataFrame:
     columns = raw.columns.tolist()
     item_col = pick_api_column(
         columns,
-        ["품목코드", "제품 코드", "제품코드", "생산코드", "P코드", "ITEM_ID", "ITEM_CODE", "ITEM_CD"],
+        [
+            "품목코드",
+            "제품 코드",
+            "제품코드",
+            "생산코드",
+            "P코드",
+            "ITEM_ID",
+            "item_id",
+            "ITEM_CODE",
+            "ITEM_CD",
+            "item_cd",
+        ],
     )
     if item_col is None:
         return pd.DataFrame(columns=output_columns)
 
-    site_col = pick_api_column(columns, ["사이트코드", "사이트", "SITE_CODE", "SITE"])
-    customer_col = pick_api_column(columns, ["거래처", "거래처명", "CUSTOMER", "CUSTOMER_NAME", "고객", "고객명"])
-    order_col = pick_api_column(columns, ["수주번호", "오더번호", "ORDER_NO", "ORDER_ID", "수요ID", "DEMAND_ID"])
+    site_col = pick_api_column(columns, ["사이트코드", "사이트", "SITE_CODE", "SITE", "RES_SITE_ID", "res_site_id"])
+    customer_col = pick_api_column(
+        columns,
+        ["거래처", "거래처명", "CUSTOMER", "CUSTOMER_NAME", "CUST_NAME", "cust_name", "고객", "고객명"],
+    )
+    order_col = pick_api_column(
+        columns,
+        ["수주번호", "오더번호", "ORDER_NO", "ORDER_ID", "SO_ID", "so_id", "수요ID", "DEMAND_ID", "demand_id"],
+    )
     initial_col = pick_api_column(columns, ["이니셜", "INITIAL", "INITIAL_CODE"])
-    name_col = pick_api_column(columns, ["제품명", "품명", "품목명", "ITEM_NAME", "PRODUCT_NAME"])
-    qty_col = pick_api_column(columns, ["수요수량", "오더수량", "수주수량", "ORDER_QTY", "DEMAND_QTY", "QTY", "수량"])
+    demand_type_col = pick_api_column(columns, ["수요유형", "DEMAND_TYPE", "demand_type"])
+    name_col = pick_api_column(
+        columns,
+        [
+            "DEMAND_ITEM_NAME",
+            "demand_item_name",
+            "ITEM_NAME2",
+            "item_name2",
+            "제품명",
+            "품명",
+            "품목명",
+            "ITEM_NAME",
+            "item_name",
+            "PRODUCT_NAME",
+        ],
+    )
+    qty_col = pick_api_column(
+        columns,
+        ["수요수량", "오더수량", "수주수량", "ORDER_QTY", "DEMAND_QTY", "demand_qty", "QTY", "수량"],
+    )
     due_col = pick_api_column(columns, ["납기일", "요청납기일", "납품일자", "DUE_DATE", "DELIVERY_DATE"])
-    inj_due_col = pick_api_column(columns, ["사출납기일", "사출 납기일", "INJECTION_DUE_DATE"])
+    inj_due_col = pick_api_column(columns, ["사출납기일", "사출 납기일", "INJECTION_DUE_DATE", "TARGET_DATETIME", "target_datetime"])
+    plan_qty_col = pick_api_column(columns, ["PLAN_QTY", "plan_qty", "계획수량"])
+    oper_col = pick_api_column(columns, ["OPER_ID", "oper_id", "공정코드", "공정"])
     shortage_col = pick_api_column(
         columns,
         ["부족수량", "생산부족수량", "생산필요수량", "총합계 생산 수량", "총생산필요수량", "REQUIRED_QTY"],
@@ -4773,21 +4865,48 @@ def load_api_demand_like_df() -> pd.DataFrame:
     r_col = pick_api_column(columns, ["R코드", "사출코드", "R_CODE", "INJECTION_CODE"])
     q_col = pick_api_column(columns, ["Q코드", "분리코드", "Q_CODE", "SEPARATION_CODE"])
 
+    item_codes = api_text_series(raw, item_col).map(normalize_item_code_value)
+    plan_qty = api_numeric_series(raw, plan_qty_col)
+    shortage_qty = api_numeric_series(raw, shortage_col) if shortage_col is not None else plan_qty.where(
+        item_codes.str.startswith("P", na=False), 0
+    )
+    oper_text = api_text_series(raw, oper_col).str.upper()
+    oper_normalized = oper_text.str.replace(r"[^0-9A-Z가-힣]+", "", regex=True)
+    injection_mask = (
+        item_codes.str.startswith("R", na=False)
+        | oper_text.str.contains("사출|INJ|INJECTION", regex=True, na=False)
+        | oper_normalized.str.startswith("10", na=False)
+    )
+    injection_qty = api_numeric_series(raw, inj_col) if inj_col is not None else plan_qty.where(injection_mask, 0)
+    first_order_mask = build_first_occurrence_mask(
+        raw,
+        [pick_api_column(columns, ["DEMAND_ID", "demand_id"]), order_col, pick_api_column(columns, ["SEQ", "seq"]), item_col],
+        item_codes,
+    )
+    order_qty = api_numeric_series(raw, qty_col).where(first_order_mask & item_codes.str.startswith("P", na=False), 0)
+    initial_text = combine_api_initial_and_type(api_text_series(raw, initial_col), api_text_series(raw, demand_type_col))
+    r_codes = api_text_series(raw, r_col).map(normalize_item_code_value) if r_col else item_codes.where(
+        item_codes.str.startswith("R", na=False), ""
+    )
+    q_codes = api_text_series(raw, q_col).map(normalize_item_code_value) if q_col else item_codes.where(
+        item_codes.str.startswith("Q", na=False), ""
+    )
+
     demand = pd.DataFrame(
         {
             "사이트코드": api_text_series(raw, site_col, "API"),
             "거래처": api_text_series(raw, customer_col),
             ORDER_NO_COL: api_text_series(raw, order_col),
-            "이니셜": api_text_series(raw, initial_col),
-            "품목코드": api_text_series(raw, item_col).map(normalize_item_code_value),
+            "이니셜": initial_text,
+            "품목코드": item_codes,
             "제품명": api_text_series(raw, name_col),
-            DEMAND_QTY_COL: api_numeric_series(raw, qty_col),
+            DEMAND_QTY_COL: order_qty,
             "납기일": api_text_series(raw, due_col),
             "사출납기일": api_text_series(raw, inj_due_col if inj_due_col is not None else due_col),
-            "부족수량": api_numeric_series(raw, shortage_col),
-            "사출생산필요수량": api_numeric_series(raw, inj_col),
-            "R코드": api_text_series(raw, r_col).map(normalize_item_code_value),
-            "Q코드": api_text_series(raw, q_col).map(normalize_item_code_value),
+            "부족수량": shortage_qty,
+            "사출생산필요수량": injection_qty,
+            "R코드": r_codes,
+            "Q코드": q_codes,
         }
     )
     is_summary = demand[["사이트코드", "거래처", "이니셜", "품목코드"]].eq("총합계").any(axis=1)
