@@ -2921,7 +2921,7 @@ def style_operational_table(display_df: pd.DataFrame, source_df: pd.DataFrame | 
     if numeric_cols:
         styler = styler.set_properties(subset=numeric_cols, **{"text-align": "right"})
 
-    text_cols = [c for c in ["제품명", "R코드 제품명", "리드지명", "제품명 예시"] if c in display_df.columns]
+    text_cols = [c for c in ["제품명", "R코드 제품명", "리드지명", "제품명 예시", "비고"] if c in display_df.columns]
     if text_cols:
         styler = styler.set_properties(subset=text_cols, **{"text-align": "left"})
 
@@ -2980,7 +2980,7 @@ def style_operational_table(display_df: pd.DataFrame, source_df: pd.DataFrame | 
             ),
             subset=["리스크구분"],
         )
-    rework_note_style_cols = [col for col in ["재작업", "비고"] if col in display_df.columns]
+    rework_note_style_cols = [col for col in ["재작업"] if col in display_df.columns]
     if rework_note_style_cols:
         styler = styler.set_properties(subset=rework_note_style_cols, **{"text-align": "left"})
         styler = styler.map(
