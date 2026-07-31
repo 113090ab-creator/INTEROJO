@@ -13,6 +13,11 @@ import openpyxl
 import pandas as pd
 import streamlit as st
 
+try:
+    import requests
+except ImportError:  # pragma: no cover - handled as a runtime configuration issue
+    requests = None
+
 st.set_page_config(page_title="생산현황", layout="wide")
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -44,6 +49,15 @@ TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 12000
 CACHE_MAX_ENTRIES = 64
 APP_CACHE_VERSION = "20260731-flow-view-v1"
+PLAN_API_BASE_URL_DEFAULT = "https://plan.interojo.net"
+PLAN_API_KEY_ENV = "PLAN_API_KEY"
+PLAN_API_BASE_URL_ENV = "PLAN_API_BASE_URL"
+PLAN_API_TIMEOUT_SECONDS = 60
+PLAN_API_CACHE_TTL_SECONDS = 300
+APS_PLAN_ENDPOINT = "/api/aps-plan"
+APS_WIP_ENDPOINT = "/api/aps-wip"
+APS_PLAN_META_ENDPOINT = "/api/aps-plan/meta"
+ITEM_LIST_BULK_ENDPOINT = "/api/item-list-bulk"
 ALL_ITEM_MASTER_SHEET = "생성가능_P코드"
 ALL_ITEM_SNAPSHOT_FILE = "all_item_status_snapshot.csv.gz"
 CODE_MISMATCH_SNAPSHOT_FILE = "code_mismatch_snapshot.csv.gz"
@@ -740,6 +754,243 @@ def get_latest_files_updated_at_cached(refresh_key: str, path_strs: tuple[str, .
     return latest_dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def get_streamlit_or_env_secret(name: str, default: str = "") -> str:
+    try:
+        value = st.secrets.get(name, "")
+    except Exception:
+        value = ""
+    if value is None or str(value).strip() == "":
+        value = os.environ.get(name, default)
+    return str(value).strip()
+
+
+def get_plan_api_base_url() -> str:
+    return get_streamlit_or_env_secret(PLAN_API_BASE_URL_ENV, PLAN_API_BASE_URL_DEFAULT).rstrip("/")
+
+
+def get_plan_api_key() -> str:
+    return get_streamlit_or_env_secret(PLAN_API_KEY_ENV, "")
+
+
+def get_session_value(key: str, default: object = None) -> object:
+    try:
+        return st.session_state.get(key, default)
+    except Exception:
+        return default
+
+
+def set_session_value(key: str, value: object) -> None:
+    try:
+        st.session_state[key] = value
+    except Exception:
+        pass
+
+
+def get_plan_api_refresh_nonce() -> int:
+    value = get_session_value("plan_api_refresh_nonce", 0)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def is_plan_api_configured() -> bool:
+    return requests is not None and bool(get_plan_api_key())
+
+
+def is_plan_api_enabled() -> bool:
+    return bool(get_session_value("use_plan_api_data_mode", False)) and is_plan_api_configured()
+
+
+def build_plan_api_refresh_key() -> str:
+    if not is_plan_api_enabled():
+        return "plan-api:disabled"
+    key_hash = hashlib.sha256(get_plan_api_key().encode("utf-8")).hexdigest()[:12]
+    return f"plan-api:{get_plan_api_base_url()}:{key_hash}:{get_plan_api_refresh_nonce()}"
+
+
+def normalize_api_column_key(value: object) -> str:
+    return re.sub(r"[\s_./()\-\[\]:]+", "", str(value).strip().lower())
+
+
+def pick_api_column(columns: list[str], candidates: list[str]) -> str | None:
+    exact = pick_first_existing_column(columns, candidates)
+    if exact is not None:
+        return exact
+    normalized = {normalize_api_column_key(col): col for col in columns}
+    for candidate in candidates:
+        matched = normalized.get(normalize_api_column_key(candidate))
+        if matched is not None:
+            return matched
+    return None
+
+
+def normalize_api_records(payload: object) -> list[dict[str, object]]:
+    if isinstance(payload, list):
+        return [row for row in payload if isinstance(row, dict)]
+    if not isinstance(payload, dict):
+        return []
+
+    for key in ("data", "rows", "items", "result", "results", "records", "list"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [row for row in value if isinstance(row, dict)]
+        if isinstance(value, dict):
+            nested = normalize_api_records(value)
+            if nested:
+                return nested
+
+    for value in payload.values():
+        if isinstance(value, list) and all(isinstance(row, dict) for row in value[:5]):
+            return value
+    return []
+
+
+@st.cache_data(show_spinner=False, ttl=PLAN_API_CACHE_TTL_SECONDS, max_entries=CACHE_MAX_ENTRIES)
+def fetch_plan_api_dataframe_cached(
+    base_url: str,
+    endpoint: str,
+    params_tuple: tuple[tuple[str, object], ...],
+    api_key_hash: str,
+    refresh_nonce: int,
+) -> tuple[pd.DataFrame, str]:
+    _ = api_key_hash, refresh_nonce
+    if requests is None:
+        return pd.DataFrame(), "requests 패키지가 설치되어 있지 않습니다."
+
+    api_key = get_plan_api_key()
+    if not api_key:
+        return pd.DataFrame(), f"{PLAN_API_KEY_ENV}가 설정되어 있지 않습니다."
+
+    url = f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}"
+    params = {str(key): value for key, value in params_tuple if value not in (None, "")}
+    try:
+        response = requests.get(
+            url,
+            params=params,
+            headers={"X-API-Key": api_key},
+            timeout=PLAN_API_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        return pd.DataFrame(), str(exc)
+
+    records = normalize_api_records(payload)
+    if not records:
+        return pd.DataFrame(), "API 응답에서 행 데이터를 찾지 못했습니다."
+    return pd.DataFrame.from_records(records), ""
+
+
+@st.cache_data(show_spinner=False, ttl=PLAN_API_CACHE_TTL_SECONDS, max_entries=CACHE_MAX_ENTRIES)
+def fetch_plan_api_meta_cached(
+    base_url: str,
+    endpoint: str,
+    api_key_hash: str,
+    refresh_nonce: int,
+) -> tuple[dict[str, object], str]:
+    _ = api_key_hash, refresh_nonce
+    if requests is None:
+        return {}, "requests 패키지가 설치되어 있지 않습니다."
+
+    api_key = get_plan_api_key()
+    if not api_key:
+        return {}, f"{PLAN_API_KEY_ENV}가 설정되어 있지 않습니다."
+
+    url = f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}"
+    try:
+        response = requests.get(
+            url,
+            headers={"X-API-Key": api_key},
+            timeout=PLAN_API_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        return {}, str(exc)
+    return payload if isinstance(payload, dict) else {}, ""
+
+
+def read_plan_api_dataframe(endpoint: str, params: dict[str, object] | None = None) -> tuple[pd.DataFrame, str]:
+    if not is_plan_api_enabled():
+        return pd.DataFrame(), "API 자동조회가 꺼져 있습니다."
+    api_key_hash = hashlib.sha256(get_plan_api_key().encode("utf-8")).hexdigest()[:12]
+    params_tuple = tuple(sorted((params or {}).items(), key=lambda item: item[0]))
+    return fetch_plan_api_dataframe_cached(
+        get_plan_api_base_url(),
+        endpoint,
+        params_tuple,
+        api_key_hash,
+        get_plan_api_refresh_nonce(),
+    )
+
+
+def find_meta_value(payload: dict[str, object], candidates: list[str]) -> str:
+    if not payload:
+        return ""
+    normalized_candidates = {normalize_api_column_key(candidate) for candidate in candidates}
+    for key, value in payload.items():
+        if normalize_api_column_key(key) in normalized_candidates:
+            text = str(value).strip()
+            if text and text.lower() not in INVALID_CATEGORY_VALUES:
+                return text
+        if isinstance(value, dict):
+            nested = find_meta_value(value, candidates)
+            if nested:
+                return nested
+    return ""
+
+
+def get_plan_api_updated_at() -> str:
+    if not is_plan_api_enabled():
+        return "-"
+    api_key_hash = hashlib.sha256(get_plan_api_key().encode("utf-8")).hexdigest()[:12]
+    payload, error = fetch_plan_api_meta_cached(
+        get_plan_api_base_url(),
+        APS_PLAN_META_ENDPOINT,
+        api_key_hash,
+        get_plan_api_refresh_nonce(),
+    )
+    if error:
+        return "-"
+    value = find_meta_value(
+        payload,
+        [
+            "updated_at",
+            "last_updated_at",
+            "lastUpdateAt",
+            "snapshot_at",
+            "generated_at",
+            "created_at",
+            "원장 마지막 갱신시각",
+            "마지막 갱신시각",
+            "추출시각",
+            "기준시각",
+            "APS실행일시",
+            "실행시각",
+        ],
+    )
+    if not value:
+        return "-"
+    parsed = pd.to_datetime(value, errors="coerce")
+    if pd.notna(parsed):
+        return parsed.strftime("%Y-%m-%d %H:%M:%S")
+    return value
+
+
+def render_plan_api_status() -> None:
+    if requests is None:
+        st.warning("API 자동조회 불가: requests 패키지가 설치되어 있지 않습니다.")
+        return
+    if not get_plan_api_key():
+        st.caption(f"API 자동조회 비활성: {PLAN_API_KEY_ENV} 설정 필요")
+        return
+    st.caption(f"API 기준: {get_plan_api_base_url()}")
+    updated_at = get_plan_api_updated_at()
+    if updated_at != "-":
+        st.caption(f"APS API 갱신시각: {updated_at}")
+
+
 def get_data_updated_at(base_dir: Path) -> str:
     try:
         inv_path, dem_path = find_excel_files(base_dir)
@@ -749,6 +1000,14 @@ def get_data_updated_at(base_dir: Path) -> str:
     ref_path = find_product_name_reference_file(base_dir)
 
     return get_latest_files_updated_at(unique_existing_paths([inv_path, dem_path, ref_path]))
+
+
+def get_aps_or_file_updated_at(file_updated_at: str) -> str:
+    if is_plan_api_enabled():
+        api_updated_at = get_plan_api_updated_at()
+        if api_updated_at != "-":
+            return api_updated_at
+    return file_updated_at
 
 
 def get_all_item_updated_at(base_dir: Path) -> str:
@@ -973,6 +1232,22 @@ def stage_uploaded_data_files(
 
 def select_data_source(base_dir: Path) -> tuple[Path, str, str]:
     st.subheader("데이터 소스")
+    api_configured = is_plan_api_configured()
+    use_api = st.toggle("APS API 자동조회 사용", value=api_configured, key="use_plan_api_data_mode")
+    if use_api:
+        render_plan_api_status()
+        if api_configured:
+            if st.button("API 새로고침", key="refresh_plan_api_data", use_container_width=True):
+                set_session_value("plan_api_refresh_nonce", get_plan_api_refresh_nonce() + 1)
+                st.cache_data.clear()
+                st.cache_resource.clear()
+                st.rerun()
+            st.caption("APS 수요/WIP는 API 우선 조회, 실패 시 기존 파일 기준으로 계산합니다.")
+            api_updated_at = get_plan_api_updated_at()
+            updated_at = api_updated_at if api_updated_at != "-" else get_data_updated_at(base_dir)
+            return base_dir, "APS API + 로컬 기준정보", updated_at
+        st.warning("API 키가 없어 기존 파일 방식으로 전환합니다.")
+
     use_uploaded = st.toggle("업로드 파일 사용", value=False, key="use_uploaded_data_mode")
     inv_file = None
     dem_file = None
@@ -1035,6 +1310,7 @@ def should_use_cloud_snapshots(data_base_dir: Path) -> bool:
     live_data_override = os.environ.get("INTEROJO_USE_LIVE_DATA", "").strip().lower()
     return (
         is_default_source
+        and not is_plan_api_enabled()
         and live_data_override not in {"1", "true", "yes", "on"}
         and (CLOUD_SNAPSHOT_DIR / "shortage_snapshot.csv.gz").exists()
     )
@@ -1225,10 +1501,13 @@ def build_inventory_df(inv: pd.DataFrame) -> pd.DataFrame:
             return selected.iloc[:, 0]
         return selected
 
-    qty_col = pick_first_existing_column(columns, ["총 재공 수량", "WIP_QTY", "재고량"])
-    item_col = pick_first_existing_column(columns, ["제품 코드", "ITEM_ID", "제품코드", "품목코드"])
-    warehouse_col = pick_first_existing_column(columns, ["WH_NAME", "창고명", "버퍼 코드", "제품위치(창고)", "PROP02", "창고"])
-    wip_code_col = pick_first_existing_column(columns, ["재공 코드", "재공코드", "WIP_CODE", "WIP ID", "WIP_ID"])
+    qty_col = pick_api_column(columns, ["총 재공 수량", "재공수량", "재고수량", "WIP_QTY", "WIP수량", "QTY", "재고량"])
+    item_col = pick_api_column(columns, ["제품 코드", "ITEM_ID", "ITEM_CODE", "ITEM_CD", "제품코드", "품목코드"])
+    warehouse_col = pick_api_column(
+        columns,
+        ["WH_NAME", "창고명", "공정(버퍼)", "공정", "버퍼 코드", "BUFFER_CODE", "제품위치(창고)", "PROP02", "창고"],
+    )
+    wip_code_col = pick_api_column(columns, ["재공 코드", "재공코드", "WIP_CODE", "WIP ID", "WIP_ID", "수요ID"])
 
     # Fallback for unknown layouts
     if qty_col is None:
@@ -2402,6 +2681,7 @@ def build_leadji_status_refresh_key(base_dir: Path) -> str:
 
 def build_all_item_refresh_key(base_dir: Path) -> str:
     parts = [f"all-items:{APP_CACHE_VERSION}"]
+    parts.append(build_plan_api_refresh_key())
     try:
         parts.append(build_data_refresh_key(base_dir))
     except Exception as exc:
@@ -4432,6 +4712,142 @@ def normalize_to_master_p_code(value: object) -> str:
     return code
 
 
+def api_text_series(source: pd.DataFrame, column_name: str | None, default: str = "") -> pd.Series:
+    if column_name and column_name in source.columns:
+        return source[column_name].astype(str).str.strip()
+    return pd.Series(default, index=source.index, dtype="object")
+
+
+def api_numeric_series(source: pd.DataFrame, column_name: str | None, default: float = 0.0) -> pd.Series:
+    if column_name and column_name in source.columns:
+        return parse_mixed_numeric(source[column_name])
+    return pd.Series(default, index=source.index, dtype="float64")
+
+
+def load_api_wip_inventory_df() -> pd.DataFrame:
+    raw, error = read_plan_api_dataframe(APS_WIP_ENDPOINT)
+    if error or raw.empty:
+        return pd.DataFrame(columns=["품목코드", "창고", "재공코드", "재고량"])
+    return build_inventory_df(raw)
+
+
+def load_api_demand_like_df() -> pd.DataFrame:
+    raw, error = read_plan_api_dataframe(APS_PLAN_ENDPOINT)
+    output_columns = [
+        "사이트코드",
+        "거래처",
+        ORDER_NO_COL,
+        "이니셜",
+        "품목코드",
+        "제품명",
+        DEMAND_QTY_COL,
+        "납기일",
+        "사출납기일",
+        "부족수량",
+        "사출생산필요수량",
+        "R코드",
+        "Q코드",
+    ]
+    if error or raw.empty:
+        return pd.DataFrame(columns=output_columns)
+
+    raw = raw.copy()
+    raw.columns = [str(col).strip() for col in raw.columns]
+    columns = raw.columns.tolist()
+    item_col = pick_api_column(
+        columns,
+        ["품목코드", "제품 코드", "제품코드", "생산코드", "P코드", "ITEM_ID", "ITEM_CODE", "ITEM_CD"],
+    )
+    if item_col is None:
+        return pd.DataFrame(columns=output_columns)
+
+    site_col = pick_api_column(columns, ["사이트코드", "사이트", "SITE_CODE", "SITE"])
+    customer_col = pick_api_column(columns, ["거래처", "거래처명", "CUSTOMER", "CUSTOMER_NAME", "고객", "고객명"])
+    order_col = pick_api_column(columns, ["수주번호", "오더번호", "ORDER_NO", "ORDER_ID", "수요ID", "DEMAND_ID"])
+    initial_col = pick_api_column(columns, ["이니셜", "INITIAL", "INITIAL_CODE"])
+    name_col = pick_api_column(columns, ["제품명", "품명", "품목명", "ITEM_NAME", "PRODUCT_NAME"])
+    qty_col = pick_api_column(columns, ["수요수량", "오더수량", "수주수량", "ORDER_QTY", "DEMAND_QTY", "QTY", "수량"])
+    due_col = pick_api_column(columns, ["납기일", "요청납기일", "납품일자", "DUE_DATE", "DELIVERY_DATE"])
+    inj_due_col = pick_api_column(columns, ["사출납기일", "사출 납기일", "INJECTION_DUE_DATE"])
+    shortage_col = pick_api_column(
+        columns,
+        ["부족수량", "생산부족수량", "생산필요수량", "총합계 생산 수량", "총생산필요수량", "REQUIRED_QTY"],
+    )
+    inj_col = pick_api_column(
+        columns,
+        ["사출생산필요수량", "사출부족수량", "사출필요수량", "[10]사출조립 생산수량", "INJECTION_REQUIRED_QTY"],
+    )
+    r_col = pick_api_column(columns, ["R코드", "사출코드", "R_CODE", "INJECTION_CODE"])
+    q_col = pick_api_column(columns, ["Q코드", "분리코드", "Q_CODE", "SEPARATION_CODE"])
+
+    demand = pd.DataFrame(
+        {
+            "사이트코드": api_text_series(raw, site_col, "API"),
+            "거래처": api_text_series(raw, customer_col),
+            ORDER_NO_COL: api_text_series(raw, order_col),
+            "이니셜": api_text_series(raw, initial_col),
+            "품목코드": api_text_series(raw, item_col).map(normalize_item_code_value),
+            "제품명": api_text_series(raw, name_col),
+            DEMAND_QTY_COL: api_numeric_series(raw, qty_col),
+            "납기일": api_text_series(raw, due_col),
+            "사출납기일": api_text_series(raw, inj_due_col if inj_due_col is not None else due_col),
+            "부족수량": api_numeric_series(raw, shortage_col),
+            "사출생산필요수량": api_numeric_series(raw, inj_col),
+            "R코드": api_text_series(raw, r_col).map(normalize_item_code_value),
+            "Q코드": api_text_series(raw, q_col).map(normalize_item_code_value),
+        }
+    )
+    is_summary = demand[["사이트코드", "거래처", "이니셜", "품목코드"]].eq("총합계").any(axis=1)
+    demand = demand[~is_summary].copy()
+    demand = demand[demand["품목코드"].ne("") & ~demand["품목코드"].str.lower().isin(INVALID_CATEGORY_VALUES)]
+    if demand.empty:
+        return pd.DataFrame(columns=output_columns)
+    return demand[output_columns]
+
+
+def load_all_item_shortage_source(data_base_dir: Path, code_to_p: dict[str, str]) -> pd.DataFrame:
+    if is_plan_api_enabled():
+        api_demand = load_api_demand_like_df()
+        if not api_demand.empty:
+            return api_demand
+    try:
+        data_refresh_key = build_data_refresh_key(data_base_dir)
+        shortage_df, _, _ = load_data(data_refresh_key, str(data_base_dir))
+        return shortage_df
+    except Exception:
+        if is_plan_api_enabled():
+            return pd.DataFrame(
+                columns=[
+                    "품목코드",
+                    "R코드",
+                    "Q코드",
+                    "거래처",
+                    "이니셜",
+                    "제품명",
+                    "납기일",
+                    DEMAND_QTY_COL,
+                    "부족수량",
+                    "사출생산필요수량",
+                ]
+            )
+        raise
+
+
+def load_all_item_inventory_source(data_base_dir: Path) -> pd.DataFrame:
+    if is_plan_api_enabled():
+        api_inv_df = load_api_wip_inventory_df()
+        if not api_inv_df.empty:
+            return api_inv_df
+    try:
+        inv_path, _ = find_excel_files(data_base_dir)
+        inv = read_inventory_excel_subset(inv_path)
+        return build_inventory_df(inv)
+    except Exception:
+        if is_plan_api_enabled():
+            return pd.DataFrame(columns=["품목코드", "창고", "재공코드", "재고량"])
+        raise
+
+
 @st.cache_data(show_spinner=False, max_entries=CACHE_MAX_ENTRIES)
 def read_all_item_master(master_path_str: str, refresh_key: str) -> pd.DataFrame:
     _ = refresh_key
@@ -4950,9 +5366,7 @@ def build_all_item_status_snapshot(refresh_key: str, base_dir_str: str | None = 
     if master.empty:
         return pd.DataFrame(columns=ALL_ITEM_DOWNLOAD_COLUMNS), pd.DataFrame()
 
-    inv_path, _ = find_excel_files(data_base_dir)
-    inv = read_inventory_excel_subset(inv_path)
-    inv_df = build_inventory_df(inv)
+    inv_df = load_all_item_inventory_source(data_base_dir)
     stock_lookup, target_inv = build_target_stock_lookup(inv_df)
 
     all_items = pd.DataFrame(
@@ -4986,8 +5400,7 @@ def build_all_item_status_snapshot(refresh_key: str, base_dir_str: str | None = 
     all_items = all_items.merge(code_scope, on="생산코드", how="left")
     code_to_p = build_code_to_production_map(code_scope)
 
-    data_refresh_key = build_data_refresh_key(data_base_dir)
-    shortage_df, _, _ = load_data(data_refresh_key, str(data_base_dir))
+    shortage_df = load_all_item_shortage_source(data_base_dir, code_to_p)
     demand_summary = build_all_item_demand_summary(shortage_df, code_to_p)
     all_items = all_items.merge(demand_summary, on="생산코드", how="left")
 
@@ -5141,10 +5554,13 @@ def build_inventory_risk_source_df(inv: pd.DataFrame) -> pd.DataFrame:
     columns = inv.columns.tolist()
     index = inv.index
 
-    qty_col = pick_first_existing_column(columns, ["총 재공 수량", "WIP_QTY", "재고량"])
-    item_col = pick_first_existing_column(columns, ["제품 코드", "ITEM_ID", "제품코드", "품목코드"])
-    warehouse_col = pick_first_existing_column(columns, ["WH_NAME", "창고명", "버퍼 코드", "제품위치(창고)", "PROP02", "창고"])
-    wip_code_col = pick_first_existing_column(columns, ["재공 코드", "재공코드", "WIP_CODE", "WIP ID", "WIP_ID"])
+    qty_col = pick_api_column(columns, ["총 재공 수량", "재공수량", "재고수량", "WIP_QTY", "WIP수량", "QTY", "재고량"])
+    item_col = pick_api_column(columns, ["제품 코드", "ITEM_ID", "ITEM_CODE", "ITEM_CD", "제품코드", "품목코드"])
+    warehouse_col = pick_api_column(
+        columns,
+        ["WH_NAME", "창고명", "공정(버퍼)", "공정", "버퍼 코드", "BUFFER_CODE", "제품위치(창고)", "PROP02", "창고"],
+    )
+    wip_code_col = pick_api_column(columns, ["재공 코드", "재공코드", "WIP_CODE", "WIP ID", "WIP_ID", "수요ID"])
     lot_col = pick_first_existing_column(columns, ["LOT_NO", "Lot no.", "LOT NO", "LOT"])
     available_col = pick_first_existing_column(columns, ["사용가능한 날짜", "사용가능일", "AVAILABLE_DATE"])
     created_col = pick_first_existing_column(columns, ["생성 일시", "생성일시", "CREATED_AT"])
@@ -6180,73 +6596,6 @@ def render_all_items_dashboard(all_items_df: pd.DataFrame, updated_at: str) -> N
                         download_stamp,
                         key_token,
                     )
-
-
-def render_code_mismatch_dashboard(code_mismatch_df: pd.DataFrame, updated_at: str) -> None:
-    st.subheader("코드미매칭 확인")
-    st.caption(f"업데이트: {updated_at}")
-    st.caption("전체 품목리스트에서 자동 생성한 P/R/Q 코드와 재고 원장 코드가 매칭되지 않은 항목입니다.")
-
-    download_stamp = datetime.now(DISPLAY_TZ).strftime("%Y%m%d_%H%M%S")
-    working = code_mismatch_df.copy()
-    if working.empty:
-        st.success("코드미매칭으로 확인할 항목이 없습니다.")
-        render_lazy_excel_download_button(
-            "엑셀 다운로드",
-            working,
-            "코드미매칭",
-            f"code_mismatch_{download_stamp}.xlsx",
-            "download_code_mismatch_empty_v1",
-        )
-        return
-
-    filter_col, search_col = st.columns([1.4, 2.6])
-    with filter_col:
-        type_options = ["전체"] + sorted(working["유형"].astype(str).dropna().unique().tolist())
-        selected_type = st.selectbox("유형", options=type_options, index=0, key="code_mismatch_type_v1")
-    with search_col:
-        query = st.text_input(
-            "통합 검색",
-            value="",
-            key="code_mismatch_query_v1",
-            placeholder="품목코드, 창고, 사유 검색",
-            help="콤마(,)로 여러 키워드를 입력하면 OR 조건으로 검색합니다.",
-        ).strip()
-
-    filtered = working
-    if selected_type != "전체":
-        filtered = filtered[filtered["유형"] == selected_type]
-    if query:
-        filtered = filter_display_table_with_query(filtered, query).copy()
-
-    c1, c2 = st.columns(2, gap="medium")
-    with c1:
-        render_dashboard_kpi("미매칭 행수", f"{len(filtered):,}", "risk")
-    with c2:
-        stock_total = parse_mixed_numeric(filtered["재고수량"]).sum() if "재고수량" in filtered.columns else 0
-        render_dashboard_kpi("미매칭 재고수량", f"{stock_total:,.0f}", "risk")
-
-    st.caption(f"표시 {len(filtered):,}건 / 전체 {len(working):,}건")
-    render_lazy_excel_download_button(
-        "엑셀 다운로드",
-        filtered,
-        "코드미매칭",
-        f"code_mismatch_{download_stamp}.xlsx",
-        "download_code_mismatch_v1",
-    )
-
-    display_source, _ = limit_dataframe_for_display(filtered)
-    caption_limited_rows(len(filtered), len(display_source))
-    display_df = format_numeric_columns_for_display(display_source)
-    column_config = build_auto_column_config(display_df, display_df.columns.tolist(), source_df=display_source)
-    st.dataframe(
-        style_operational_table(display_df, display_source),
-        width="stretch",
-        height=720,
-        column_config=column_config,
-        hide_index=True,
-        key="code_mismatch_table_v1",
-    )
 
 
 def render_inventory_risk_dashboard(risk_df: pd.DataFrame, updated_at: str) -> None:
@@ -7723,7 +8072,7 @@ def main() -> None:
         """,
         unsafe_allow_html=True,
     )
-    top_views = ["생산 부족 현황", "리드지 현황", "생산코드별 리드지", "코드미매칭 확인", "전체 품목 현황"]
+    top_views = ["생산 부족 현황", "리드지 현황", "생산코드별 리드지", "전체 품목 현황"]
     with st.sidebar:
         st.markdown(
             """
@@ -7743,6 +8092,8 @@ def main() -> None:
             """,
             unsafe_allow_html=True,
         )
+        if st.session_state.get("top_view_radio_v2") not in top_views:
+            st.session_state["top_view_radio_v2"] = top_views[0]
         selected_top_view = st.radio(
             "메뉴",
             options=top_views,
@@ -7753,10 +8104,10 @@ def main() -> None:
         st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
         data_base_dir, source_label, updated_at = select_data_source(BASE_DIR)
         cloud_snapshots_available = should_use_cloud_snapshots(data_base_dir)
-        data_live_updated_at = updated_at
-        if selected_top_view in {"전체 품목 현황", "코드미매칭 확인"}:
+        data_live_updated_at = get_aps_or_file_updated_at(updated_at)
+        if selected_top_view == "전체 품목 현황":
             sidebar_meta_key = "all_item_updated_at"
-            sidebar_live_updated_at = get_all_item_updated_at(data_base_dir)
+            sidebar_live_updated_at = get_aps_or_file_updated_at(get_all_item_updated_at(data_base_dir))
         elif selected_top_view in {"리드지 현황", "생산코드별 리드지"}:
             sidebar_meta_key = "leadji_updated_at"
             sidebar_live_updated_at = get_leadji_status_updated_at(data_base_dir)
@@ -7770,6 +8121,9 @@ def main() -> None:
         elif cloud_snapshots_available:
             updated_at = sidebar_live_updated_at
             st.caption("Cloud 모드: 원본 엑셀 자동 반영")
+        elif is_plan_api_enabled():
+            updated_at = sidebar_live_updated_at
+            st.caption("API 모드: APS 갱신시점 기준")
         else:
             st.caption("업로드 모드: 업로드 파일 직접 계산")
         st.caption(f"적용 데이터: {source_label}")
@@ -7782,8 +8136,8 @@ def main() -> None:
         file_info_df = pd.DataFrame()
         all_items_df = pd.DataFrame()
         code_mismatch_df = pd.DataFrame()
-        if selected_top_view in {"전체 품목 현황", "코드미매칭 확인"}:
-            all_item_live_updated_at = get_all_item_updated_at(data_base_dir)
+        if selected_top_view == "전체 품목 현황":
+            all_item_live_updated_at = get_aps_or_file_updated_at(get_all_item_updated_at(data_base_dir))
             use_all_item_cloud_snapshot = cloud_snapshots_available and is_cloud_snapshot_fresh(
                 "all_item_updated_at", all_item_live_updated_at
             )
@@ -7860,8 +8214,6 @@ def main() -> None:
         render_leadji_dashboard(updated_at, df, leadji_info, leadji_stock, leadji_order_df)
     elif selected_top_view == "생산코드별 리드지":
         render_leadji_pcode5_dashboard(updated_at, df, leadji_info, leadji_stock)
-    else:
-        render_code_mismatch_dashboard(code_mismatch_df, updated_at)
 
 
 if __name__ == "__main__":
