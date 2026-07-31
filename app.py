@@ -43,26 +43,38 @@ WAREHOUSE_MAP = {
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 12000
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260714-all-items-v3"
+APP_CACHE_VERSION = "20260731-flow-view-v1"
 ALL_ITEM_MASTER_SHEET = "생성가능_P코드"
 ALL_ITEM_SNAPSHOT_FILE = "all_item_status_snapshot.csv.gz"
 CODE_MISMATCH_SNAPSHOT_FILE = "code_mismatch_snapshot.csv.gz"
+FINISHED_GOODS_STOCK_UPLOAD_FILE = "완제품_재고변화_uploaded.xlsx"
+FINISHED_GOODS_STOCK_SHEET_HINTS = ("전체 품목코드 재고", "품목코드 변화 조회결과")
 ALL_ITEM_DOWNLOAD_COLUMNS = [
+    "제품대분류",
+    "거래처그룹",
     "거래처",
     "이니셜",
     "신규분류",
     "제품명",
     "파워",
+    "납기일",
     "사출코드",
     "분리코드",
     "생산코드",
+    "오더수량",
     "실수요수량",
     "총수요수량",
+    "생산부족수량",
+    "사출부족수량",
     "사출창고",
     "분리창고",
     "검사접착창고",
     "누수규격검사",
     "공정재고합계",
+    "완제품재고",
+    "DOI기준오더",
+    "DOI",
+    "신호",
     "초과재고수량",
     "부족수량",
     "샘플 신청가능수량",
@@ -71,16 +83,73 @@ ALL_ITEM_DOWNLOAD_COLUMNS = [
     "코드매칭상태",
 ]
 ALL_ITEM_NUMERIC_COLUMNS = [
+    "오더수량",
     "실수요수량",
     "총수요수량",
+    "생산부족수량",
+    "사출부족수량",
     "사출창고",
     "분리창고",
     "검사접착창고",
     "누수규격검사",
     "공정재고합계",
+    "완제품재고",
+    "DOI기준오더",
+    "DOI",
     "초과재고수량",
     "부족수량",
     "샘플 신청가능수량",
+]
+ALL_ITEM_FLOW_DISPLAY_COLUMNS = [
+    "이니셜",
+    "제품명",
+    "오더수량",
+    "납기일",
+    "부족수량",
+    "사출부족수량",
+    "공정재고",
+    "DOI",
+    "신호",
+]
+ALL_ITEM_FLOW_POWER_DETAIL_COLUMNS = [
+    "제품대분류",
+    "거래처그룹",
+    "거래처",
+    "이니셜",
+    "신규분류",
+    "제품명",
+    "파워",
+    "생산코드",
+    "오더수량",
+    "납기일",
+    "생산부족수량",
+    "사출부족수량",
+    "공정재고합계",
+    "완제품재고",
+    "DOI",
+    "신호",
+    "사출창고",
+    "분리창고",
+    "검사접착창고",
+    "누수규격검사",
+]
+ALL_ITEM_FLOW_CUSTOMER_ORDER = [
+    "전체",
+    "PIA",
+    "OPHTALMIC",
+    "Sincere",
+    "HEARTS/TopTrend",
+    "OPTICAL SUPPLIES",
+    "MAXVUE/OPTIMAX",
+    "ALENSA",
+    "FEEL GOOD",
+    "CHINA/IRIS",
+    "MG Medical",
+    "T-Garden",
+    "HAPA/PPB",
+    "국내",
+    "기타 거래처",
+    "거래처 미지정",
 ]
 ALL_ITEM_STATUS_OPTIONS = [
     "전체",
@@ -152,6 +221,7 @@ COLUMN_LABEL_ALIASES = {
     "검사접착창고": "검사접착 재고",
     "검사접착재작업창고": "검사접착재작업 재고",
     "누수규격검사 창고": "누수규격 재고",
+    "공정재고합계": "공정재고",
     "사출창고 합계": "사출 재고",
     "분리창고 합계": "분리 재고",
     "검사접착창고 합계": "검사접착 재고",
@@ -159,6 +229,8 @@ COLUMN_LABEL_ALIASES = {
     "누수규격검사창고 합계": "누수규격 재고",
     "공정재고 합계": "공정재고",
     "사출 부족수량": "사출부족",
+    "사출부족수량": "사출부족",
+    "생산부족수량": "부족수량",
     "사출생산필요수량": "사출필요",
     "분리생산필요수량": "분리필요",
     "[45]하이드레이션/전면검사 필요수량": "45필요",
@@ -174,6 +246,12 @@ COLUMN_LABEL_ALIASES = {
     "재고수량": "재고",
     "현재수요수량": "현재수요",
     "초과수량": "초과",
+    "오더수량": "오더수량",
+    "완제품재고": "완제품재고",
+    "제품대분류": "제품분류",
+    "거래처그룹": "거래처",
+    "DOI": "DOI",
+    "신호": "신호",
     "수요코드수": "수요코드",
     "제품명 예시": "제품명",
     "이니셜 예시": "이니셜",
@@ -553,6 +631,45 @@ def find_all_item_master_file(base_dir: Path) -> Path | None:
     return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
+def workbook_has_any_sheet(path: Path, sheet_names: tuple[str, ...]) -> bool:
+    try:
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    except Exception:
+        return False
+    try:
+        normalized_wb_names = {normalize_excel_sheet_name(name) for name in wb.sheetnames}
+        return any(normalize_excel_sheet_name(name) in normalized_wb_names for name in sheet_names)
+    finally:
+        wb.close()
+
+
+def find_finished_goods_stock_file(base_dir: Path) -> Path | None:
+    search_dirs = [base_dir]
+    if base_dir.resolve() != BASE_DIR.resolve():
+        search_dirs.append(BASE_DIR)
+    downloads_dir = Path.home() / "Downloads"
+    if downloads_dir.exists():
+        search_dirs.append(downloads_dir)
+
+    candidates: list[Path] = []
+    for search_dir in unique_existing_paths(search_dirs):
+        for path in search_dir.glob("*.xlsx"):
+            if path.name.startswith("~$") or path in candidates:
+                continue
+            normalized_name = path.name.replace(" ", "")
+            is_staged_upload = path.name == FINISHED_GOODS_STOCK_UPLOAD_FILE
+            is_stock_change = "재고변화" in normalized_name and "품목코드" in normalized_name
+            is_lot_stock = "LOT" in normalized_name.upper() and "품목코드" in normalized_name and "재고" in normalized_name
+            if not (is_staged_upload or is_stock_change or is_lot_stock):
+                continue
+            if workbook_has_any_sheet(path, FINISHED_GOODS_STOCK_SHEET_HINTS):
+                candidates.append(path)
+
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
 def find_leadji_order_status_file(base_dir: Path) -> Path | None:
     xlsx_files = [p for p in base_dir.glob("*.xlsx") if not p.name.startswith("~$")]
     if not xlsx_files:
@@ -641,7 +758,13 @@ def get_all_item_updated_at(base_dir: Path) -> str:
         inv_path = None
         dem_path = find_demand_update_file(base_dir)
     paths = unique_existing_paths(
-        [inv_path, dem_path, find_product_name_reference_file(base_dir), find_all_item_master_file(base_dir)]
+        [
+            inv_path,
+            dem_path,
+            find_product_name_reference_file(base_dir),
+            find_all_item_master_file(base_dir),
+            find_finished_goods_stock_file(base_dir),
+        ]
     )
     return get_latest_files_updated_at(paths)
 
@@ -739,6 +862,7 @@ def build_staged_upload_signature(base_dir: Path) -> str:
     inv_staged = base_dir / "ODV_WIP_uploaded.xlsx"
     dem_staged = base_dir / "수요정보(전공정).xlsx"
     ref_staged = base_dir / "제품명 기준 정보.xlsx"
+    finished_goods_staged = base_dir / FINISHED_GOODS_STOCK_UPLOAD_FILE
     if not inv_staged.exists() or not dem_staged.exists():
         return ""
     return "|".join(
@@ -746,6 +870,7 @@ def build_staged_upload_signature(base_dir: Path) -> str:
             hash_file_contents(inv_staged),
             hash_file_contents(dem_staged),
             hash_file_contents(ref_staged) if ref_staged.exists() else "-",
+            hash_file_contents(finished_goods_staged) if finished_goods_staged.exists() else "-",
             "staged-upload",
         ]
     )
@@ -770,6 +895,7 @@ def stage_uploaded_data_files(
     inventory_file,
     demand_file,
     reference_file=None,
+    finished_goods_stock_file=None,
 ) -> Path:
     session_id = get_or_create_upload_session_id()
     session_dir = UPLOAD_WORKSPACE_ROOT / session_id
@@ -778,12 +904,20 @@ def stage_uploaded_data_files(
     inv_bytes = bytes(inventory_file.getbuffer())
     dem_bytes = bytes(demand_file.getbuffer())
     ref_bytes = bytes(reference_file.getbuffer()) if reference_file is not None else None
+    finished_goods_bytes = (
+        bytes(finished_goods_stock_file.getbuffer()) if finished_goods_stock_file is not None else None
+    )
 
     local_ref = find_product_name_reference_file(base_dir) if reference_file is None else None
     local_ref_sig = ""
     if local_ref is not None and local_ref.exists():
         stat = local_ref.stat()
         local_ref_sig = f"{local_ref.name}:{stat.st_size}:{stat.st_mtime_ns}"
+    local_finished_goods = find_finished_goods_stock_file(base_dir) if finished_goods_stock_file is None else None
+    local_finished_goods_sig = ""
+    if local_finished_goods is not None and local_finished_goods.exists():
+        stat = local_finished_goods.stat()
+        local_finished_goods_sig = f"{local_finished_goods.name}:{stat.st_size}:{stat.st_mtime_ns}"
 
     upload_signature = "|".join(
         [
@@ -791,17 +925,25 @@ def stage_uploaded_data_files(
             hashlib.md5(dem_bytes).hexdigest(),
             hashlib.md5(ref_bytes).hexdigest() if ref_bytes is not None else "-",
             local_ref_sig,
+            hashlib.md5(finished_goods_bytes).hexdigest() if finished_goods_bytes is not None else "-",
+            local_finished_goods_sig,
         ]
     )
     signature_key = f"upload_workspace_signature_{session_id}"
     inv_staged = session_dir / "ODV_WIP_uploaded.xlsx"
     dem_staged = session_dir / "수요정보(전공정).xlsx"
     ref_staged = session_dir / "제품명 기준 정보.xlsx"
+    finished_goods_staged = session_dir / FINISHED_GOODS_STOCK_UPLOAD_FILE
     if (
         st.session_state.get(signature_key) == upload_signature
         and inv_staged.exists()
         and dem_staged.exists()
         and (reference_file is not None or ref_staged.exists() or local_ref is None)
+        and (
+            finished_goods_stock_file is not None
+            or finished_goods_staged.exists()
+            or local_finished_goods is None
+        )
     ):
         write_upload_workspace_signature(session_dir, upload_signature)
         mark_latest_uploaded_workspace(session_id)
@@ -818,6 +960,10 @@ def stage_uploaded_data_files(
     else:
         if local_ref is not None and local_ref.exists():
             shutil.copy2(local_ref, ref_dst)
+    if finished_goods_stock_file is not None:
+        finished_goods_staged.write_bytes(finished_goods_bytes if finished_goods_bytes is not None else b"")
+    elif local_finished_goods is not None and local_finished_goods.exists():
+        shutil.copy2(local_finished_goods, finished_goods_staged)
 
     st.session_state[signature_key] = upload_signature
     write_upload_workspace_signature(session_dir, upload_signature)
@@ -831,6 +977,7 @@ def select_data_source(base_dir: Path) -> tuple[Path, str, str]:
     inv_file = None
     dem_file = None
     ref_file = None
+    finished_goods_stock_file = None
     if use_uploaded:
         inv_file = st.file_uploader("재고 파일(.xlsx)", type=["xlsx"], key="upload_inventory_xlsx")
         dem_file = st.file_uploader("수요 파일(.xlsx)", type=["xlsx"], key="upload_demand_xlsx")
@@ -839,6 +986,12 @@ def select_data_source(base_dir: Path) -> tuple[Path, str, str]:
             type=["xlsx"],
             key="upload_reference_xlsx",
             help="미업로드 시 로컬의 '제품명 기준 정보.xlsx'를 사용합니다.",
+        )
+        finished_goods_stock_file = st.file_uploader(
+            "완제품 재고 변화 파일(.xlsx, 선택)",
+            type=["xlsx"],
+            key="upload_finished_goods_stock_xlsx",
+            help="업로드 시 전체 품목 현황의 DOI와 신호에 반영합니다.",
         )
     else:
         st.caption("현재 설정: 로컬 폴더의 파일 사용")
@@ -857,8 +1010,11 @@ def select_data_source(base_dir: Path) -> tuple[Path, str, str]:
         st.info("업로드 모드에서는 재고/수요 파일 2개 업로드가 필요합니다.")
         st.stop()
 
-    workspace_dir = stage_uploaded_data_files(base_dir, inv_file, dem_file, ref_file)
-    source_label = f"업로드 파일 ({inv_file.name}, {dem_file.name})"
+    workspace_dir = stage_uploaded_data_files(base_dir, inv_file, dem_file, ref_file, finished_goods_stock_file)
+    uploaded_names = [inv_file.name, dem_file.name]
+    if finished_goods_stock_file is not None:
+        uploaded_names.append(finished_goods_stock_file.name)
+    source_label = f"업로드 파일 ({', '.join(uploaded_names)})"
     updated_at = get_data_updated_at(workspace_dir)
     return workspace_dir, source_label, updated_at
 
@@ -2259,6 +2415,13 @@ def build_all_item_refresh_key(base_dir: Path) -> str:
         stat = master_path.stat()
         parts.append(f"{master_path.name}:{stat.st_size}:{stat.st_mtime_ns}")
 
+    finished_goods_stock_path = find_finished_goods_stock_file(base_dir)
+    if finished_goods_stock_path is None:
+        parts.append("finished-goods-stock:missing")
+    else:
+        stat = finished_goods_stock_path.stat()
+        parts.append(f"{finished_goods_stock_path.name}:{stat.st_size}:{stat.st_mtime_ns}")
+
     return "|".join(parts)
 
 
@@ -2804,6 +2967,11 @@ def format_numeric_columns_for_display(df: pd.DataFrame) -> pd.DataFrame:
             display_df[col] = display_df[col].map(format_power_value)
             continue
 
+        if str(col).upper() == "DOI":
+            series = parse_mixed_numeric(display_df[col])
+            display_df[col] = series.map(lambda x: "" if pd.isna(x) or x <= 0 else f"{x:,.1f}")
+            continue
+
         force_integer_display = any(token in str(col) for token in ["수량", "부족", "재고", "창고", "발주", "합계"])
         numeric_dtype = pd.api.types.is_numeric_dtype(display_df[col])
         numeric_like = numeric_dtype or force_integer_display or infer_numeric_like_series(display_df[col])
@@ -2862,6 +3030,12 @@ def pick_fixed_column_width_px(column_name: str, max_length: int, numeric_like: 
         return int(max(240, min(380, 28 + max_length * 7)))
     if column_name in medium_text_columns:
         return int(max(120, min(170, 24 + max_length * 7)))
+    if column_name in {"거래처그룹", "제품대분류"}:
+        return 132
+    if column_name == "DOI":
+        return 92
+    if column_name == "신호":
+        return 112
     if column_name == "확인구분":
         return 150
     if column_name in {"재작업", "비고"}:
@@ -4462,16 +4636,29 @@ def resolve_master_code_from_process_candidates(values: list[object], code_to_p:
 
 def build_all_item_demand_summary(shortage_df: pd.DataFrame, code_to_p: dict[str, str]) -> pd.DataFrame:
     if shortage_df.empty or "품목코드" not in shortage_df.columns:
-        return pd.DataFrame(columns=["생산코드", "거래처_수요", "이니셜_수요", "제품명_수요", "실수요수량"])
+        return pd.DataFrame(
+            columns=[
+                "생산코드",
+                "거래처_수요",
+                "이니셜_수요",
+                "제품명_수요",
+                "오더수량",
+                "납기일",
+                "생산부족수량",
+                "사출부족수량",
+            ]
+        )
 
     demand = shortage_df.copy()
-    for col in ["품목코드", "R코드", "Q코드", "거래처", "이니셜", "제품명"]:
+    for col in ["품목코드", "R코드", "Q코드", "거래처", "이니셜", "제품명", "납기일", "부족수량", "사출생산필요수량"]:
         if col not in demand.columns:
             demand[col] = ""
     qty_col = DEMAND_QTY_COL if DEMAND_QTY_COL in demand.columns else "수요수량"
     if qty_col not in demand.columns:
         demand[qty_col] = 0
-    demand["실수요수량"] = parse_mixed_numeric(demand[qty_col])
+    demand["오더수량"] = parse_mixed_numeric(demand[qty_col])
+    demand["생산부족수량"] = parse_mixed_numeric(demand["부족수량"])
+    demand["사출부족수량"] = parse_mixed_numeric(demand["사출생산필요수량"])
     demand["생산코드"] = demand.apply(
         lambda row: resolve_master_code_from_process_candidates(
             [row.get("품목코드", ""), row.get("R코드", ""), row.get("Q코드", "")],
@@ -4481,7 +4668,18 @@ def build_all_item_demand_summary(shortage_df: pd.DataFrame, code_to_p: dict[str
     )
     demand = demand[demand["생산코드"].str.startswith("P", na=False)].copy()
     if demand.empty:
-        return pd.DataFrame(columns=["생산코드", "거래처_수요", "이니셜_수요", "제품명_수요", "실수요수량"])
+        return pd.DataFrame(
+            columns=[
+                "생산코드",
+                "거래처_수요",
+                "이니셜_수요",
+                "제품명_수요",
+                "오더수량",
+                "납기일",
+                "생산부족수량",
+                "사출부족수량",
+            ]
+        )
 
     return (
         demand.groupby("생산코드", as_index=False)
@@ -4490,7 +4688,10 @@ def build_all_item_demand_summary(shortage_df: pd.DataFrame, code_to_p: dict[str
                 "거래처": summarize_unique,
                 "이니셜": summarize_unique,
                 "제품명": summarize_unique,
-                "실수요수량": "sum",
+                "오더수량": "sum",
+                "납기일": min_date_text,
+                "생산부족수량": "sum",
+                "사출부족수량": "sum",
             }
         )
         .rename(columns={"거래처": "거래처_수요", "이니셜": "이니셜_수요", "제품명": "제품명_수요"})
@@ -4503,6 +4704,176 @@ def apply_nonempty_override(base: pd.Series, override: pd.Series) -> pd.Series:
     valid = ~values.str.strip().str.lower().isin({"", "-", "nan", "none", "nat", "<na>"})
     output.loc[valid] = values.loc[valid]
     return output
+
+
+def classify_flow_primary_group(*values: object) -> str:
+    text = " ".join(clean_text_value(value) for value in values).upper()
+    normalized = re.sub(r"[\s_./()\-]+", "", text)
+    if "1DAY" in normalized:
+        return "1-DAY"
+    if any(token in normalized for token in ["FRP", "CONVENTIONAL", "2WEEK", "2WKS", "MONTH", "MONTHLY"]):
+        return "FRP"
+    if "1D" in normalized and "DAY" in normalized:
+        return "1-DAY"
+    return "기타"
+
+
+def normalize_flow_customer_group(value: object) -> str:
+    raw = clean_text_value(value)
+    if not raw:
+        return "거래처 미지정"
+    upper = raw.upper().replace(".", " ").replace(",", " ")
+    upper = re.sub(r"\s+", " ", upper).strip()
+    compact = re.sub(r"[\s_./()\-]+", "", upper)
+
+    if "PIA" in upper or "PIA종합" in raw:
+        return "PIA"
+    if "OPHTALMIC" in compact:
+        return "OPHTALMIC"
+    if "SINCERE" in compact:
+        return "Sincere"
+    if any(token in compact for token in ["HEARTS", "TOPTREND", "BEAUTYICON"]):
+        return "HEARTS/TopTrend"
+    if "OPTICALSUPPLIES" in compact:
+        return "OPTICAL SUPPLIES"
+    if any(token in compact for token in ["MAXVUE", "OPTIMAX", "DIGERO"]):
+        return "MAXVUE/OPTIMAX"
+    if "ALENSA" in compact:
+        return "ALENSA"
+    if any(token in compact for token in ["FEELGOOD", "CROSSBIRD"]):
+        return "FEEL GOOD"
+    if any(token in compact for token in ["CHINA", "IRIS", "WENZHOU"]) or "중국" in raw:
+        return "CHINA/IRIS"
+    if "MGMEDICAL" in compact:
+        return "MG Medical"
+    if "TGARDEN" in compact:
+        return "T-Garden"
+    if any(token in compact for token in ["HAPA", "PPB"]) or "피피비" in raw:
+        return "HAPA/PPB"
+    if any(token in compact for token in ["국내", "KOREA", "CLALEN", "LENSME", "LENSVERY"]) or "렌즈미" in raw:
+        return "국내"
+    return "기타 거래처"
+
+
+def min_date_text(values: pd.Series) -> str:
+    if values.empty:
+        return "-"
+    parsed = parse_mixed_excel_date(values)
+    valid = parsed.dropna()
+    if valid.empty:
+        return "-"
+    return valid.min().strftime("%Y-%m-%d")
+
+
+def summarize_signal_values(values: pd.Series) -> str:
+    cleaned = [clean_text_value(value) for value in values]
+    cleaned = [value for value in cleaned if value]
+    if not cleaned:
+        return ""
+    priority = {"소진": 0, "감소": 1, "신규": 2, "증가": 3, "유지": 4}
+    ordered = sorted(dict.fromkeys(cleaned), key=lambda value: (priority.get(value, 9), value))
+    if len(ordered) <= 2:
+        return ", ".join(ordered)
+    return f"{', '.join(ordered[:2])} 외 {len(ordered) - 2}"
+
+
+def find_finished_goods_stock_sheet(xls: pd.ExcelFile) -> str | None:
+    normalized_to_original = {normalize_excel_sheet_name(name): name for name in xls.sheet_names}
+    for hint in FINISHED_GOODS_STOCK_SHEET_HINTS:
+        matched = normalized_to_original.get(normalize_excel_sheet_name(hint))
+        if matched is not None:
+            return matched
+    return xls.sheet_names[0] if xls.sheet_names else None
+
+
+@st.cache_data(show_spinner=False, max_entries=CACHE_MAX_ENTRIES)
+def read_finished_goods_stock_summary(stock_path_str: str, refresh_key: str) -> pd.DataFrame:
+    _ = refresh_key
+    stock_path = Path(stock_path_str)
+    output_columns = [
+        "생산코드",
+        "완제품재고",
+        "DOI기준오더",
+        "DOI",
+        "신호",
+        "거래처_완제품",
+        "신규분류_완제품",
+        "착용주기_완제품",
+    ]
+    if not stock_path.exists():
+        return pd.DataFrame(columns=output_columns)
+
+    try:
+        xls = pd.ExcelFile(stock_path)
+    except Exception:
+        return pd.DataFrame(columns=output_columns)
+
+    sheet_name = find_finished_goods_stock_sheet(xls)
+    if sheet_name is None:
+        return pd.DataFrame(columns=output_columns)
+
+    parsed = pd.DataFrame()
+    for header_row in (1, 0, 2):
+        try:
+            candidate = pd.read_excel(stock_path, sheet_name=sheet_name, header=header_row)
+        except Exception:
+            continue
+        candidate.columns = [str(col).strip() for col in candidate.columns]
+        columns = candidate.columns.tolist()
+        code_col = pick_first_existing_column(columns, ["품목코드", "제품코드", "ITEM_ID", "제품 코드"])
+        if code_col is None:
+            continue
+        parsed = candidate
+        break
+
+    if parsed.empty:
+        return pd.DataFrame(columns=output_columns)
+
+    columns = parsed.columns.tolist()
+    code_col = pick_first_existing_column(columns, ["품목코드", "제품코드", "ITEM_ID", "제품 코드"])
+    if code_col is None:
+        return pd.DataFrame(columns=output_columns)
+    customer_col = pick_first_existing_column(columns, ["거래처", "거래처명", "CUSTOMER", "CUSTOMER_NAME"])
+    category_col = pick_first_existing_column(columns, ["신규분류요약", "분류요약", "신규분류", "판매제품군", "생산제품군"])
+    wear_col = pick_first_existing_column(columns, ["착용주기", "착용 주기", "WEARING_PERIOD"])
+    end_stock_col = pick_first_existing_column(columns, ["종료재고", "기말재고", "현재재고", "재고"])
+    order_col = pick_first_existing_column(columns, ["오더", "오더수량", "총오더", "ORDER_QTY"])
+    doi_col = pick_first_existing_column(columns, ["DOI(일)", "DOI", "DOI일"])
+    signal_col = pick_first_existing_column(columns, ["신호", "SIGNAL", "Signal"])
+
+    stock = pd.DataFrame({"생산코드": parsed[code_col].map(normalize_item_code_value)})
+    stock = stock[stock["생산코드"].str.startswith("P", na=False)].copy()
+    if stock.empty:
+        return pd.DataFrame(columns=output_columns)
+
+    stock["완제품재고"] = parse_mixed_numeric(parsed.loc[stock.index, end_stock_col]) if end_stock_col else 0
+    stock["DOI기준오더"] = parse_mixed_numeric(parsed.loc[stock.index, order_col]) if order_col else 0
+    stock["DOI"] = parse_mixed_numeric(parsed.loc[stock.index, doi_col]) if doi_col else 0
+    stock["신호"] = parsed.loc[stock.index, signal_col].map(clean_text_value) if signal_col else ""
+    stock["거래처_완제품"] = parsed.loc[stock.index, customer_col].map(clean_text_value) if customer_col else ""
+    stock["신규분류_완제품"] = parsed.loc[stock.index, category_col].map(clean_text_value) if category_col else ""
+    stock["착용주기_완제품"] = parsed.loc[stock.index, wear_col].map(clean_text_value) if wear_col else ""
+
+    grouped = (
+        stock.groupby("생산코드", as_index=False)
+        .agg(
+            {
+                "완제품재고": "sum",
+                "DOI기준오더": "sum",
+                "DOI": lambda s: s[s > 0].median() if (s > 0).any() else 0,
+                "신호": summarize_signal_values,
+                "거래처_완제품": lambda s: summarize_unique(s, head_count=2),
+                "신규분류_완제품": lambda s: summarize_unique(s, head_count=2),
+                "착용주기_완제품": lambda s: summarize_unique(s, head_count=2),
+            }
+        )
+    )
+    doi_order_mask = grouped["DOI기준오더"] > 0
+    grouped.loc[doi_order_mask, "DOI"] = (
+        grouped.loc[doi_order_mask, "완제품재고"] / grouped.loc[doi_order_mask, "DOI기준오더"] * 181
+    )
+    grouped["DOI"] = parse_mixed_numeric(grouped["DOI"]).fillna(0)
+    return grouped[output_columns]
 
 
 def build_code_mismatch_df(
@@ -4623,8 +4994,18 @@ def build_all_item_status_snapshot(refresh_key: str, base_dir_str: str | None = 
     all_items["거래처"] = apply_nonempty_override(all_items["거래처"], all_items.get("거래처_수요", pd.Series("", index=all_items.index)))
     all_items["이니셜"] = apply_nonempty_override(all_items["이니셜"], all_items.get("이니셜_수요", pd.Series("", index=all_items.index)))
     all_items["제품명"] = apply_nonempty_override(all_items["제품명"], all_items.get("제품명_수요", pd.Series("", index=all_items.index)))
-    all_items["실수요수량"] = parse_mixed_numeric(all_items.get("실수요수량", pd.Series(0, index=all_items.index))).fillna(0)
-    all_items["총수요수량"] = all_items["실수요수량"]
+    all_items["오더수량"] = parse_mixed_numeric(all_items.get("오더수량", pd.Series(0, index=all_items.index))).fillna(0)
+    all_items["실수요수량"] = all_items["오더수량"]
+    all_items["총수요수량"] = all_items["오더수량"]
+    all_items["생산부족수량"] = parse_mixed_numeric(
+        all_items.get("생산부족수량", pd.Series(0, index=all_items.index))
+    ).fillna(0)
+    all_items["사출부족수량"] = parse_mixed_numeric(
+        all_items.get("사출부족수량", pd.Series(0, index=all_items.index))
+    ).fillna(0)
+    all_items["납기일"] = all_items.get("납기일", pd.Series("-", index=all_items.index)).astype(str).replace(
+        {"nan": "-", "None": "-", "NaT": "-"}
+    )
 
     all_items["사출창고"] = all_items["사출코드"].map(lambda x: lookup_stock_qty(stock_lookup.get("사출창고", {}), x))
     all_items["분리창고"] = all_items.apply(
@@ -4640,9 +5021,35 @@ def build_all_item_status_snapshot(refresh_key: str, base_dir_str: str | None = 
         all_items["사출창고"] + all_items["분리창고"] + all_items["검사접착창고"] + all_items["누수규격검사"]
     )
     all_items["초과재고수량"] = (all_items["공정재고합계"] - all_items["총수요수량"]).clip(lower=0)
-    all_items["부족수량"] = (all_items["총수요수량"] - all_items["공정재고합계"]).clip(lower=0)
+    all_items["부족수량"] = all_items["생산부족수량"]
+
+    finished_goods_stock_path = find_finished_goods_stock_file(data_base_dir)
+    if finished_goods_stock_path is not None:
+        finished_goods_summary = read_finished_goods_stock_summary(str(finished_goods_stock_path), refresh_key)
+        if not finished_goods_summary.empty:
+            all_items = all_items.merge(finished_goods_summary, on="생산코드", how="left")
+    for col in ["완제품재고", "DOI기준오더", "DOI"]:
+        if col not in all_items.columns:
+            all_items[col] = 0
+    for col in ["신호", "거래처_완제품", "신규분류_완제품", "착용주기_완제품"]:
+        if col not in all_items.columns:
+            all_items[col] = ""
+    all_items["거래처"] = apply_nonempty_override(all_items["거래처"], all_items["거래처_완제품"])
+    all_items["신규분류"] = apply_nonempty_override(all_items["신규분류"], all_items["신규분류_완제품"])
+    all_items["제품대분류"] = all_items.apply(
+        lambda row: classify_flow_primary_group(
+            row.get("신규분류", ""),
+            row.get("신규분류_완제품", ""),
+            row.get("제품명", ""),
+            row.get("착용주기_완제품", ""),
+        ),
+        axis=1,
+    )
+    all_items["거래처그룹"] = all_items["거래처"].map(normalize_flow_customer_group)
 
     for col in ALL_ITEM_NUMERIC_COLUMNS:
+        if col not in all_items.columns:
+            all_items[col] = 0
         all_items[col] = parse_mixed_numeric(all_items[col]).fillna(0)
     all_items["코드매칭상태"] = all_items["코드매칭상태"].fillna("코드미매칭")
 
@@ -4670,8 +5077,27 @@ def build_all_item_status_snapshot(refresh_key: str, base_dir_str: str | None = 
     all_items.loc[all_items["판단"] == "수요 없음 + 공정재고 있음", "주의정렬순위"] = 1
     all_items.loc[all_items["판단"] == "코드 확인 필요", "주의정렬순위"] = 0
 
-    for col in ["거래처", "이니셜", "신규분류", "제품명", "파워", "사출코드", "분리코드", "생산코드", "판단"]:
+    for col in [
+        "제품대분류",
+        "거래처그룹",
+        "거래처",
+        "이니셜",
+        "신규분류",
+        "제품명",
+        "파워",
+        "납기일",
+        "사출코드",
+        "분리코드",
+        "생산코드",
+        "신호",
+        "판단",
+    ]:
         all_items[col] = all_items[col].astype(str).replace({"nan": "", "None": ""}).fillna("")
+    all_items.loc[all_items["제품대분류"].str.strip().str.lower().isin({"", "nan", "none"}), "제품대분류"] = "기타"
+    all_items.loc[
+        all_items["거래처그룹"].str.strip().str.lower().isin({"", "nan", "none"}),
+        "거래처그룹",
+    ] = "거래처 미지정"
     all_items.loc[all_items["신규분류"].str.strip().str.lower().isin({"", "nan", "none"}), "신규분류"] = "기타"
     all_items.loc[all_items["제품명"].str.strip().str.lower().isin({"", "nan", "none"}), "제품명"] = "-"
 
@@ -5416,6 +5842,193 @@ def build_new_class_summary(df: pd.DataFrame) -> pd.DataFrame:
     return summary[summary_columns]
 
 
+def prepare_all_item_flow_data(all_items_df: pd.DataFrame) -> pd.DataFrame:
+    working = all_items_df.copy()
+    for col in ALL_ITEM_DOWNLOAD_COLUMNS:
+        if col not in working.columns:
+            working[col] = 0 if col in ALL_ITEM_NUMERIC_COLUMNS else ""
+    for col in ALL_ITEM_NUMERIC_COLUMNS:
+        working[col] = parse_mixed_numeric(working[col]).fillna(0)
+    for col in ["제품대분류", "거래처그룹", "거래처", "이니셜", "신규분류", "제품명", "파워", "납기일", "생산코드", "신호"]:
+        if col not in working.columns:
+            working[col] = ""
+        working[col] = working[col].map(clean_text_value)
+
+    if working["제품대분류"].str.strip().eq("").all() or "기타" in set(working["제품대분류"]):
+        fallback_primary = working.apply(
+            lambda row: classify_flow_primary_group(row.get("신규분류", ""), row.get("제품명", "")),
+            axis=1,
+        )
+        missing_primary = working["제품대분류"].str.strip().isin({"", "기타"})
+        working.loc[missing_primary, "제품대분류"] = fallback_primary.loc[missing_primary]
+
+    missing_customer_group = working["거래처그룹"].str.strip().isin({"", "거래처 미지정"})
+    working.loc[missing_customer_group, "거래처그룹"] = working.loc[missing_customer_group, "거래처"].map(
+        normalize_flow_customer_group
+    )
+    working.loc[working["제품대분류"].str.strip().eq(""), "제품대분류"] = "기타"
+    working.loc[working["거래처그룹"].str.strip().eq(""), "거래처그룹"] = "거래처 미지정"
+    working.loc[working["제품명"].str.strip().eq(""), "제품명"] = "-"
+    working.loc[working["납기일"].str.lower().isin(INVALID_CATEGORY_VALUES), "납기일"] = "-"
+    return working
+
+
+@st.cache_data(show_spinner=False, max_entries=CACHE_MAX_ENTRIES)
+def build_all_item_product_flow_summary(working: pd.DataFrame) -> pd.DataFrame:
+    summary_columns = ["제품대분류", "거래처그룹", "거래처", "생산코드", *ALL_ITEM_FLOW_DISPLAY_COLUMNS]
+    if working.empty:
+        return pd.DataFrame(columns=summary_columns)
+
+    base = working.copy()
+    activity_mask = (
+        (base["오더수량"] > 0)
+        | (base["생산부족수량"] > 0)
+        | (base["사출부족수량"] > 0)
+        | (base["공정재고합계"] > 0)
+        | (base["완제품재고"] > 0)
+        | (base["DOI"] > 0)
+        | base["신호"].astype(str).str.strip().ne("")
+    )
+    base = base[activity_mask].copy()
+    if base.empty:
+        return pd.DataFrame(columns=summary_columns)
+
+    grouped = (
+        base.groupby(["제품대분류", "거래처그룹", "제품명"], as_index=False)
+        .agg(
+            {
+                "이니셜": lambda s: summarize_unique(s, head_count=3),
+                "거래처": lambda s: summarize_unique(s, head_count=2),
+                "생산코드": lambda s: summarize_unique(s, head_count=5),
+                "오더수량": "sum",
+                "납기일": min_date_text,
+                "생산부족수량": "sum",
+                "사출부족수량": "sum",
+                "공정재고합계": "sum",
+                "완제품재고": "sum",
+                "DOI기준오더": "sum",
+                "DOI": lambda s: s[s > 0].median() if (s > 0).any() else 0,
+                "신호": summarize_signal_values,
+            }
+        )
+        .rename(columns={"생산부족수량": "부족수량", "공정재고합계": "공정재고"})
+    )
+    doi_order_mask = grouped["DOI기준오더"] > 0
+    grouped.loc[doi_order_mask, "DOI"] = (
+        grouped.loc[doi_order_mask, "완제품재고"] / grouped.loc[doi_order_mask, "DOI기준오더"] * 181
+    )
+    grouped["DOI"] = parse_mixed_numeric(grouped["DOI"]).round(1)
+    grouped = grouped.sort_values(
+        ["부족수량", "사출부족수량", "오더수량", "공정재고", "DOI", "제품명"],
+        ascending=[False, False, False, False, False, True],
+    )
+    return grouped[summary_columns]
+
+
+def filter_all_item_flow_query(df: pd.DataFrame, query: str) -> pd.DataFrame:
+    search_columns = [
+        col
+        for col in ["제품대분류", "거래처그룹", "거래처", "이니셜", "신규분류", "제품명", "생산코드", "신호"]
+        if col in df.columns
+    ]
+    return filter_with_terms_any(df, search_columns, query) if query else df
+
+
+def build_customer_tab_options(df: pd.DataFrame) -> list[str]:
+    present = {clean_text_value(value) for value in df["거래처그룹"].tolist() if clean_text_value(value)}
+    ordered = [option for option in ALL_ITEM_FLOW_CUSTOMER_ORDER if option == "전체" or option in present]
+    extras = sorted(present - set(ordered))
+    return ordered + extras
+
+
+def render_all_item_flow_kpis(scope: pd.DataFrame) -> None:
+    k1, k2, k3, k4, k5 = st.columns(5, gap="medium")
+    with k1:
+        render_dashboard_kpi("제품 수", f"{scope['제품명'].nunique():,}", "stock")
+    with k2:
+        render_dashboard_kpi("오더수량", f"{scope['오더수량'].sum():,.0f}", "stock")
+    with k3:
+        render_dashboard_kpi("부족수량", f"{scope['부족수량'].sum():,.0f}", "risk")
+    with k4:
+        render_dashboard_kpi("사출부족수량", f"{scope['사출부족수량'].sum():,.0f}", "risk")
+    with k5:
+        render_dashboard_kpi("공정재고", f"{scope['공정재고'].sum():,.0f}", "stock")
+
+
+def build_all_item_flow_power_detail(
+    working: pd.DataFrame,
+    primary_group: str,
+    customer_group: str,
+    query: str,
+    selected_signals: tuple[str, ...],
+) -> pd.DataFrame:
+    detail = working[working["제품대분류"] == primary_group].copy()
+    if customer_group != "전체":
+        detail = detail[detail["거래처그룹"] == customer_group].copy()
+    detail = filter_all_item_flow_query(detail, query).copy()
+    if selected_signals:
+        signal_mask = detail["신호"].astype(str).map(lambda text: any(signal in text for signal in selected_signals))
+        detail = detail[signal_mask].copy()
+    activity_mask = (
+        (detail["오더수량"] > 0)
+        | (detail["생산부족수량"] > 0)
+        | (detail["사출부족수량"] > 0)
+        | (detail["공정재고합계"] > 0)
+        | (detail["완제품재고"] > 0)
+        | (detail["DOI"] > 0)
+        | detail["신호"].astype(str).str.strip().ne("")
+    )
+    detail = detail[activity_mask].copy()
+    detail = detail.sort_values(
+        ["생산부족수량", "사출부족수량", "오더수량", "공정재고합계", "제품명", "파워"],
+        ascending=[False, False, False, False, True, True],
+    )
+    columns = [col for col in ALL_ITEM_FLOW_POWER_DETAIL_COLUMNS if col in detail.columns]
+    return detail[columns]
+
+
+def render_all_item_flow_table(
+    scope: pd.DataFrame,
+    working: pd.DataFrame,
+    primary_group: str,
+    customer_group: str,
+    query: str,
+    selected_signals: tuple[str, ...],
+    download_stamp: str,
+    key_suffix: str,
+) -> None:
+    scoped = filter_all_item_flow_query(scope, query).copy()
+    if scoped.empty:
+        st.info("표시할 품목이 없습니다.")
+        return
+
+    render_all_item_flow_kpis(scoped)
+    display = scoped[ALL_ITEM_FLOW_DISPLAY_COLUMNS].copy()
+    st.caption(f"제품 {display['제품명'].nunique():,}개 / 행 {len(display):,}건")
+
+    power_detail = build_all_item_flow_power_detail(working, primary_group, customer_group, query, selected_signals)
+    render_lazy_excel_download_button(
+        "파워별 상세 엑셀 다운로드",
+        power_detail,
+        "파워별상세",
+        f"all_item_flow_{primary_group}_{key_suffix}_{download_stamp}.xlsx",
+        f"download_all_item_flow_{primary_group}_{key_suffix}",
+    )
+
+    display_source, _ = limit_dataframe_for_display(display)
+    display_formatted = format_numeric_columns_for_display(display_source)
+    column_config = build_auto_column_config(display_formatted, display_formatted.columns.tolist(), source_df=display_source)
+    st.dataframe(
+        style_operational_table(display_formatted, display_source),
+        width="stretch",
+        height=700,
+        column_order=ALL_ITEM_FLOW_DISPLAY_COLUMNS,
+        column_config=column_config,
+        hide_index=True,
+        key=f"all_item_flow_table_{primary_group}_{key_suffix}",
+    )
+
+
 def render_all_item_alert_panel(working: pd.DataFrame) -> None:
     no_demand_stock = working[(working["총수요수량"] <= 0) & (working["공정재고합계"] > 0)].copy()
     excess_stock = working[(working["총수요수량"] > 0) & (working["초과재고수량"] > 0)].copy()
@@ -5488,122 +6101,85 @@ def render_all_item_alert_panel(working: pd.DataFrame) -> None:
 def render_all_items_dashboard(all_items_df: pd.DataFrame, updated_at: str) -> None:
     st.subheader("전체 품목 현황")
     st.caption(f"업데이트: {updated_at}")
-    st.caption("전체 품목리스트를 기준으로 수요 0 품목과 공정재고 보유 품목까지 표시합니다.")
+    st.caption("1-DAY/FRP 기준으로 품목별 오더, 부족, 사출부족, 공정재고, DOI와 신호를 확인합니다.")
 
     if all_items_df.empty:
         st.warning("전체 품목 현황을 계산할 데이터가 없습니다. 전체 품목리스트 파일을 확인해주세요.")
         return
 
     download_stamp = datetime.now(DISPLAY_TZ).strftime("%Y%m%d_%H%M%S")
-    working = all_items_df.copy()
-    for col in ALL_ITEM_DOWNLOAD_COLUMNS:
-        if col not in working.columns:
-            working[col] = 0 if col in ALL_ITEM_NUMERIC_COLUMNS else ""
-    if "파워" in working.columns:
-        working["파워"] = working["파워"].map(format_power_value)
-    for col in ALL_ITEM_NUMERIC_COLUMNS:
-        working[col] = parse_mixed_numeric(working[col]).fillna(0)
-    if working["초과재고수량"].sum() == 0:
-        working["초과재고수량"] = (working["공정재고합계"] - working["총수요수량"]).clip(lower=0)
-    if working["판단"].astype(str).str.strip().eq("").all():
-        working["판단"] = "재고 없음"
-        working.loc[working["샘플 신청가능수량"] > 0, "판단"] = "샘플 가능 수량 있음"
-        working.loc[working["총수요수량"] > 0, "판단"] = "수요 있음"
-        working.loc[(working["총수요수량"] > 0) & (working["초과재고수량"] > 0), "판단"] = "수요 대비 재고 초과"
-        working.loc[(working["총수요수량"] <= 0) & (working["공정재고합계"] > 0), "판단"] = "수요 없음 + 공정재고 있음"
-        working.loc[working["코드매칭상태"] == "코드미매칭", "판단"] = "코드 확인 필요"
-    render_all_item_alert_panel(working)
+    working = prepare_all_item_flow_data(all_items_df)
+    product_flow = build_all_item_product_flow_summary(working)
 
-    filter_col1, filter_col2, search_col = st.columns([1.6, 1.8, 2.4])
-    with filter_col1:
-        status_key = "all_item_status_filter_v2"
-        if status_key not in st.session_state:
-            st.session_state[status_key] = "전체"
-        selected_status = st.segmented_control(
-            "상태",
-            options=ALL_ITEM_STATUS_OPTIONS,
-            key=status_key,
-            width="stretch",
-        )
-    with filter_col2:
-        class_options = sorted(
-            [v for v in working["신규분류"].astype(str).dropna().unique().tolist() if v.strip()]
-        )
-        selected_classes = st.multiselect(
-            "신규분류",
-            options=class_options,
-            default=[],
-            key="all_item_new_class_filter_v1",
-            placeholder="전체",
-        )
+    if product_flow.empty:
+        st.info("표시할 품목 흐름 데이터가 없습니다.")
+        return
+
+    if (working["DOI"] <= 0).all() and working["신호"].astype(str).str.strip().eq("").all():
+        st.info("완제품 재고 변화 파일을 찾지 못해 DOI와 신호는 비워진 상태로 표시됩니다.")
+
+    search_col, signal_col = st.columns([3.2, 1.4])
     with search_col:
         query = st.text_input(
             "통합 검색",
             value="",
-            key="all_item_query_v1",
-            placeholder="거래처, 이니셜, 제품명, P/R/Q 코드 검색",
+            key="all_item_flow_query_v1",
+            placeholder="이니셜, 제품명, 거래처, 생산코드 검색",
             help="콤마(,)로 여러 키워드를 입력하면 OR 조건으로 검색합니다.",
         ).strip()
-
-    filtered = filter_all_item_status(working, selected_status)
-    if selected_classes:
-        filtered = filtered[filtered["신규분류"].isin(selected_classes)]
-    if query:
-        filtered = filter_display_table_with_query(filtered, query).copy()
-
-    k1, k2, k3, k4, k5 = st.columns(5, gap="medium")
-    with k1:
-        render_dashboard_kpi("품목 수", f"{len(filtered):,}", "stock")
-    with k2:
-        render_dashboard_kpi("총수요수량", f"{filtered['총수요수량'].sum():,.0f}", "stock")
-    with k3:
-        render_dashboard_kpi("공정재고합계", f"{filtered['공정재고합계'].sum():,.0f}", "stock")
-    with k4:
-        render_dashboard_kpi("부족수량", f"{filtered['부족수량'].sum():,.0f}", "risk")
-    with k5:
-        render_dashboard_kpi("샘플 신청가능", f"{filtered['샘플 신청가능수량'].sum():,.0f}", "stock")
-
-    summary = build_new_class_summary(filtered)
-    with st.expander("신규분류 요약", expanded=True):
-        summary_display = format_numeric_columns_for_display(summary)
-        summary_config = build_auto_column_config(
-            summary_display,
-            summary_display.columns.tolist(),
-            source_df=summary,
-        )
-        st.dataframe(
-            style_operational_table(summary_display, summary),
-            width="stretch",
-            height=320,
-            column_config=summary_config,
-            hide_index=True,
-            key="all_item_new_class_summary_v1",
+    with signal_col:
+        selected_signals = st.multiselect(
+            "신호 포함",
+            options=["감소", "소진", "신규", "증가", "유지"],
+            default=[],
+            key="all_item_flow_signal_filter_v1",
+            placeholder="전체",
         )
 
-    detail = filtered[ALL_ITEM_DOWNLOAD_COLUMNS].copy()
-    st.caption(f"표시 {len(detail):,}건 / 전체 {len(all_items_df):,}건")
-    render_lazy_excel_download_button(
-        "엑셀 다운로드",
-        detail,
-        "전체품목현황",
-        f"all_item_status_{download_stamp}.xlsx",
-        "download_all_item_status_v1",
-    )
+    view_flow = product_flow.copy()
+    if selected_signals:
+        signal_mask = view_flow["신호"].astype(str).map(
+            lambda text: any(signal in text for signal in selected_signals)
+        )
+        view_flow = view_flow[signal_mask].copy()
 
-    detail_display_source, _ = limit_dataframe_for_display(detail)
-    caption_limited_rows(len(detail), len(detail_display_source))
-    display_columns = detail_display_source.columns.tolist()
-    detail_display = format_numeric_columns_for_display(detail_display_source)
-    detail_config = build_auto_column_config(detail_display, display_columns, source_df=detail_display_source)
-    st.dataframe(
-        style_operational_table(detail_display, detail_display_source),
-        width="stretch",
-        height=720,
-        column_order=display_columns,
-        column_config=detail_config,
-        hide_index=True,
-        key="all_item_status_table_v1",
-    )
+    primary_order = ["1-DAY", "FRP"]
+    existing_primary = [group for group in primary_order if (view_flow["제품대분류"] == group).any()]
+    extra_primary = sorted(set(view_flow["제품대분류"].dropna().tolist()) - set(existing_primary) - {"기타"})
+    if (view_flow["제품대분류"] == "기타").any():
+        extra_primary.append("기타")
+    primary_tabs = existing_primary + extra_primary
+    if not primary_tabs:
+        st.info("선택 조건에 맞는 1-DAY/FRP 품목이 없습니다.")
+        return
+
+    tabs = st.tabs(primary_tabs)
+    for tab, primary_group in zip(tabs, primary_tabs):
+        with tab:
+            primary_scope = view_flow[view_flow["제품대분류"] == primary_group].copy()
+            if primary_scope.empty:
+                st.info("표시할 품목이 없습니다.")
+                continue
+
+            customer_options = build_customer_tab_options(primary_scope)
+            customer_tabs = st.tabs(customer_options)
+            for customer_index, (customer_tab, customer_group) in enumerate(zip(customer_tabs, customer_options)):
+                with customer_tab:
+                    if customer_group == "전체":
+                        scoped = primary_scope.copy()
+                    else:
+                        scoped = primary_scope[primary_scope["거래처그룹"] == customer_group].copy()
+                    key_token = re.sub(r"[^0-9A-Za-z가-힣_-]+", "_", f"{customer_index}_{customer_group}").strip("_")
+                    render_all_item_flow_table(
+                        scoped,
+                        working,
+                        primary_group,
+                        customer_group,
+                        query,
+                        tuple(selected_signals),
+                        download_stamp,
+                        key_token,
+                    )
 
 
 def render_code_mismatch_dashboard(code_mismatch_df: pd.DataFrame, updated_at: str) -> None:
