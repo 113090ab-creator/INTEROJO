@@ -63,6 +63,7 @@ ALL_ITEM_SNAPSHOT_FILE = "all_item_status_snapshot.csv.gz"
 CODE_MISMATCH_SNAPSHOT_FILE = "code_mismatch_snapshot.csv.gz"
 FINISHED_GOODS_STOCK_UPLOAD_FILE = "완제품_재고변화_uploaded.xlsx"
 FINISHED_GOODS_STOCK_SHEET_HINTS = ("전체 품목코드 재고", "품목코드 변화 조회결과")
+USE_FINISHED_GOODS_STOCK_CHANGE = False
 ALL_ITEM_DOWNLOAD_COLUMNS = [
     "제품대분류",
     "거래처그룹",
@@ -122,8 +123,6 @@ ALL_ITEM_FLOW_DISPLAY_COLUMNS = [
     "부족수량",
     "사출부족수량",
     "공정재고",
-    "DOI",
-    "신호",
 ]
 ALL_ITEM_FLOW_POWER_DETAIL_COLUMNS = [
     "제품대분류",
@@ -139,9 +138,6 @@ ALL_ITEM_FLOW_POWER_DETAIL_COLUMNS = [
     "생산부족수량",
     "사출부족수량",
     "공정재고합계",
-    "완제품재고",
-    "DOI",
-    "신호",
     "사출창고",
     "분리창고",
     "검사접착창고",
@@ -658,6 +654,9 @@ def workbook_has_any_sheet(path: Path, sheet_names: tuple[str, ...]) -> bool:
 
 
 def find_finished_goods_stock_file(base_dir: Path) -> Path | None:
+    if not USE_FINISHED_GOODS_STOCK_CHANGE:
+        return None
+
     search_dirs = [base_dir]
     if base_dir.resolve() != BASE_DIR.resolve():
         search_dirs.append(BASE_DIR)
@@ -1261,12 +1260,6 @@ def select_data_source(base_dir: Path) -> tuple[Path, str, str]:
             type=["xlsx"],
             key="upload_reference_xlsx",
             help="미업로드 시 로컬의 '제품명 기준 정보.xlsx'를 사용합니다.",
-        )
-        finished_goods_stock_file = st.file_uploader(
-            "완제품 재고 변화 파일(.xlsx, 선택)",
-            type=["xlsx"],
-            key="upload_finished_goods_stock_xlsx",
-            help="업로드 시 전체 품목 현황의 DOI와 신호에 반영합니다.",
         )
     else:
         st.caption("현재 설정: 로컬 폴더의 파일 사용")
@@ -6517,7 +6510,7 @@ def render_all_item_alert_panel(working: pd.DataFrame) -> None:
 def render_all_items_dashboard(all_items_df: pd.DataFrame, updated_at: str) -> None:
     st.subheader("전체 품목 현황")
     st.caption(f"업데이트: {updated_at}")
-    st.caption("1-DAY/FRP 기준으로 품목별 오더, 부족, 사출부족, 공정재고, DOI와 신호를 확인합니다.")
+    st.caption("1-DAY/FRP 기준으로 품목별 오더, 부족, 사출부족, 공정재고를 확인합니다.")
 
     if all_items_df.empty:
         st.warning("전체 품목 현황을 계산할 데이터가 없습니다. 전체 품목리스트 파일을 확인해주세요.")
@@ -6531,33 +6524,16 @@ def render_all_items_dashboard(all_items_df: pd.DataFrame, updated_at: str) -> N
         st.info("표시할 품목 흐름 데이터가 없습니다.")
         return
 
-    if (working["DOI"] <= 0).all() and working["신호"].astype(str).str.strip().eq("").all():
-        st.info("완제품 재고 변화 파일을 찾지 못해 DOI와 신호는 비워진 상태로 표시됩니다.")
-
-    search_col, signal_col = st.columns([3.2, 1.4])
-    with search_col:
-        query = st.text_input(
-            "통합 검색",
-            value="",
-            key="all_item_flow_query_v1",
-            placeholder="이니셜, 제품명, 거래처, 생산코드 검색",
-            help="콤마(,)로 여러 키워드를 입력하면 OR 조건으로 검색합니다.",
-        ).strip()
-    with signal_col:
-        selected_signals = st.multiselect(
-            "신호 포함",
-            options=["감소", "소진", "신규", "증가", "유지"],
-            default=[],
-            key="all_item_flow_signal_filter_v1",
-            placeholder="전체",
-        )
+    query = st.text_input(
+        "통합 검색",
+        value="",
+        key="all_item_flow_query_v1",
+        placeholder="이니셜, 제품명, 거래처, 생산코드 검색",
+        help="콤마(,)로 여러 키워드를 입력하면 OR 조건으로 검색합니다.",
+    ).strip()
+    selected_signals: tuple[str, ...] = tuple()
 
     view_flow = product_flow.copy()
-    if selected_signals:
-        signal_mask = view_flow["신호"].astype(str).map(
-            lambda text: any(signal in text for signal in selected_signals)
-        )
-        view_flow = view_flow[signal_mask].copy()
 
     primary_order = ["1-DAY", "FRP"]
     existing_primary = [group for group in primary_order if (view_flow["제품대분류"] == group).any()]
