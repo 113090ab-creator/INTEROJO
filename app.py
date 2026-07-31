@@ -51,13 +51,16 @@ WAREHOUSE_MAP = {
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 12000
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260731-flow-view-v1"
+APP_CACHE_VERSION = "20260731-flow-view-v2"
 PLAN_API_BASE_URL_DEFAULT = "https://plan.interojo.net"
 PLAN_API_KEY_ENV = "PLAN_API_KEY"
 PLAN_API_BASE_URL_ENV = "PLAN_API_BASE_URL"
 PLAN_API_TIMEOUT_SECONDS = 120
 PLAN_API_DEFAULT_ROW_LIMIT = 0
 PLAN_API_CACHE_TTL_SECONDS = 300
+LOCAL_CACHE_DIR = BASE_DIR / ".local_cache"
+PLAN_API_DISK_CACHE_DIR = LOCAL_CACHE_DIR / "plan_api"
+ALL_ITEM_STATUS_DISK_CACHE_DIR = LOCAL_CACHE_DIR / "all_item_status"
 APS_PLAN_ENDPOINT = "/api/aps-plan"
 APS_WIP_ENDPOINT = "/api/aps-wip"
 APS_PLAN_META_ENDPOINT = "/api/aps-plan/meta"
@@ -879,7 +882,51 @@ def build_plan_api_refresh_key() -> str:
     if not is_plan_api_enabled():
         return "plan-api:disabled"
     key_hash = hashlib.sha256(get_plan_api_key().encode("utf-8")).hexdigest()[:12]
-    return f"plan-api:{get_plan_api_base_url()}:{key_hash}:{get_plan_api_refresh_nonce()}"
+    source_updated_at = get_plan_api_updated_at()
+    return f"plan-api:{get_plan_api_base_url()}:{key_hash}:{source_updated_at}:{get_plan_api_refresh_nonce()}"
+
+
+def build_local_cache_hash(*parts: object) -> str:
+    payload = json.dumps(parts, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def build_plan_api_disk_cache_path(
+    base_url: str,
+    endpoint: str,
+    params_tuple: tuple[tuple[str, object], ...],
+    api_key_hash: str,
+    source_updated_at: str,
+) -> Path:
+    cache_hash = build_local_cache_hash(
+        APP_CACHE_VERSION,
+        base_url.rstrip("/"),
+        endpoint,
+        params_tuple,
+        api_key_hash,
+        source_updated_at,
+    )
+    return PLAN_API_DISK_CACHE_DIR / f"{cache_hash}.pkl.gz"
+
+
+def read_plan_api_disk_cache(cache_path: Path) -> pd.DataFrame | None:
+    if not cache_path.exists():
+        return None
+    try:
+        cached = pd.read_pickle(cache_path, compression="gzip")
+    except Exception:
+        return None
+    return cached if isinstance(cached, pd.DataFrame) else None
+
+
+def write_plan_api_disk_cache(cache_path: Path, df: pd.DataFrame) -> None:
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = cache_path.with_suffix(cache_path.suffix + f".{uuid.uuid4().hex}.tmp")
+        df.to_pickle(temp_path, compression="gzip")
+        temp_path.replace(cache_path)
+    except Exception:
+        pass
 
 
 def normalize_api_column_key(value: object) -> str:
@@ -925,6 +972,7 @@ def fetch_plan_api_dataframe_cached(
     endpoint: str,
     params_tuple: tuple[tuple[str, object], ...],
     api_key_hash: str,
+    source_updated_at: str,
     refresh_nonce: int,
 ) -> tuple[pd.DataFrame, str]:
     _ = api_key_hash, refresh_nonce
@@ -937,6 +985,12 @@ def fetch_plan_api_dataframe_cached(
 
     url = f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}"
     params = {str(key): value for key, value in params_tuple if value not in (None, "")}
+    disk_cache_path = build_plan_api_disk_cache_path(base_url, endpoint, params_tuple, api_key_hash, source_updated_at)
+    if source_updated_at != "-":
+        cached_df = read_plan_api_disk_cache(disk_cache_path)
+        if cached_df is not None:
+            return cached_df, ""
+
     try:
         response = requests.get(
             url,
@@ -957,7 +1011,10 @@ def fetch_plan_api_dataframe_cached(
     records = normalize_api_records(payload)
     if not records:
         return pd.DataFrame(), "API 응답에서 행 데이터를 찾지 못했습니다."
-    return pd.DataFrame.from_records(records), ""
+    df = pd.DataFrame.from_records(records)
+    if source_updated_at != "-":
+        write_plan_api_disk_cache(disk_cache_path, df)
+    return df, ""
 
 
 @st.cache_data(show_spinner=False, ttl=PLAN_API_CACHE_TTL_SECONDS, max_entries=CACHE_MAX_ENTRIES)
@@ -994,11 +1051,13 @@ def read_plan_api_dataframe(endpoint: str, params: dict[str, object] | None = No
         return pd.DataFrame(), "API 자동조회가 꺼져 있습니다."
     api_key_hash = hashlib.sha256(get_plan_api_key().encode("utf-8")).hexdigest()[:12]
     params_tuple = tuple(sorted((params or {}).items(), key=lambda item: item[0]))
+    source_updated_at = get_plan_api_updated_at()
     return fetch_plan_api_dataframe_cached(
         get_plan_api_base_url(),
         endpoint,
         params_tuple,
         api_key_hash,
+        source_updated_at,
         get_plan_api_refresh_nonce(),
     )
 
@@ -1490,6 +1549,51 @@ def load_cloud_all_item_status_snapshot() -> tuple[pd.DataFrame, pd.DataFrame]:
         load_cloud_snapshot_csv(ALL_ITEM_SNAPSHOT_FILE),
         load_cloud_snapshot_csv(CODE_MISMATCH_SNAPSHOT_FILE),
     )
+
+
+def build_all_item_status_disk_cache_path(refresh_key: str) -> Path:
+    cache_hash = build_local_cache_hash(APP_CACHE_VERSION, "all_item_status", refresh_key)
+    return ALL_ITEM_STATUS_DISK_CACHE_DIR / f"{cache_hash}.pkl.gz"
+
+
+def read_all_item_status_disk_cache(refresh_key: str) -> tuple[pd.DataFrame, pd.DataFrame] | None:
+    cache_path = build_all_item_status_disk_cache_path(refresh_key)
+    if not cache_path.exists():
+        return None
+    try:
+        cached = pd.read_pickle(cache_path, compression="gzip")
+    except Exception:
+        return None
+    if not isinstance(cached, dict):
+        return None
+    all_items = cached.get("all_items")
+    code_mismatch = cached.get("code_mismatch")
+    if not isinstance(all_items, pd.DataFrame) or not isinstance(code_mismatch, pd.DataFrame):
+        return None
+    if DEMAND_DETAIL_ROWS_COL not in all_items.columns:
+        return None
+    return all_items, code_mismatch
+
+
+def write_all_item_status_disk_cache(
+    refresh_key: str,
+    all_items: pd.DataFrame,
+    code_mismatch: pd.DataFrame,
+) -> None:
+    if all_items.empty:
+        return
+    cache_path = build_all_item_status_disk_cache_path(refresh_key)
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = cache_path.with_suffix(cache_path.suffix + f".{uuid.uuid4().hex}.tmp")
+        pd.to_pickle(
+            {"all_items": all_items, "code_mismatch": code_mismatch},
+            temp_path,
+            compression="gzip",
+        )
+        temp_path.replace(cache_path)
+    except Exception:
+        pass
 
 
 def load_cloud_leadji_status_snapshot() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -8714,10 +8818,15 @@ def main() -> None:
             if not use_all_item_cloud_snapshot:
                 try:
                     all_item_refresh_key = build_all_item_refresh_key(data_base_dir)
-                    all_items_df, code_mismatch_df = build_all_item_status_snapshot(
-                        all_item_refresh_key,
-                        str(data_base_dir),
-                    )
+                    cached_all_items = read_all_item_status_disk_cache(all_item_refresh_key)
+                    if cached_all_items is not None:
+                        all_items_df, code_mismatch_df = cached_all_items
+                    else:
+                        all_items_df, code_mismatch_df = build_all_item_status_snapshot(
+                            all_item_refresh_key,
+                            str(data_base_dir),
+                        )
+                        write_all_item_status_disk_cache(all_item_refresh_key, all_items_df, code_mismatch_df)
                     updated_at = all_item_live_updated_at
                 except Exception as live_exc:
                     if not cloud_snapshots_available:

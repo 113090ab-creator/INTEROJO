@@ -225,4 +225,5 @@ __marimo__/
 
 # Local generated analysis artifacts
 outputs/
+.local_cache/
 *.inspect.ndjson
