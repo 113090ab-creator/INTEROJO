@@ -51,7 +51,7 @@ WAREHOUSE_MAP = {
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 12000
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260731-flow-view-v2"
+APP_CACHE_VERSION = "20260731-flow-view-v3"
 PLAN_API_BASE_URL_DEFAULT = "https://plan.interojo.net"
 PLAN_API_KEY_ENV = "PLAN_API_KEY"
 PLAN_API_BASE_URL_ENV = "PLAN_API_BASE_URL"
@@ -3758,6 +3758,41 @@ def render_lazy_excel_download_button(
     )
 
 
+def render_lazy_excel_download_builder(
+    label: str,
+    data_builder,
+    sheet_name: str,
+    file_name: str,
+    key: str,
+    source_key: str = "",
+) -> None:
+    prepare_key = f"{key}_prepare"
+    data_key = f"{key}_excel_data"
+    file_key = f"{key}_excel_file_name"
+    source_state_key = f"{key}_excel_source_key"
+    if st.session_state.get(source_state_key) != source_key:
+        st.session_state.pop(prepare_key, None)
+        st.session_state.pop(data_key, None)
+        st.session_state.pop(file_key, None)
+        st.session_state[source_state_key] = source_key
+    if st.button("엑셀 파일 생성", key=f"{key}_prepare_button", width="content"):
+        st.session_state[prepare_key] = True
+        df = data_builder()
+        st.session_state[data_key] = dataframe_to_excel_bytes(df, sheet_name=sheet_name)
+        st.session_state[file_key] = file_name
+    if not st.session_state.get(prepare_key, False) or data_key not in st.session_state:
+        st.caption("다운로드가 필요할 때만 엑셀 파일을 생성합니다.")
+        return
+    st.download_button(
+        label,
+        data=st.session_state[data_key],
+        file_name=st.session_state.get(file_key, file_name),
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key=key,
+        width="content",
+    )
+
+
 def split_query_terms(query: str) -> list[str]:
     return [term.strip() for term in str(query).split(",") if term.strip()]
 
@@ -6700,6 +6735,9 @@ def prepare_all_item_flow_data(all_items_df: pd.DataFrame) -> pd.DataFrame:
     for col in ALL_ITEM_DOWNLOAD_COLUMNS:
         if col not in working.columns:
             working[col] = 0 if col in ALL_ITEM_NUMERIC_COLUMNS else ""
+    for col in [INITIAL_ORDER_MAP_COL, DEMAND_DETAIL_ROWS_COL]:
+        if col not in working.columns:
+            working[col] = ""
     for col in ALL_ITEM_NUMERIC_COLUMNS:
         working[col] = parse_mixed_numeric(working[col]).fillna(0)
     for col in ["제품대분류", "거래처그룹", "거래처", "이니셜", "신규분류", "제품명", "파워", "납기일", "생산코드", "신호"]:
@@ -6776,13 +6814,14 @@ def parse_demand_detail_rows(value: object, fallback_source: pd.Series | None = 
     ]
 
 
-def expand_all_item_demand_detail_rows(source_df: pd.DataFrame) -> pd.DataFrame:
+def expand_all_item_demand_detail_rows(source_df: pd.DataFrame, include_fallback: bool = True) -> pd.DataFrame:
     if source_df.empty:
         return source_df.copy()
 
     expanded_rows: list[dict[str, object]] = []
     for _, source in source_df.iterrows():
-        details = parse_demand_detail_rows(source.get(DEMAND_DETAIL_ROWS_COL, ""), source)
+        fallback_source = source if include_fallback else None
+        details = parse_demand_detail_rows(source.get(DEMAND_DETAIL_ROWS_COL, ""), fallback_source)
         for detail in details:
             row = source.to_dict()
             for col in ["거래처", "이니셜", "제품명", "오더수량", "납기일", "생산부족수량", "사출부족수량"]:
@@ -6793,8 +6832,18 @@ def expand_all_item_demand_detail_rows(source_df: pd.DataFrame) -> pd.DataFrame:
             row[INITIAL_ORDER_MAP_COL] = build_initial_order_map_text(row.get("이니셜", ""), row.get("오더수량", 0))
             expanded_rows.append(row)
     if not expanded_rows:
-        return source_df.copy()
+        return source_df.copy() if include_fallback else pd.DataFrame(columns=source_df.columns)
     return pd.DataFrame(expanded_rows)
+
+
+def filter_rows_with_demand_initial(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or "오더수량" not in df.columns or "이니셜" not in df.columns:
+        return df.iloc[0:0].copy()
+
+    initial = df["이니셜"].map(clean_text_value)
+    order_qty = parse_mixed_numeric(df["오더수량"]).fillna(0)
+    valid_initial = initial.ne("") & ~initial.str.lower().isin(INVALID_CATEGORY_VALUES | {"미지정"})
+    return df[(order_qty > 0) & valid_initial].copy()
 
 
 @st.cache_data(show_spinner=False, max_entries=CACHE_MAX_ENTRIES)
@@ -6803,38 +6852,60 @@ def build_all_item_product_flow_summary(working: pd.DataFrame) -> pd.DataFrame:
     if working.empty:
         return pd.DataFrame(columns=summary_columns)
 
-    base = working.copy()
-    activity_mask = (
-        (base["오더수량"] > 0)
-        | (base["생산부족수량"] > 0)
-        | (base["사출부족수량"] > 0)
-        | (base["공정재고합계"] > 0)
-        | (base["완제품재고"] > 0)
-        | (base["DOI"] > 0)
-        | base["신호"].astype(str).str.strip().ne("")
+    has_demand_detail = working[DEMAND_DETAIL_ROWS_COL].map(clean_text_value).str.lower()
+    demand_mask = has_demand_detail.ne("") & ~has_demand_detail.isin(INVALID_CATEGORY_VALUES)
+    base_columns = list(
+        dict.fromkeys(
+            [
+                "제품대분류",
+                "거래처그룹",
+                "거래처",
+                "생산코드",
+                "이니셜",
+                "제품명",
+                "오더수량",
+                "납기일",
+                "생산부족수량",
+                "사출부족수량",
+                "공정재고합계",
+                "완제품재고",
+                "DOI기준오더",
+                "DOI",
+                "신호",
+                INITIAL_ORDER_MAP_COL,
+                DEMAND_DETAIL_ROWS_COL,
+            ]
+        )
     )
-    base = base[activity_mask].copy()
+    base_columns = [col for col in base_columns if col in working.columns]
+    base = working.loc[demand_mask, base_columns].copy()
     if base.empty:
         return pd.DataFrame(columns=summary_columns)
-    base = expand_all_item_demand_detail_rows(base)
+    base = expand_all_item_demand_detail_rows(base, include_fallback=False)
+    base = filter_rows_with_demand_initial(base)
+    if base.empty:
+        return pd.DataFrame(columns=summary_columns)
+    base["_납기일_dt"] = parse_mixed_excel_date(base["납기일"])
 
     grouped = (
         base.groupby(["제품대분류", "거래처그룹", "거래처", "생산코드", "이니셜", "제품명"], as_index=False)
         .agg(
             {
                 "오더수량": "sum",
-                "납기일": min_date_text,
+                "_납기일_dt": "min",
                 "생산부족수량": "sum",
                 "사출부족수량": "sum",
                 "공정재고합계": "max",
                 "완제품재고": "max",
                 "DOI기준오더": "max",
-                "DOI": lambda s: s[s > 0].median() if (s > 0).any() else 0,
-                "신호": summarize_signal_values,
+                "DOI": "max",
+                "신호": "first",
             }
         )
         .rename(columns={"생산부족수량": "부족수량", "공정재고합계": "공정재고"})
     )
+    grouped["납기일"] = pd.to_datetime(grouped["_납기일_dt"], errors="coerce").dt.strftime("%Y-%m-%d").fillna("-")
+    grouped = grouped.drop(columns=["_납기일_dt"], errors="ignore")
     doi_order_mask = grouped["DOI기준오더"] > 0
     grouped.loc[doi_order_mask, "DOI"] = (
         grouped.loc[doi_order_mask, "완제품재고"] / grouped.loc[doi_order_mask, "DOI기준오더"] * 181
@@ -6865,7 +6936,27 @@ def build_customer_tab_options(df: pd.DataFrame) -> list[str]:
 
 
 def numeric_scalar(value: object) -> float:
-    return float(parse_mixed_numeric(pd.Series([value])).iloc[0])
+    if value is None:
+        return 0.0
+    try:
+        if pd.isna(value):
+            return 0.0
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    text = str(value).strip()
+    if text.lower() in INVALID_CATEGORY_VALUES:
+        return 0.0
+    text = re.sub(r"^\((.*)\)$", r"-\1", text)
+    text = text.replace(",", "").replace("\u00a0", "").replace(" ", "")
+    try:
+        return float(text)
+    except ValueError:
+        return 0.0
 
 
 def parse_initial_order_qty_map(
@@ -7012,30 +7103,56 @@ def build_all_item_customer_excel_sheets(working: pd.DataFrame) -> list[tuple[st
     return sheets
 
 
-def render_all_item_customer_excel_download(working: pd.DataFrame, download_stamp: str) -> None:
-    prepare_key = "all_item_customer_excel_prepare_v1"
+def render_all_item_customer_excel_download(working: pd.DataFrame, download_stamp: str, source_key: str) -> None:
+    prepare_key = "all_item_customer_excel_prepare_v2"
+    data_key = f"{prepare_key}_data"
+    meta_key = f"{prepare_key}_meta"
+    source_state_key = f"{prepare_key}_source"
+    if st.session_state.get(source_state_key) != source_key:
+        st.session_state.pop(prepare_key, None)
+        st.session_state.pop(data_key, None)
+        st.session_state.pop(meta_key, None)
+        st.session_state[source_state_key] = source_key
+
     if st.button("거래처별 전체 엑셀 파일 생성", key=f"{prepare_key}_button", width="content"):
         st.session_state[prepare_key] = True
+        sheets = build_all_item_customer_excel_sheets(working)
+        if sheets:
+            sheet_count = len(sheets)
+            row_count = sum(len(df) for _, df in sheets)
+            st.session_state[data_key] = dataframes_to_excel_bytes(sheets)
+            st.session_state[meta_key] = {
+                "sheet_count": sheet_count,
+                "row_count": row_count,
+                "file_name": f"all_item_customer_flow_{download_stamp}.xlsx",
+            }
+        else:
+            st.session_state.pop(data_key, None)
+            st.session_state[meta_key] = {"sheet_count": 0, "row_count": 0, "file_name": ""}
+
+    if st.session_state.get(prepare_key, False) and meta_key in st.session_state:
+        meta = st.session_state[meta_key]
+        if not st.session_state.get(data_key):
+            st.info("엑셀로 생성할 거래처별 데이터가 없습니다.")
+            return
+        st.caption(f"거래처 시트 {meta['sheet_count']:,}개 / 행 {meta['row_count']:,}건")
+        st.download_button(
+            "거래처별 전체 엑셀 다운로드",
+            data=st.session_state[data_key],
+            file_name=meta["file_name"],
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_all_item_customer_flow_v2",
+            width="content",
+        )
+        return
+
     if not st.session_state.get(prepare_key, False):
         st.caption("거래처별 전체 엑셀은 필요할 때만 생성합니다.")
         return
 
-    sheets = build_all_item_customer_excel_sheets(working)
-    if not sheets:
+    if data_key not in st.session_state:
         st.info("엑셀로 생성할 거래처별 데이터가 없습니다.")
         return
-
-    sheet_count = len(sheets)
-    row_count = sum(len(df) for _, df in sheets)
-    st.caption(f"거래처 시트 {sheet_count:,}개 / 행 {row_count:,}건")
-    st.download_button(
-        "거래처별 전체 엑셀 다운로드",
-        data=dataframes_to_excel_bytes(sheets),
-        file_name=f"all_item_customer_flow_{download_stamp}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="download_all_item_customer_flow_v1",
-        width="content",
-    )
 
 
 def render_all_item_flow_kpis(scope: pd.DataFrame) -> None:
@@ -7063,21 +7180,16 @@ def build_all_item_flow_power_detail(
     detail = working[working["제품대분류"] == primary_group].copy()
     if customer_group != "전체":
         detail = detail[detail["거래처그룹"] == customer_group].copy()
-    detail = expand_all_item_demand_detail_rows(detail)
+    detail = expand_all_item_demand_detail_rows(detail, include_fallback=False)
+    detail = filter_rows_with_demand_initial(detail)
+    if detail.empty:
+        return pd.DataFrame(columns=[col for col in ALL_ITEM_FLOW_POWER_DETAIL_COLUMNS if col in working.columns])
     detail = filter_all_item_flow_query(detail, query).copy()
     if selected_signals:
         signal_mask = detail["신호"].astype(str).map(lambda text: any(signal in text for signal in selected_signals))
         detail = detail[signal_mask].copy()
-    activity_mask = (
-        (detail["오더수량"] > 0)
-        | (detail["생산부족수량"] > 0)
-        | (detail["사출부족수량"] > 0)
-        | (detail["공정재고합계"] > 0)
-        | (detail["완제품재고"] > 0)
-        | (detail["DOI"] > 0)
-        | detail["신호"].astype(str).str.strip().ne("")
-    )
-    detail = detail[activity_mask].copy()
+    if detail.empty:
+        return pd.DataFrame(columns=[col for col in ALL_ITEM_FLOW_POWER_DETAIL_COLUMNS if col in working.columns])
     detail = detail.sort_values(
         ["이니셜", "제품명", "파워", "생산부족수량", "사출부족수량", "오더수량", "공정재고합계"],
         ascending=[True, True, True, False, False, False, False],
@@ -7105,13 +7217,26 @@ def render_all_item_flow_table(
     display = scoped[ALL_ITEM_FLOW_DISPLAY_COLUMNS].copy()
     st.caption(f"제품 {display['제품명'].nunique():,}개 / 이니셜-제품명 {len(display):,}건")
 
-    power_detail = build_all_item_flow_power_detail(working, primary_group, customer_group, query, selected_signals)
-    render_lazy_excel_download_button(
+    def build_power_detail() -> pd.DataFrame:
+        return build_all_item_flow_power_detail(working, primary_group, customer_group, query, selected_signals)
+
+    render_lazy_excel_download_builder(
         "파워별 상세 엑셀 다운로드",
-        power_detail,
+        build_power_detail,
         "파워별상세",
         f"all_item_flow_{primary_group}_{key_suffix}_{download_stamp}.xlsx",
         f"download_all_item_flow_{primary_group}_{key_suffix}",
+        build_local_cache_hash(
+            APP_CACHE_VERSION,
+            primary_group,
+            customer_group,
+            query,
+            selected_signals,
+            len(scoped),
+            scoped["오더수량"].sum(),
+            scoped["부족수량"].sum(),
+            scoped["사출부족수량"].sum(),
+        ),
     )
 
     display_source, _ = limit_dataframe_for_display(display)
@@ -7200,7 +7325,7 @@ def render_all_item_alert_panel(working: pd.DataFrame) -> None:
 def render_all_items_dashboard(all_items_df: pd.DataFrame, updated_at: str) -> None:
     st.subheader("전체 품목 현황")
     st.caption(f"업데이트: {updated_at}")
-    st.caption("1-DAY/FRP 기준으로 품목별 오더, 부족, 사출부족, 공정재고를 확인합니다.")
+    st.caption("화면은 수요가 있는 이니셜-제품명만 표시하고, 전체 품목 상세는 엑셀에서 확인합니다.")
 
     if all_items_df.empty:
         st.warning("전체 품목 현황을 계산할 데이터가 없습니다. 전체 품목리스트 파일을 확인해주세요.")
@@ -7223,7 +7348,7 @@ def render_all_items_dashboard(all_items_df: pd.DataFrame, updated_at: str) -> N
     ).strip()
     selected_signals: tuple[str, ...] = tuple()
 
-    render_all_item_customer_excel_download(working, download_stamp)
+    render_all_item_customer_excel_download(working, download_stamp, f"{APP_CACHE_VERSION}:{updated_at}")
 
     view_flow = product_flow.copy()
 
@@ -7237,33 +7362,48 @@ def render_all_items_dashboard(all_items_df: pd.DataFrame, updated_at: str) -> N
         st.info("선택 조건에 맞는 1-DAY/FRP 품목이 없습니다.")
         return
 
-    tabs = st.tabs(primary_tabs)
-    for tab, primary_group in zip(tabs, primary_tabs):
-        with tab:
-            primary_scope = view_flow[view_flow["제품대분류"] == primary_group].copy()
-            if primary_scope.empty:
-                st.info("표시할 품목이 없습니다.")
-                continue
+    primary_group = st.pills(
+        "제품 분류",
+        options=primary_tabs,
+        default=primary_tabs[0],
+        key="all_item_flow_primary_group_v2",
+    )
+    if primary_group is None:
+        st.info("제품 분류를 선택해 주세요.")
+        return
 
-            customer_options = build_customer_tab_options(primary_scope)
-            if not customer_options:
-                st.info("표시할 거래처가 없습니다.")
-                continue
-            customer_tabs = st.tabs(customer_options)
-            for customer_index, (customer_tab, customer_group) in enumerate(zip(customer_tabs, customer_options)):
-                with customer_tab:
-                    scoped = primary_scope[primary_scope["거래처그룹"] == customer_group].copy()
-                    key_token = re.sub(r"[^0-9A-Za-z가-힣_-]+", "_", f"{customer_index}_{customer_group}").strip("_")
-                    render_all_item_flow_table(
-                        scoped,
-                        working,
-                        primary_group,
-                        customer_group,
-                        query,
-                        tuple(selected_signals),
-                        download_stamp,
-                        key_token,
-                    )
+    primary_scope = view_flow[view_flow["제품대분류"] == primary_group].copy()
+    if primary_scope.empty:
+        st.info("표시할 품목이 없습니다.")
+        return
+
+    customer_options = build_customer_tab_options(primary_scope)
+    if not customer_options:
+        st.info("표시할 거래처가 없습니다.")
+        return
+
+    customer_group = st.pills(
+        "거래처",
+        options=customer_options,
+        default=customer_options[0],
+        key=f"all_item_flow_customer_group_{primary_group}_v2",
+    )
+    if customer_group is None:
+        st.info("거래처를 선택해 주세요.")
+        return
+
+    scoped = primary_scope[primary_scope["거래처그룹"] == customer_group].copy()
+    key_token = re.sub(r"[^0-9A-Za-z가-힣_-]+", "_", customer_group).strip("_") or "customer"
+    render_all_item_flow_table(
+        scoped,
+        working,
+        primary_group,
+        customer_group,
+        query,
+        tuple(selected_signals),
+        download_stamp,
+        key_token,
+    )
 
 
 def render_inventory_risk_dashboard(risk_df: pd.DataFrame, updated_at: str) -> None:
