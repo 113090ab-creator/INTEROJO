@@ -53,7 +53,7 @@ PLAN_API_BASE_URL_DEFAULT = "https://plan.interojo.net"
 PLAN_API_KEY_ENV = "PLAN_API_KEY"
 PLAN_API_BASE_URL_ENV = "PLAN_API_BASE_URL"
 PLAN_API_TIMEOUT_SECONDS = 120
-PLAN_API_DEFAULT_ROW_LIMIT = 100
+PLAN_API_DEFAULT_ROW_LIMIT = 0
 PLAN_API_CACHE_TTL_SECONDS = 300
 APS_PLAN_ENDPOINT = "/api/aps-plan"
 APS_WIP_ENDPOINT = "/api/aps-wip"
@@ -945,6 +945,11 @@ def fetch_plan_api_dataframe_cached(
     except Exception as exc:
         return pd.DataFrame(), str(exc)
 
+    if isinstance(payload, dict) and payload.get("truncated") is True:
+        returned_count = payload.get("returned_count", "?")
+        total_count = payload.get("total_count") or payload.get("source_total_count") or "?"
+        return pd.DataFrame(), f"API response was truncated ({returned_count}/{total_count}); ignored partial API data."
+
     records = normalize_api_records(payload)
     if not records:
         return pd.DataFrame(), "API 응답에서 행 데이터를 찾지 못했습니다."
@@ -1341,7 +1346,7 @@ def select_data_source(base_dir: Path) -> tuple[Path, str, str]:
                 st.cache_data.clear()
                 st.cache_resource.clear()
                 st.rerun()
-            st.caption("APS 수요/WIP는 API 우선 조회, 실패 시 기존 파일 기준으로 계산합니다.")
+            st.caption("APS 수요는 API 전체조회, WIP는 API 응답이 잘리거나 실패하면 기존 WIP 파일 기준으로 계산합니다.")
             api_updated_at = get_plan_api_updated_at()
             updated_at = api_updated_at if api_updated_at != "-" else get_data_updated_at(base_dir)
             return base_dir, "APS API + 로컬 기준정보", updated_at
