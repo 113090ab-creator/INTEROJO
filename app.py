@@ -52,7 +52,8 @@ APP_CACHE_VERSION = "20260731-flow-view-v1"
 PLAN_API_BASE_URL_DEFAULT = "https://plan.interojo.net"
 PLAN_API_KEY_ENV = "PLAN_API_KEY"
 PLAN_API_BASE_URL_ENV = "PLAN_API_BASE_URL"
-PLAN_API_TIMEOUT_SECONDS = 60
+PLAN_API_TIMEOUT_SECONDS = 120
+PLAN_API_DEFAULT_ROW_LIMIT = 100
 PLAN_API_CACHE_TTL_SECONDS = 300
 APS_PLAN_ENDPOINT = "/api/aps-plan"
 APS_WIP_ENDPOINT = "/api/aps-wip"
@@ -4845,14 +4846,14 @@ def build_first_occurrence_mask(source: pd.DataFrame, key_columns: list[str | No
 
 
 def load_api_wip_inventory_df() -> pd.DataFrame:
-    raw, error = read_plan_api_dataframe(APS_WIP_ENDPOINT)
+    raw, error = read_plan_api_dataframe(APS_WIP_ENDPOINT, {"limit": PLAN_API_DEFAULT_ROW_LIMIT})
     if error or raw.empty:
         return pd.DataFrame(columns=["품목코드", "창고", "재공코드", "재고량"])
     return build_inventory_df(raw)
 
 
 def load_api_demand_like_df() -> pd.DataFrame:
-    raw, error = read_plan_api_dataframe(APS_PLAN_ENDPOINT)
+    raw, error = read_plan_api_dataframe(APS_PLAN_ENDPOINT, {"limit": PLAN_API_DEFAULT_ROW_LIMIT})
     output_columns = [
         "사이트코드",
         "거래처",
