@@ -1512,6 +1512,11 @@ def normalize_rework_note_value(value: object) -> str:
     return "" if text.lower() in INVALID_CATEGORY_VALUES else text
 
 
+def clean_display_text_series(series: pd.Series) -> pd.Series:
+    text = series.astype(str).str.strip()
+    return text.mask(text.str.lower().isin(INVALID_CATEGORY_VALUES), "")
+
+
 def merge_rework_note(existing: str, note: str) -> str:
     note = normalize_rework_note_value(note)
     if not note:
@@ -2791,6 +2796,8 @@ def build_thousand_separator_config(df: pd.DataFrame) -> dict[str, st.column_con
 @st.cache_data(show_spinner=False, max_entries=CACHE_MAX_ENTRIES)
 def format_numeric_columns_for_display(df: pd.DataFrame) -> pd.DataFrame:
     display_df = df.copy()
+    if "비고" in display_df.columns:
+        display_df["비고"] = clean_display_text_series(display_df["비고"])
 
     for col in display_df.columns:
         if is_power_column(col):
@@ -4051,6 +4058,7 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
         rework_note.astype(str).str.strip().ne(""),
         grouped_demand["재작업"],
     )
+    grouped_demand["비고"] = clean_display_text_series(grouped_demand["비고"])
     rework_sample_keys = rework_lookup_keys.where(rework_exact_match_mask, rework_item_only_keys)
     rework_matched_item_keys = sorted(
         {
