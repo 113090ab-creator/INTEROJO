@@ -145,7 +145,6 @@ ALL_ITEM_FLOW_POWER_DETAIL_COLUMNS = [
     "누수규격검사",
 ]
 ALL_ITEM_FLOW_CUSTOMER_ORDER = [
-    "전체",
     "PIA",
     "OPHTALMIC",
     "Sincere",
@@ -6500,10 +6499,9 @@ def build_all_item_product_flow_summary(working: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=summary_columns)
 
     grouped = (
-        base.groupby(["제품대분류", "거래처그룹", "제품명"], as_index=False)
+        base.groupby(["제품대분류", "거래처그룹", "이니셜", "제품명"], as_index=False)
         .agg(
             {
-                "이니셜": lambda s: summarize_unique(s, head_count=3),
                 "거래처": lambda s: summarize_unique(s, head_count=2),
                 "생산코드": lambda s: summarize_unique(s, head_count=5),
                 "오더수량": "sum",
@@ -6525,8 +6523,8 @@ def build_all_item_product_flow_summary(working: pd.DataFrame) -> pd.DataFrame:
     )
     grouped["DOI"] = parse_mixed_numeric(grouped["DOI"]).round(1)
     grouped = grouped.sort_values(
-        ["부족수량", "사출부족수량", "오더수량", "공정재고", "DOI", "제품명"],
-        ascending=[False, False, False, False, False, True],
+        ["이니셜", "제품명", "부족수량", "사출부족수량", "오더수량", "공정재고", "DOI"],
+        ascending=[True, True, False, False, False, False, False],
     )
     return grouped[summary_columns]
 
@@ -6542,7 +6540,8 @@ def filter_all_item_flow_query(df: pd.DataFrame, query: str) -> pd.DataFrame:
 
 def build_customer_tab_options(df: pd.DataFrame) -> list[str]:
     present = {clean_text_value(value) for value in df["거래처그룹"].tolist() if clean_text_value(value)}
-    ordered = [option for option in ALL_ITEM_FLOW_CUSTOMER_ORDER if option == "전체" or option in present]
+    present.discard("전체")
+    ordered = [option for option in ALL_ITEM_FLOW_CUSTOMER_ORDER if option in present]
     extras = sorted(present - set(ordered))
     return ordered + extras
 
@@ -6586,8 +6585,8 @@ def build_all_item_flow_power_detail(
     )
     detail = detail[activity_mask].copy()
     detail = detail.sort_values(
-        ["생산부족수량", "사출부족수량", "오더수량", "공정재고합계", "제품명", "파워"],
-        ascending=[False, False, False, False, True, True],
+        ["이니셜", "제품명", "파워", "생산부족수량", "사출부족수량", "오더수량", "공정재고합계"],
+        ascending=[True, True, True, False, False, False, False],
     )
     columns = [col for col in ALL_ITEM_FLOW_POWER_DETAIL_COLUMNS if col in detail.columns]
     return detail[columns]
@@ -6610,7 +6609,7 @@ def render_all_item_flow_table(
 
     render_all_item_flow_kpis(scoped)
     display = scoped[ALL_ITEM_FLOW_DISPLAY_COLUMNS].copy()
-    st.caption(f"제품 {display['제품명'].nunique():,}개 / 행 {len(display):,}건")
+    st.caption(f"제품 {display['제품명'].nunique():,}개 / 이니셜-제품명 {len(display):,}건")
 
     power_detail = build_all_item_flow_power_detail(working, primary_group, customer_group, query, selected_signals)
     render_lazy_excel_download_button(
@@ -6751,13 +6750,13 @@ def render_all_items_dashboard(all_items_df: pd.DataFrame, updated_at: str) -> N
                 continue
 
             customer_options = build_customer_tab_options(primary_scope)
+            if not customer_options:
+                st.info("표시할 거래처가 없습니다.")
+                continue
             customer_tabs = st.tabs(customer_options)
             for customer_index, (customer_tab, customer_group) in enumerate(zip(customer_tabs, customer_options)):
                 with customer_tab:
-                    if customer_group == "전체":
-                        scoped = primary_scope.copy()
-                    else:
-                        scoped = primary_scope[primary_scope["거래처그룹"] == customer_group].copy()
+                    scoped = primary_scope[primary_scope["거래처그룹"] == customer_group].copy()
                     key_token = re.sub(r"[^0-9A-Za-z가-힣_-]+", "_", f"{customer_index}_{customer_group}").strip("_")
                     render_all_item_flow_table(
                         scoped,
