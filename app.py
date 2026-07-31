@@ -767,11 +767,77 @@ def get_plan_api_base_url() -> str:
     return get_streamlit_or_env_secret(PLAN_API_BASE_URL_ENV, PLAN_API_BASE_URL_DEFAULT).rstrip("/")
 
 
+def extract_plan_api_key_from_text(text: str) -> str:
+    key_labels = ("X-API-Key", "PLAN_API_KEY", "API_KEY", "API Key", "API키", "인증키", "키")
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        value_scope = line
+        if any(label.lower() in line.lower() for label in key_labels):
+            parts = re.split(r"[:=]\s*", line, maxsplit=1)
+            value_scope = parts[1].strip() if len(parts) == 2 else line
+        candidates = re.findall(r"[A-Za-z0-9][A-Za-z0-9._~+/=-]{15,}", value_scope)
+        for candidate in candidates:
+            token = candidate.strip().strip("\"'")
+            lowered = token.lower()
+            if lowered.startswith(("http", "api_key", "x-api-key", "plan_api_key")):
+                continue
+            if "@" in token:
+                continue
+            return token
+    return ""
+
+
+def find_local_plan_api_key_file() -> Path | None:
+    search_dirs = unique_existing_paths([BASE_DIR, Path.home() / "Downloads", Path.home() / "Desktop"])
+    candidates: list[Path] = []
+    for search_dir in search_dirs:
+        for pattern in ("API_KEY*.txt", "*API*KEY*.txt", "*api*key*.txt"):
+            for path in search_dir.glob(pattern):
+                if path.is_file() and path not in candidates:
+                    candidates.append(path)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: path.stat().st_mtime)
+
+
+def read_local_plan_api_key() -> str:
+    path = find_local_plan_api_key_file()
+    if path is None:
+        return ""
+    for encoding in ("utf-8-sig", "utf-8", "cp949"):
+        try:
+            text = path.read_text(encoding=encoding)
+        except UnicodeDecodeError:
+            continue
+        except OSError:
+            return ""
+        token = extract_plan_api_key_from_text(text)
+        if token:
+            return token
+    return ""
+
+
 def get_plan_api_key() -> str:
     session_key = get_session_value("plan_api_key_input", "")
     if session_key is not None and str(session_key).strip():
         return str(session_key).strip()
-    return get_streamlit_or_env_secret(PLAN_API_KEY_ENV, "")
+    configured_key = get_streamlit_or_env_secret(PLAN_API_KEY_ENV, "")
+    if configured_key:
+        return configured_key
+    return read_local_plan_api_key()
+
+
+def get_plan_api_key_source_label() -> str:
+    session_key = get_session_value("plan_api_key_input", "")
+    if session_key is not None and str(session_key).strip():
+        return "화면 입력"
+    if get_streamlit_or_env_secret(PLAN_API_KEY_ENV, ""):
+        return "환경변수/Secrets"
+    if read_local_plan_api_key():
+        return "로컬 API 키 안내 파일"
+    return ""
 
 
 def get_session_value(key: str, default: object = None) -> object:
@@ -1239,7 +1305,24 @@ def stage_uploaded_data_files(
 
 def select_data_source(base_dir: Path) -> tuple[Path, str, str]:
     st.subheader("데이터 소스")
+    api_key_source = get_plan_api_key_source_label()
+    if api_key_source:
+        st.caption(f"API 키 적용: {api_key_source}")
+    else:
+        st.caption("API 키를 자동으로 찾지 못했습니다. API_KEY_안내.txt의 X-API-Key를 아래에 붙여넣고 Enter를 누르세요.")
+        st.text_input(
+            "API Key",
+            type="password",
+            key="plan_api_key_input",
+            placeholder="X-API-Key 붙여넣기",
+            help="입력값은 현재 앱 세션에서만 사용합니다. 영구 적용은 PLAN_API_KEY 환경변수나 Streamlit secrets에 등록하세요.",
+        )
+
     api_configured = is_plan_api_configured()
+    was_api_ready = bool(get_session_value("plan_api_key_available", False))
+    if api_configured and not was_api_ready:
+        set_session_value("use_plan_api_data_mode", True)
+    set_session_value("plan_api_key_available", api_configured)
     if not api_configured and get_session_value("use_plan_api_data_mode", False):
         set_session_value("use_plan_api_data_mode", False)
     default_api_mode = api_configured and bool(get_session_value("use_plan_api_data_mode", api_configured))
@@ -1262,18 +1345,7 @@ def select_data_source(base_dir: Path) -> tuple[Path, str, str]:
             updated_at = api_updated_at if api_updated_at != "-" else get_data_updated_at(base_dir)
             return base_dir, "APS API + 로컬 기준정보", updated_at
     elif not api_configured:
-        st.text_input(
-            "API Key",
-            value="",
-            type="password",
-            key="plan_api_key_input",
-            placeholder="X-API-Key 입력",
-            help="입력값은 현재 앱 세션에서만 사용합니다. 영구 적용은 PLAN_API_KEY 환경변수나 Streamlit secrets에 등록하세요.",
-        )
-        if get_plan_api_key():
-            st.caption("API 키가 입력되었습니다. APS API 자동조회를 켜면 바로 사용합니다.")
-        else:
-            st.caption("API 키 미설정: 기존 파일 기준으로 표시합니다.")
+        st.caption("API 키 미설정: 기존 파일 기준으로 표시합니다.")
 
     use_uploaded = st.toggle("업로드 파일 사용", value=False, key="use_uploaded_data_mode")
     inv_file = None
