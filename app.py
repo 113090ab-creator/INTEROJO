@@ -51,7 +51,7 @@ WAREHOUSE_MAP = {
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 12000
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260803-api-date-v1"
+APP_CACHE_VERSION = "20260803-api-shortage-v2"
 PLAN_API_BASE_URL_DEFAULT = "https://plan.interojo.net"
 PLAN_API_KEY_ENV = "PLAN_API_KEY"
 PLAN_API_BASE_URL_ENV = "PLAN_API_BASE_URL"
@@ -5098,8 +5098,10 @@ def load_api_shortage_data(
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     _ = refresh_key
     data_base_dir = Path(base_dir_str) if base_dir_str else BASE_DIR
-    flow = build_all_item_flow_status_snapshot(refresh_key, str(data_base_dir), "전체")
-    if flow.empty:
+    raw, error = read_plan_api_dataframe(APS_PLAN_ENDPOINT, {"limit": PLAN_API_DEFAULT_ROW_LIMIT})
+    if error:
+        raise ValueError(f"APS API 수요 조회 실패: {error}")
+    if raw.empty:
         empty_info = pd.DataFrame(
             {
                 "재고파일": [format_reference_timestamp(get_wip_updated_at(data_base_dir))],
@@ -5109,50 +5111,246 @@ def load_api_shortage_data(
         )
         return pd.DataFrame(), empty_info, pd.DataFrame()
 
-    def flow_text(col: str, default: str = "") -> pd.Series:
-        if col in flow.columns:
-            return flow[col]
-        return pd.Series(default, index=flow.index, dtype="object")
+    raw = raw.copy()
+    raw.columns = [str(col).strip() for col in raw.columns]
+    columns = raw.columns.tolist()
 
-    def flow_number(col: str, default: float = 0.0) -> pd.Series:
-        if col in flow.columns:
-            return parse_mixed_numeric(flow[col]).fillna(default)
-        return pd.Series(default, index=flow.index, dtype="float64")
+    site_col = pick_api_column(columns, ["res_site_id", "RES_SITE_ID", "사이트코드", "사이트"])
+    customer_col = pick_api_column(columns, ["cust_name", "CUST_NAME", "거래처", "거래처명", "고객 이름"])
+    order_col = pick_api_column(columns, ["so_id", "SO_ID", "수주번호", "오더번호"])
+    initial_col = pick_api_column(columns, ["initial", "INITIAL", "이니셜"])
+    demand_type_col = pick_api_column(columns, ["demand_type", "DEMAND_TYPE", "수요유형"])
+    demand_id_col = pick_api_column(columns, ["demand_id", "DEMAND_ID", "수요ID"])
+    seq_col = pick_api_column(columns, ["seq", "SEQ"])
+    item_col = pick_api_column(columns, ["item_id", "ITEM_ID", "제품 코드", "제품코드", "품목코드"])
+    demand_item_col = pick_api_column(columns, ["demand_item_id", "DEMAND_ITEM_ID", "수요제품코드"])
+    name_col = pick_api_column(columns, ["demand_item_name", "DEMAND_ITEM_NAME", "수요 제품 이름", "제품명"])
+    item_name_col = pick_api_column(columns, ["item_name", "ITEM_NAME", "item_name2", "ITEM_NAME2"])
+    demand_qty_col = pick_api_column(columns, ["demand_qty", "DEMAND_QTY", "수요 수량", "수요수량"])
+    oper_col = pick_api_column(columns, ["oper_id", "OPER_ID", "공정코드", "공정"])
+    plan_qty_col = pick_api_column(columns, ["plan_qty", "PLAN_QTY", "생산 수량", "생산수량", "계획수량"])
+    due_col = pick_api_column(columns, ["due_date", "DUE_DATE", "납기일"])
 
-    result = pd.DataFrame(index=flow.index)
-    result["사이트코드"] = flow_text("사이트코드")
-    result["거래처"] = flow_text("거래처")
-    result[ORDER_NO_COL] = ""
-    result["이니셜"] = flow_text("이니셜")
-    result["품목코드"] = flow_text("생산코드")
-    result["R코드"] = flow_text("사출코드")
-    result["Q코드"] = flow_text("분리코드")
-    result["U코드"] = ""
-    result["제품명"] = flow_text("제품명")
-    result[DEMAND_QTY_COL] = flow_number("오더수량")
-    result["납기일"] = flow_text("납기일")
-    result["사출납기일"] = flow_text("납기일")
-    result[SEPARATION_REQUIRED_DUE_COL] = ""
-    result[LEADJI_REQUIRED_DUE_COL] = flow_text("납기일")
-    result[ADHESION_REQUIRED_DUE_COL] = ""
-    result["부족수량"] = flow_number("생산부족수량")
-    result["사출생산필요수량"] = flow_number("사출부족수량")
-    result[SEPARATION_REQUIRED_QTY_COL] = 0
-    result[LEADJI_REQUIRED_QTY_COL] = result["부족수량"]
-    result[ADHESION_REQUIRED_QTY_COL] = 0
-    result["사출창고"] = flow_number("사출창고")
-    result["분리창고"] = flow_number("분리창고")
-    result["검사접착창고"] = flow_number("검사접착창고")
-    result["검사접착재작업창고"] = 0
-    result["누수규격검사 창고"] = flow_number("누수규격검사")
-    result["공정재고 합계"] = flow_number("공정재고합계")
-    result["파워"] = flow_text("파워")
-    result.loc[result["파워"].astype(str).str.strip().eq(""), "파워"] = result["품목코드"].map(extract_power_from_code)
-    result["시트분류"] = flow_text("거래처그룹")
-    result["분류별요약"] = flow_text("제품대분류")
-    result["수동시트분류"] = ""
-    result["분류 판단 근거"] = "APS API 수요 기준"
-    result["R코드 제품명"] = result["제품명"]
+    if item_col is None or oper_col is None or plan_qty_col is None:
+        raise ValueError("APS API 응답에서 item_id/oper_id/plan_qty 컬럼을 찾지 못했습니다.")
+
+    raw_index = raw.index
+
+    def api_text(column_name: str | None, default: str = "") -> pd.Series:
+        if column_name and column_name in raw.columns:
+            selected = raw[column_name]
+            if isinstance(selected, pd.DataFrame):
+                selected = selected.iloc[:, 0]
+            return selected.astype(str).str.strip()
+        return pd.Series(default, index=raw_index, dtype="object")
+
+    def api_number(column_name: str | None, default: float = 0.0) -> pd.Series:
+        if column_name and column_name in raw.columns:
+            selected = raw[column_name]
+            if isinstance(selected, pd.DataFrame):
+                selected = selected.iloc[:, 0]
+            return parse_mixed_numeric(selected).fillna(default)
+        return pd.Series(default, index=raw_index, dtype="float64")
+
+    def api_date(column_name: str | None) -> pd.Series:
+        values = api_text(column_name)
+        parsed = pd.to_datetime(values, errors="coerce")
+        return parsed.dt.strftime("%Y-%m-%d").fillna(values.where(values.map(clean_text_value).ne(""), ""))
+
+    initial_text = api_text(initial_col)
+    fallback_type = api_text(demand_type_col)
+    missing_initial = initial_text.map(clean_text_value).eq("")
+    initial_text = initial_text.where(~missing_initial, fallback_type)
+    initial_text = initial_text.map(clean_text_value)
+    initial_text = initial_text.where(initial_text.ne(""), "미지정")
+
+    product_name = api_text(name_col)
+    missing_name = product_name.map(clean_text_value).eq("")
+    if item_name_col is not None:
+        product_name = product_name.where(~missing_name, api_text(item_name_col))
+    product_name = product_name.map(clean_text_value).replace({"": "-"})
+
+    process_qty_map = {
+        "10": "사출생산필요수량",
+        "20": SEPARATION_REQUIRED_QTY_COL,
+        "45": LEADJI_REQUIRED_QTY_COL,
+        "55": ADHESION_REQUIRED_QTY_COL,
+        "80": "생산수량",
+    }
+    process_due_map = {
+        "10": "사출납기일",
+        "20": SEPARATION_REQUIRED_DUE_COL,
+        "45": LEADJI_REQUIRED_DUE_COL,
+        "55": ADHESION_REQUIRED_DUE_COL,
+        "80": "납기일",
+    }
+
+    work = pd.DataFrame(
+        {
+            "사이트코드": api_text(site_col, "API").map(normalize_site_group),
+            "거래처": api_text(customer_col),
+            ORDER_NO_COL: api_text(order_col),
+            "이니셜": initial_text,
+            "품목코드": api_text(item_col).map(normalize_item_code_value),
+            "수요품목코드": api_text(demand_item_col).map(normalize_item_code_value),
+            "제품명": product_name,
+            DEMAND_QTY_COL: api_number(demand_qty_col),
+            "공정": api_text(oper_col).str.extract(r"(\d+)", expand=False).fillna("").str.strip(),
+            "생산수량_API": api_number(plan_qty_col),
+            "API납기일": api_date(due_col),
+            "수요ID": api_text(demand_id_col),
+            "SEQ": api_text(seq_col),
+        }
+    )
+    work = work[work["공정"].isin(process_qty_map.keys())].copy()
+    work = work[work["품목코드"].ne("") & ~work["품목코드"].str.lower().isin(INVALID_CATEGORY_VALUES)]
+    if work.empty:
+        empty_info = pd.DataFrame(
+            {
+                "재고파일": [format_reference_timestamp(get_wip_updated_at(data_base_dir))],
+                "수요파일": [f"APS API ({format_reference_timestamp(get_plan_api_updated_at())})"],
+                "행수(현황표)": [0],
+            }
+        )
+        return pd.DataFrame(), empty_info, pd.DataFrame()
+
+    group_keys = ["사이트코드", "거래처", ORDER_NO_COL, "이니셜", "품목코드", "제품명", "API납기일"]
+    qty_pivot = (
+        work.pivot_table(
+            index=group_keys,
+            columns="공정",
+            values="생산수량_API",
+            aggfunc="sum",
+            fill_value=0,
+        )
+        .rename(columns=process_qty_map)
+        .reset_index()
+    )
+    demand_qty = (
+        work.groupby(group_keys, as_index=False, dropna=False)[DEMAND_QTY_COL]
+        .max()
+        .rename(columns={DEMAND_QTY_COL: "_수요수량"})
+    )
+    grouped = qty_pivot.merge(demand_qty, on=group_keys, how="left")
+    grouped = grouped.rename(columns={"API납기일": "납기일"})
+
+    for col in ["생산수량", "사출생산필요수량", SEPARATION_REQUIRED_QTY_COL, LEADJI_REQUIRED_QTY_COL, ADHESION_REQUIRED_QTY_COL]:
+        if col not in grouped.columns:
+            grouped[col] = 0.0
+        grouped[col] = parse_mixed_numeric(grouped[col]).fillna(0)
+    grouped[DEMAND_QTY_COL] = parse_mixed_numeric(grouped.get("_수요수량", 0)).fillna(0)
+    grouped = grouped.drop(columns=["_수요수량"], errors="ignore")
+    grouped["부족수량"] = grouped["생산수량"]
+    grouped["사출납기일"] = grouped["납기일"]
+    grouped[SEPARATION_REQUIRED_DUE_COL] = grouped["납기일"]
+    grouped[LEADJI_REQUIRED_DUE_COL] = grouped["납기일"]
+    grouped[ADHESION_REQUIRED_DUE_COL] = grouped["납기일"]
+
+    reference_refresh_key = build_reference_refresh_key(data_base_dir)
+    (
+        product_name_map,
+        product_group_map,
+        sheet2_group_map,
+        r_ref_map,
+        q_ref_map,
+        r_name_map,
+        bom_r_base_map,
+        bom_q_base_map,
+        bom_r_exact_map,
+        bom_q_exact_map,
+        leadji_r_map,
+        leadji_q_map,
+        leadji_u_map,
+    ) = load_reference_maps_bundle(data_base_dir, reference_refresh_key)
+
+    inv_df = load_all_item_inventory_file_source(data_base_dir)
+    target_inv = inv_df[inv_df["창고"].isin(TARGET_WAREHOUSES)].copy()
+    stock_lookup: dict[str, dict[str, float]] = {}
+    for raw_name, display_name in WAREHOUSE_MAP.items():
+        stock_lookup[display_name] = (
+            target_inv[target_inv["창고"] == raw_name]
+            .groupby("품목코드")["재고량"]
+            .sum()
+            .to_dict()
+        )
+
+    result = grouped.copy()
+    code5 = result["품목코드"].astype(str).str[:5]
+    inferred_r = result["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "R"))
+    inferred_q = result["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "Q"))
+    mapped_r_base = code5.map(leadji_r_map).fillna(code5.map(r_ref_map)).fillna(code5.map(bom_r_base_map))
+    mapped_q_base = code5.map(leadji_q_map).fillna(code5.map(q_ref_map)).fillna(code5.map(bom_q_base_map))
+    result["R코드"] = [
+        merge_mapped_base_code(inferred, mapped, "R") for inferred, mapped in zip(inferred_r, mapped_r_base)
+    ]
+    result["Q코드"] = [
+        merge_mapped_base_code(inferred, mapped, "Q") for inferred, mapped in zip(inferred_q, mapped_q_base)
+    ]
+    exact_r = result["품목코드"].map(bom_r_exact_map)
+    exact_q = result["품목코드"].map(bom_q_exact_map)
+    result.loc[exact_r.map(clean_text_value).ne(""), "R코드"] = exact_r[exact_r.map(clean_text_value).ne("")]
+    result.loc[exact_q.map(clean_text_value).ne(""), "Q코드"] = exact_q[exact_q.map(clean_text_value).ne("")]
+    result["U코드"] = [
+        merge_mapped_base_code(map_demand_code_to_process_code(q_code, "U"), mapped, "U")
+        if clean_text_value(mapped)
+        else ""
+        for q_code, mapped in zip(result["Q코드"], code5.map(leadji_u_map))
+    ]
+    result["R코드 제품명"] = result["R코드"].astype(str).str[:5].map(r_name_map).fillna(result["제품명"])
+    result["R코드 제품명"] = result["R코드 제품명"].replace({"": "-", "nan": "-", "None": "-"}).fillna("-")
+
+    item_prefix = result["품목코드"].astype(str).str.upper().str[:1]
+    result["사출창고"] = [
+        lookup_stock_qty(stock_lookup.get("사출창고", {}), code if prefix == "R" else r_code)
+        for code, prefix, r_code in zip(result["품목코드"], item_prefix, result["R코드"])
+    ]
+    result["분리창고"] = [
+        lookup_stock_qty_from_candidates(
+            stock_lookup.get("분리창고", {}),
+            [code if prefix in {"Q", "U"} else "", q_code, u_code],
+        )
+        for code, prefix, q_code, u_code in zip(result["품목코드"], item_prefix, result["Q코드"], result["U코드"])
+    ]
+    result["검사접착창고"] = result["품목코드"].map(lambda x: stock_lookup.get("검사접착창고", {}).get(x, 0))
+    result["검사접착재작업창고"] = result["품목코드"].map(
+        lambda x: stock_lookup.get("검사접착재작업창고", {}).get(x, 0)
+    )
+    result["누수규격검사 창고"] = result["품목코드"].map(
+        lambda x: stock_lookup.get("누수규격검사 창고", {}).get(x, 0)
+    )
+    result["공정재고 합계"] = (
+        result["사출창고"]
+        + result["분리창고"]
+        + result["검사접착창고"]
+        + result["검사접착재작업창고"]
+        + result["누수규격검사 창고"]
+    )
+
+    result["분류별요약"] = code5.map(product_group_map)
+    result["시트분류"] = code5.map(sheet2_group_map)
+    result["수동시트분류"] = result["시트분류"].map(clean_sheet_category)
+    if result.empty:
+        result["자동분류결과"] = pd.Series(dtype="object")
+        result["분류 판단 근거"] = pd.Series(dtype="object")
+    else:
+        auto_classification = result.apply(
+            lambda row: classify_sheet_with_reason(row),
+            axis=1,
+            result_type="expand",
+        )
+        result["자동분류결과"] = auto_classification[0]
+        result["분류 판단 근거"] = auto_classification[1]
+
+    manual_mask = result["수동시트분류"].map(clean_sheet_category) != ""
+    result["시트분류"] = result["자동분류결과"]
+    result.loc[manual_mask, "시트분류"] = result.loc[manual_mask, "수동시트분류"]
+    result.loc[manual_mask, "분류 판단 근거"] = "수동 분류값 적용"
+    result["시트분류"] = result["시트분류"].map(clean_text_value)
+    result.loc[result["시트분류"].str.lower().isin(INVALID_CATEGORY_VALUES), "시트분류"] = UNCLASSIFIED_SHEET_CATEGORY
+    result["분류별요약"] = result["분류별요약"].astype(str).str.strip()
+    result.loc[result["분류별요약"].str.lower().isin(INVALID_CATEGORY_VALUES), "분류별요약"] = "기타"
+
+    result["파워"] = result["품목코드"].map(extract_power_from_code)
     result[REWORK_AVAILABLE_QTY_COL] = 0
     result["재작업"] = ""
     result["비고"] = ""
@@ -5176,18 +5374,24 @@ def load_api_shortage_data(
     ]:
         result[text_col] = result[text_col].astype(str).replace({"nan": "", "None": ""}).fillna("")
 
-    result = result[(result["부족수량"] > 0) | (result["사출생산필요수량"] > 0)].copy()
+    result = result[
+        (result["부족수량"] > 0)
+        | (result["사출생산필요수량"] > 0)
+        | (result[SEPARATION_REQUIRED_QTY_COL] > 0)
+        | (result[LEADJI_REQUIRED_QTY_COL] > 0)
+        | (result[ADHESION_REQUIRED_QTY_COL] > 0)
+    ].copy()
 
     process_map_df = pd.DataFrame(
         {
             "공정창고": ["사출창고", "분리창고", "검사접착창고", "검사접착재작업창고", "누수규격검사 창고"],
-            "수요정보 공정코드": ["APS API", "APS API", "APS API", "-", "APS API"],
+            "수요정보 공정코드": ["[10]사출조립", "[20]분리", "[55]접착/멸균", "-", "[80]누수/규격검사"],
             "재고코드 매핑 규칙": [
-                "APS API 사출코드와 WIP 사출창고 매칭",
-                "APS API 분리코드와 WIP 분리창고 매칭",
-                "APS API 생산코드와 WIP 검사접착창고 매칭",
+                "APS API oper_id=10 생산수량, WIP 사출창고 매칭",
+                "APS API oper_id=20 생산수량, WIP 분리창고 매칭",
+                "APS API oper_id=55 생산수량, WIP 검사접착창고 매칭",
                 "API 수요 기준에서는 재작업 시트 미사용",
-                "APS API 생산코드와 WIP 누수규격검사 창고 매칭",
+                "APS API oper_id=80 생산수량, WIP 누수규격검사 창고 매칭",
             ],
             "재고>0 품목수": [
                 int((result["사출창고"] > 0).sum()),
@@ -5204,6 +5408,7 @@ def load_api_shortage_data(
             "재고파일": [f"WIP ({format_reference_timestamp(get_wip_updated_at(data_base_dir))})"],
             "수요파일": [f"APS API ({format_reference_timestamp(get_plan_api_updated_at())})"],
             "행수(현황표)": [len(result)],
+            "API 원천행수": [len(raw)],
             "재작업 시트명": ["API 수요 기준 미사용"],
             "재작업 기준 컬럼": ["API 수요 기준에서는 재작업 시트 매칭을 적용하지 않음"],
             "재작업 시트 컬럼": [""],
