@@ -774,11 +774,55 @@ def get_streamlit_or_env_secret(name: str, default: str = "") -> str:
         value = ""
     if value is None or str(value).strip() == "":
         value = os.environ.get(name, default)
+    if value is None or str(value).strip() == "":
+        value = read_local_streamlit_secret(name, default)
     return str(value).strip()
 
 
 def get_plan_api_base_url() -> str:
     return get_streamlit_or_env_secret(PLAN_API_BASE_URL_ENV, PLAN_API_BASE_URL_DEFAULT).rstrip("/")
+
+
+def get_user_home_candidates() -> list[Path]:
+    candidates = [Path.home()]
+    for env_name in ("USERPROFILE", "HOME"):
+        env_value = os.environ.get(env_name, "")
+        if env_value:
+            candidates.append(Path(env_value))
+    return unique_existing_paths(candidates)
+
+
+def get_local_secret_file_candidates() -> list[Path]:
+    paths = [
+        BASE_DIR / ".streamlit" / "secrets.toml",
+        Path.cwd() / ".streamlit" / "secrets.toml",
+    ]
+    for home in get_user_home_candidates():
+        paths.append(home / "Documents" / "GitHub" / "INTEROJO" / ".streamlit" / "secrets.toml")
+    return unique_existing_paths(paths)
+
+
+def read_local_streamlit_secret(name: str, default: str = "") -> str:
+    pattern = re.compile(rf"^\s*{re.escape(name)}\s*=\s*(.+?)\s*$")
+    for path in get_local_secret_file_candidates():
+        if not path.exists():
+            continue
+        for encoding in ("utf-8-sig", "utf-8", "cp949"):
+            try:
+                lines = path.read_text(encoding=encoding).splitlines()
+            except UnicodeDecodeError:
+                continue
+            except OSError:
+                break
+            for line in lines:
+                match = pattern.match(line)
+                if not match:
+                    continue
+                value = match.group(1).strip().strip("\"'")
+                if value:
+                    return value
+            break
+    return default
 
 
 def extract_plan_api_key_from_text(text: str) -> str:
@@ -804,19 +848,36 @@ def extract_plan_api_key_from_text(text: str) -> str:
 
 
 def find_local_plan_api_key_file() -> Path | None:
-    home = Path.home()
+    home_candidates = get_user_home_candidates()
     search_dirs = unique_existing_paths(
         [
             BASE_DIR,
             LOCAL_CACHE_DIR,
-            home / "Downloads",
-            home / "Desktop",
-            home / "Documents",
+            BASE_DIR / ".local_cache",
+            BASE_DIR / ".streamlit",
+            Path.cwd(),
+            Path.cwd() / ".local_cache",
+            Path.cwd() / ".streamlit",
+            *[
+                path
+                for home in home_candidates
+                for path in (
+                    home / "Downloads",
+                    home / "Desktop",
+                    home / "Documents",
+                    home / "Documents" / "GitHub" / "INTEROJO",
+                    home / "Documents" / "GitHub" / "INTEROJO" / ".local_cache",
+                    home / "Documents" / "GitHub" / "INTEROJO" / ".streamlit",
+                )
+            ],
         ]
     )
     if PLAN_API_KEY_LOCAL_CACHE_FILE.exists():
         return PLAN_API_KEY_LOCAL_CACHE_FILE
     candidates: list[Path] = []
+    for path in get_local_secret_file_candidates():
+        if path.exists() and path not in candidates:
+            candidates.append(path)
     patterns = (
         "API_KEY*.txt",
         "API_KEY_*.txt",
