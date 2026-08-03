@@ -8306,6 +8306,69 @@ def render_all_item_alert_panel(working: pd.DataFrame) -> None:
             )
 
 
+def render_all_item_site_customer_summary(view_flow: pd.DataFrame, selected_site_group: str) -> None:
+    if view_flow.empty or "거래처그룹" not in view_flow.columns:
+        return
+
+    initial_col, product_col, order_col, _due_col, shortage_col, injection_col, stock_col = (
+        ALL_ITEM_FLOW_DISPLAY_COLUMNS
+    )
+    required_columns = [
+        "제품대분류",
+        "거래처그룹",
+        initial_col,
+        product_col,
+        order_col,
+        shortage_col,
+        injection_col,
+        stock_col,
+    ]
+    if any(col not in view_flow.columns for col in required_columns):
+        return
+
+    summary_source = view_flow.copy()
+    for qty_col in [order_col, shortage_col, injection_col, stock_col]:
+        summary_source[qty_col] = parse_mixed_numeric(summary_source[qty_col]).fillna(0)
+
+    summary = (
+        summary_source.groupby("거래처그룹", as_index=False)
+        .agg(
+            제품분류=("제품대분류", summarize_unique),
+            제품수=(product_col, "nunique"),
+            이니셜수=(initial_col, "nunique"),
+            오더수량=(order_col, "sum"),
+            부족수량=(shortage_col, "sum"),
+            사출부족수량=(injection_col, "sum"),
+            공정재고=(stock_col, "sum"),
+        )
+        .sort_values(["오더수량", "부족수량", "사출부족수량"], ascending=[False, False, False])
+        .reset_index(drop=True)
+    )
+    if summary.empty:
+        return
+
+    with st.expander(f"{selected_site_group} 전체 거래처 요약", expanded=True):
+        st.caption("제품분류 선택과 관계없이 현재 관에 반영된 전체 거래처입니다.")
+        customer_names = [clean_text_value(value) for value in summary["거래처그룹"].tolist()]
+        customer_names = [value for value in customer_names if value]
+        if customer_names:
+            st.caption(f"전체 거래처: {', '.join(customer_names)}")
+        summary_display = format_numeric_columns_for_display(summary)
+        summary_column_config = build_auto_column_config(
+            summary_display,
+            summary_display.columns.tolist(),
+            source_df=summary,
+        )
+        st.dataframe(
+            style_operational_table(summary_display, summary),
+            width="stretch",
+            height=min(460, max(180, 48 + len(summary) * 35)),
+            column_config=summary_column_config,
+            hide_index=True,
+            key=f"all_item_site_customer_summary_{selected_site_group}",
+        )
+
+
 def render_all_items_dashboard(
     all_items_df: pd.DataFrame,
     updated_at: str,
@@ -8357,6 +8420,7 @@ def render_all_items_dashboard(
         st.info("선택한 관에 표시할 품목이 없습니다.")
         return
     st.caption(f"관 필터: {selected_site_group}")
+    render_all_item_site_customer_summary(view_flow, selected_site_group)
 
     primary_order = ["1-DAY", "FRP"]
     existing_primary = [group for group in primary_order if (view_flow["제품대분류"] == group).any()]
@@ -8389,7 +8453,7 @@ def render_all_items_dashboard(
         return
 
     customer_group = st.pills(
-        "거래처",
+        "거래처 (선택 제품분류 기준)",
         options=customer_options,
         default=customer_options[0],
         key=f"all_item_flow_customer_group_{primary_group}_v2",
@@ -8400,6 +8464,7 @@ def render_all_items_dashboard(
 
     scoped = primary_scope[primary_scope["거래처그룹"] == customer_group].copy()
     st.caption(f"현재 화면 필터: {selected_site_group} / {primary_group} / {customer_group}")
+    st.caption("위 거래처 탭은 현재 선택한 제품분류 안에 수요가 있는 거래처만 표시합니다.")
     key_token = re.sub(r"[^0-9A-Za-z가-힣_-]+", "_", customer_group).strip("_") or "customer"
     render_all_item_flow_table(
         scoped,
