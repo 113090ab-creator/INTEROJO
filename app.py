@@ -514,11 +514,26 @@ def inject_dashboard_theme() -> None:
             font-weight: 700;
             box-shadow: 0 6px 16px rgba(26, 43, 94, 0.16);
         }
+        .stButton > button p,
+        [data-testid="stDownloadButton"] button p {
+            color: #FFFFFF !important;
+        }
         .stButton > button:hover,
         [data-testid="stDownloadButton"] button:hover {
             border-color: #233A7A;
             color: #FFFFFF;
             background: #233A7A;
+        }
+        .stButton > button:disabled,
+        [data-testid="stDownloadButton"] button:disabled {
+            background: #1A2B5E;
+            border-color: #1A2B5E;
+            color: #FFFFFF;
+            opacity: 0.72;
+        }
+        .stButton > button:disabled p,
+        [data-testid="stDownloadButton"] button:disabled p {
+            color: #FFFFFF !important;
         }
         [data-testid="stSegmentedControl"] {
             background: #F4F6F8;
@@ -1630,7 +1645,7 @@ def select_data_source(base_dir: Path) -> tuple[Path, str, str]:
     if use_api:
         render_plan_api_status()
         if api_configured:
-            if st.button("API 새로고침", key="refresh_plan_api_data", use_container_width=True):
+            if st.button("APS API 새로고침", key="refresh_plan_api_data", use_container_width=True):
                 set_session_value("plan_api_refresh_nonce", get_plan_api_refresh_nonce() + 1)
                 st.cache_data.clear()
                 st.cache_resource.clear()
