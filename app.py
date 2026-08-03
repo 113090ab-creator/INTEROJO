@@ -60,6 +60,7 @@ PLAN_API_DEFAULT_ROW_LIMIT = 0
 PLAN_API_CACHE_TTL_SECONDS = 300
 LOCAL_CACHE_DIR = BASE_DIR / ".local_cache"
 PLAN_API_DISK_CACHE_DIR = LOCAL_CACHE_DIR / "plan_api"
+PLAN_API_KEY_LOCAL_CACHE_FILE = LOCAL_CACHE_DIR / "plan_api_key.txt"
 ALL_ITEM_STATUS_DISK_CACHE_DIR = LOCAL_CACHE_DIR / "all_item_status"
 APS_PLAN_ENDPOINT = "/api/aps-plan"
 APS_WIP_ENDPOINT = "/api/aps-wip"
@@ -802,10 +803,30 @@ def extract_plan_api_key_from_text(text: str) -> str:
 
 
 def find_local_plan_api_key_file() -> Path | None:
-    search_dirs = unique_existing_paths([BASE_DIR, Path.home() / "Downloads", Path.home() / "Desktop"])
+    home = Path.home()
+    search_dirs = unique_existing_paths(
+        [
+            BASE_DIR,
+            LOCAL_CACHE_DIR,
+            home / "Downloads",
+            home / "Desktop",
+            home / "Documents",
+        ]
+    )
+    if PLAN_API_KEY_LOCAL_CACHE_FILE.exists():
+        return PLAN_API_KEY_LOCAL_CACHE_FILE
     candidates: list[Path] = []
+    patterns = (
+        "API_KEY*.txt",
+        "API_KEY_*.txt",
+        "*API*KEY*.txt",
+        "*api*key*.txt",
+        "*API*키*.txt",
+        "*키*안내*.txt",
+        "*KEY*안내*.txt",
+    )
     for search_dir in search_dirs:
-        for pattern in ("API_KEY*.txt", "*API*KEY*.txt", "*api*key*.txt"):
+        for pattern in patterns:
             for path in search_dir.glob(pattern):
                 if path.is_file() and path not in candidates:
                     candidates.append(path)
@@ -1394,13 +1415,12 @@ def select_data_source(base_dir: Path) -> tuple[Path, str, str]:
         )
 
     api_configured = is_plan_api_configured()
-    was_api_ready = bool(get_session_value("plan_api_key_available", False))
-    if api_configured and not was_api_ready:
+    if api_configured:
         set_session_value("use_plan_api_data_mode", True)
     set_session_value("plan_api_key_available", api_configured)
     if not api_configured and get_session_value("use_plan_api_data_mode", False):
         set_session_value("use_plan_api_data_mode", False)
-    default_api_mode = api_configured and bool(get_session_value("use_plan_api_data_mode", api_configured))
+    default_api_mode = bool(api_configured)
     use_api = st.toggle(
         "APS API 자동조회 사용",
         value=default_api_mode,
