@@ -51,7 +51,7 @@ WAREHOUSE_MAP = {
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 12000
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260731-flow-view-v4"
+APP_CACHE_VERSION = "20260803-api-date-v1"
 PLAN_API_BASE_URL_DEFAULT = "https://plan.interojo.net"
 PLAN_API_KEY_ENV = "PLAN_API_KEY"
 PLAN_API_BASE_URL_ENV = "PLAN_API_BASE_URL"
@@ -189,6 +189,7 @@ INITIAL_ORDER_MAP_COL = "이니셜별오더수량"
 DEMAND_DETAIL_ROWS_COL = "수요상세목록"
 ROW_DETAIL_MARKER = "__ROW_DETAIL__"
 SITE_GROUP_ORDER = ["A관", "C관", "S관"]
+SITE_GROUP_API_PARAMS = {"A관": "A", "C관": "C", "S관": "S"}
 
 CUSTOMER_EXACT_CATEGORY_RULES = {
     "PIA Co.,Ltd.": "PIA 종합",
@@ -1104,7 +1105,7 @@ def find_meta_value(payload: dict[str, object], candidates: list[str]) -> str:
 
 
 def get_plan_api_updated_at() -> str:
-    if not is_plan_api_enabled():
+    if not is_plan_api_configured():
         return "-"
     api_key_hash = hashlib.sha256(get_plan_api_key().encode("utf-8")).hexdigest()[:12]
     payload, error = fetch_plan_api_meta_cached(
@@ -1171,12 +1172,47 @@ def get_data_updated_at(base_dir: Path) -> str:
     return get_latest_files_updated_at(unique_existing_paths([inv_path, dem_path, ref_path]))
 
 
+def get_wip_updated_at(base_dir: Path) -> str:
+    try:
+        inv_path, _ = find_excel_files(base_dir)
+    except Exception:
+        inv_path = None
+    return get_latest_files_updated_at(unique_existing_paths([inv_path]))
+
+
+def get_local_demand_updated_at(base_dir: Path) -> str:
+    try:
+        _, dem_path = find_excel_files(base_dir)
+    except Exception:
+        dem_path = find_demand_update_file(base_dir)
+    return get_latest_files_updated_at(unique_existing_paths([dem_path]))
+
+
 def get_aps_or_file_updated_at(file_updated_at: str) -> str:
     if is_plan_api_enabled():
         api_updated_at = get_plan_api_updated_at()
         if api_updated_at != "-":
             return api_updated_at
     return file_updated_at
+
+
+def format_reference_timestamp(value: str, fallback: str = "확인 불가") -> str:
+    text = clean_text_value(value)
+    return text if text and text != "-" else fallback
+
+
+def render_sidebar_reference_dates(data_base_dir: Path, source_label: str) -> None:
+    api_configured = is_plan_api_configured()
+    api_updated_at = get_plan_api_updated_at() if api_configured else "-"
+    api_label = format_reference_timestamp(api_updated_at, "키 미설정" if not api_configured else "확인 불가")
+    if api_configured and not is_plan_api_enabled():
+        api_label = f"{api_label} (현재 미사용)"
+
+    st.markdown('<div class="sidebar-section-title">반영 기준일자</div>', unsafe_allow_html=True)
+    st.caption(f"APS API 수요: {api_label}")
+    st.caption(f"WIP 파일: {format_reference_timestamp(get_wip_updated_at(data_base_dir))}")
+    st.caption(f"로컬 수요 파일: {format_reference_timestamp(get_local_demand_updated_at(data_base_dir))}")
+    st.caption(f"적용 데이터: {source_label}")
 
 
 def get_all_item_updated_at(base_dir: Path) -> str:
@@ -2379,6 +2415,14 @@ def normalize_site_group(value: object) -> str:
         if site_key in compact or re.match(rf"^{site_letter}(관|동|공장|$)", compact):
             return site
     return "기타" if text else "미지정"
+
+
+def build_plan_api_site_param(site_filter: object) -> str:
+    text = clean_text_value(site_filter)
+    if not text or text == "전체":
+        return ""
+    site_group = normalize_site_group(text)
+    return SITE_GROUP_API_PARAMS.get(site_group, text)
 
 
 def clean_sheet_category(value: object) -> str:
@@ -5096,9 +5140,9 @@ def load_api_wip_inventory_df() -> pd.DataFrame:
 
 def load_api_demand_like_df(site_filter: str = "전체") -> pd.DataFrame:
     params: dict[str, object] = {"limit": PLAN_API_DEFAULT_ROW_LIMIT}
-    normalized_site_filter = clean_text_value(site_filter)
-    if normalized_site_filter and normalized_site_filter != "전체":
-        params["site"] = normalized_site_filter
+    site_param = build_plan_api_site_param(site_filter)
+    if site_param:
+        params["site"] = site_param
     raw, error = read_plan_api_dataframe(APS_PLAN_ENDPOINT, params)
     output_columns = [
         "사이트코드",
@@ -5248,9 +5292,7 @@ def load_all_item_shortage_source(
     site_filter: str = "전체",
 ) -> pd.DataFrame:
     if is_plan_api_enabled():
-        api_demand = load_api_demand_like_df(site_filter)
-        if not api_demand.empty:
-            return api_demand
+        return load_api_demand_like_df(site_filter)
     try:
         data_refresh_key = build_data_refresh_key(data_base_dir)
         shortage_df, _, _ = load_data(data_refresh_key, str(data_base_dir))
@@ -6652,7 +6694,12 @@ def filter_data(
     return base_filtered.copy()
 
 
-def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
+def apply_filters(
+    df: pd.DataFrame,
+    updated_at: str,
+    data_base_dir: Path | None = None,
+    source_label: str = "",
+) -> pd.DataFrame:
     with st.sidebar:
         st.markdown('<div class="sidebar-section-title">필터</div>', unsafe_allow_html=True)
         st.caption(f"업데이트: {updated_at}")
@@ -6721,6 +6768,9 @@ def apply_filters(df: pd.DataFrame, updated_at: str) -> pd.DataFrame:
                 args=(summary_pills_key,),
             ),
         )
+        st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
+        if data_base_dir is not None:
+            render_sidebar_reference_dates(data_base_dir, source_label)
 
     return filter_data(
         df,
@@ -7934,9 +7984,15 @@ def render_inventory_risk_dashboard(risk_df: pd.DataFrame, updated_at: str) -> N
     )
 
 
-def render_shortage_dashboard(df: pd.DataFrame, updated_at: str, file_info_df: pd.DataFrame | None = None) -> None:
+def render_shortage_dashboard(
+    df: pd.DataFrame,
+    updated_at: str,
+    file_info_df: pd.DataFrame | None = None,
+    data_base_dir: Path | None = None,
+    source_label: str = "",
+) -> None:
     enriched_df = add_rq_group_columns(df)
-    filtered = apply_filters(enriched_df, updated_at)
+    filtered = apply_filters(enriched_df, updated_at, data_base_dir, source_label)
     download_stamp = datetime.now(DISPLAY_TZ).strftime("%Y%m%d_%H%M%S")
 
     detail_columns = [
@@ -9293,7 +9349,7 @@ def main() -> None:
         st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
         data_base_dir, source_label, updated_at = select_data_source(BASE_DIR)
         cloud_snapshots_available = should_use_cloud_snapshots(data_base_dir)
-        data_live_updated_at = get_aps_or_file_updated_at(updated_at)
+        data_live_updated_at = get_data_updated_at(data_base_dir)
         if selected_top_view == "전체 품목 현황":
             sidebar_meta_key = "all_item_updated_at"
             sidebar_live_updated_at = get_aps_or_file_updated_at(get_all_item_updated_at(data_base_dir))
@@ -9318,15 +9374,20 @@ def main() -> None:
         elif cloud_snapshots_available:
             updated_at = sidebar_live_updated_at
             st.caption("Cloud 모드: 원본 엑셀 자동 반영")
-        elif is_plan_api_enabled():
+        elif is_plan_api_enabled() and selected_top_view == "전체 품목 현황":
             updated_at = sidebar_live_updated_at
             st.caption("API 모드: APS 갱신시점 기준")
+        elif is_plan_api_enabled():
+            updated_at = sidebar_live_updated_at
+            st.caption("파일 계산 모드: WIP/로컬 수요 파일 기준")
         else:
             st.caption("업로드 모드: 업로드 파일 직접 계산")
         st.caption(f"적용 데이터: {source_label}")
         if data_base_dir.resolve() != BASE_DIR.resolve():
             st.caption(f"업로드 작업폴더: {data_base_dir.name}")
         st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
+        if selected_top_view != "생산 부족 현황":
+            render_sidebar_reference_dates(data_base_dir, source_label)
 
     try:
         df = pd.DataFrame()
@@ -9435,7 +9496,7 @@ def main() -> None:
     if selected_top_view == "전체 품목 현황":
         render_all_items_dashboard(all_items_df, updated_at, all_items_full_builder, all_item_site_filter)
     elif selected_top_view == "생산 부족 현황":
-        render_shortage_dashboard(df, updated_at, file_info_df)
+        render_shortage_dashboard(df, updated_at, file_info_df, data_base_dir, source_label)
     elif selected_top_view == "리드지 현황":
         render_leadji_dashboard(updated_at, df, leadji_info, leadji_stock, leadji_order_df)
     elif selected_top_view == "생산코드별 리드지":
