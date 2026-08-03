@@ -1204,9 +1204,12 @@ def format_reference_timestamp(value: str, fallback: str = "확인 불가") -> s
 def render_sidebar_reference_dates(data_base_dir: Path, source_label: str) -> None:
     api_configured = is_plan_api_configured()
     api_updated_at = get_plan_api_updated_at() if api_configured else "-"
-    api_label = format_reference_timestamp(api_updated_at, "키 미설정" if not api_configured else "확인 불가")
-    if api_configured and not is_plan_api_enabled():
-        api_label = f"{api_label} (현재 미사용)"
+    if not api_configured:
+        api_label = "미반영 (API 키 없음)"
+    elif not is_plan_api_enabled():
+        api_label = f"미반영 (자동조회 꺼짐, 갱신 {format_reference_timestamp(api_updated_at)})"
+    else:
+        api_label = f"반영 ({format_reference_timestamp(api_updated_at)})"
 
     st.markdown('<div class="sidebar-section-title">반영 기준일자</div>', unsafe_allow_html=True)
     st.caption(f"APS API 수요: {api_label}")
