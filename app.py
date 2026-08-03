@@ -1596,6 +1596,16 @@ def stage_uploaded_data_files(
     return session_dir
 
 
+def sync_plan_api_data_mode() -> bool:
+    api_configured = is_plan_api_configured()
+    if api_configured:
+        set_session_value("use_plan_api_data_mode", True)
+    set_session_value("plan_api_key_available", api_configured)
+    if not api_configured and get_session_value("use_plan_api_data_mode", False):
+        set_session_value("use_plan_api_data_mode", False)
+    return api_configured
+
+
 def select_data_source(base_dir: Path) -> tuple[Path, str, str]:
     st.subheader("데이터 소스")
     api_key_source = get_plan_api_key_source_label()
@@ -1611,16 +1621,9 @@ def select_data_source(base_dir: Path) -> tuple[Path, str, str]:
             help="입력값은 현재 앱 세션에서만 사용합니다. 영구 적용은 PLAN_API_KEY 환경변수나 Streamlit secrets에 등록하세요.",
         )
 
-    api_configured = is_plan_api_configured()
-    if api_configured:
-        set_session_value("use_plan_api_data_mode", True)
-    set_session_value("plan_api_key_available", api_configured)
-    if not api_configured and get_session_value("use_plan_api_data_mode", False):
-        set_session_value("use_plan_api_data_mode", False)
-    default_api_mode = bool(api_configured)
+    api_configured = sync_plan_api_data_mode()
     use_api = st.toggle(
         "APS API 자동조회 사용",
-        value=default_api_mode,
         key="use_plan_api_data_mode",
         disabled=not api_configured,
     )
@@ -1669,6 +1672,41 @@ def select_data_source(base_dir: Path) -> tuple[Path, str, str]:
     if inv_file is None or dem_file is None:
         st.info("업로드 모드에서는 재고/수요 파일 2개 업로드가 필요합니다.")
         st.stop()
+
+    workspace_dir = stage_uploaded_data_files(base_dir, inv_file, dem_file, ref_file, finished_goods_stock_file)
+    uploaded_names = [inv_file.name, dem_file.name]
+    if finished_goods_stock_file is not None:
+        uploaded_names.append(finished_goods_stock_file.name)
+    source_label = f"업로드 파일 ({', '.join(uploaded_names)})"
+    updated_at = get_data_updated_at(workspace_dir)
+    return workspace_dir, source_label, updated_at
+
+
+def resolve_data_source_from_state(base_dir: Path) -> tuple[Path, str, str]:
+    sync_plan_api_data_mode()
+    if is_plan_api_enabled():
+        api_updated_at = get_plan_api_updated_at()
+        updated_at = api_updated_at if api_updated_at != "-" else get_data_updated_at(base_dir)
+        return base_dir, "APS API + 로컬 기준정보", updated_at
+
+    use_uploaded = bool(get_session_value("use_uploaded_data_mode", False))
+    if not use_uploaded:
+        return base_dir, "로컬 파일", get_data_updated_at(base_dir)
+
+    inv_file = get_session_value("upload_inventory_xlsx")
+    dem_file = get_session_value("upload_demand_xlsx")
+    ref_file = get_session_value("upload_reference_xlsx")
+    finished_goods_stock_file = get_session_value("upload_finished_goods_stock_xlsx")
+
+    if inv_file is None and dem_file is None:
+        latest_workspace = get_latest_uploaded_workspace()
+        if latest_workspace is not None:
+            updated_at = get_data_updated_at(latest_workspace)
+            return latest_workspace, f"최근 업로드 파일 ({latest_workspace.name})", updated_at
+        return base_dir, "업로드 파일 대기", get_data_updated_at(base_dir)
+
+    if inv_file is None or dem_file is None:
+        return base_dir, "업로드 파일 대기", get_data_updated_at(base_dir)
 
     workspace_dir = stage_uploaded_data_files(base_dir, inv_file, dem_file, ref_file, finished_goods_stock_file)
     uploaded_names = [inv_file.name, dem_file.name]
@@ -9853,13 +9891,8 @@ def main() -> None:
             key="top_view_radio_v2",
             label_visibility="collapsed",
         )
-        st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
-        data_base_dir, source_label, updated_at = select_data_source(BASE_DIR)
-        cloud_snapshots_available = should_use_cloud_snapshots(data_base_dir)
-        data_live_updated_at = get_data_updated_at(data_base_dir)
+        sync_plan_api_data_mode()
         if selected_top_view == "전체 품목 현황":
-            sidebar_meta_key = "all_item_updated_at"
-            sidebar_live_updated_at = get_aps_or_file_updated_at(get_all_item_updated_at(data_base_dir))
             default_all_item_site_filter = "A관" if is_plan_api_enabled() else "전체"
             all_item_site_filter = st.pills(
                 "전체품목 관",
@@ -9868,6 +9901,13 @@ def main() -> None:
                 key="all_item_flow_site_prefilter_v1",
                 help="선택한 관만 APS API로 조회합니다. 전체를 선택하면 모든 관을 한 번에 조회합니다.",
             ) or default_all_item_site_filter
+        reference_dates_slot = st.empty()
+        data_base_dir, source_label, updated_at = resolve_data_source_from_state(BASE_DIR)
+        cloud_snapshots_available = should_use_cloud_snapshots(data_base_dir)
+        data_live_updated_at = get_data_updated_at(data_base_dir)
+        if selected_top_view == "전체 품목 현황":
+            sidebar_meta_key = "all_item_updated_at"
+            sidebar_live_updated_at = get_aps_or_file_updated_at(get_all_item_updated_at(data_base_dir))
         elif selected_top_view in {"리드지 현황", "생산코드별 리드지"}:
             sidebar_meta_key = "leadji_updated_at"
             sidebar_live_updated_at = get_leadji_status_updated_at(data_base_dir)
@@ -9877,24 +9917,22 @@ def main() -> None:
 
         if cloud_snapshots_available and is_cloud_snapshot_fresh(sidebar_meta_key, sidebar_live_updated_at):
             updated_at = get_cloud_snapshot_meta_value(sidebar_meta_key, sidebar_live_updated_at)
-            st.caption("Cloud 모드: 사전 계산 스냅샷 사용")
+            sidebar_status_caption = "Cloud 모드: 사전 계산 스냅샷 사용"
         elif cloud_snapshots_available:
             updated_at = sidebar_live_updated_at
-            st.caption("Cloud 모드: 원본 엑셀 자동 반영")
+            sidebar_status_caption = "Cloud 모드: 원본 엑셀 자동 반영"
         elif is_plan_api_enabled() and selected_top_view in {"전체 품목 현황", "생산 부족 현황"}:
             updated_at = sidebar_live_updated_at
-            st.caption("API 모드: APS 수요 + WIP 기준")
+            sidebar_status_caption = "API 모드: APS 수요 + WIP 기준"
         elif is_plan_api_enabled():
             updated_at = sidebar_live_updated_at
-            st.caption("파일 계산 모드: WIP/로컬 수요 파일 기준")
+            sidebar_status_caption = "파일 계산 모드: WIP/로컬 수요 파일 기준"
         else:
-            st.caption("업로드 모드: 업로드 파일 직접 계산")
-        st.caption(f"적용 데이터: {source_label}")
-        if data_base_dir.resolve() != BASE_DIR.resolve():
-            st.caption(f"업로드 작업폴더: {data_base_dir.name}")
-        st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
-        if selected_top_view != "생산 부족 현황":
-            render_sidebar_reference_dates(data_base_dir, source_label)
+            sidebar_status_caption = "업로드 모드: 업로드 파일 직접 계산"
+        with reference_dates_slot.container():
+            if selected_top_view != "생산 부족 현황":
+                st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
+                render_sidebar_reference_dates(data_base_dir, source_label)
 
     try:
         df = pd.DataFrame()
@@ -10017,6 +10055,14 @@ def main() -> None:
         render_leadji_dashboard(updated_at, df, leadji_info, leadji_stock, leadji_order_df)
     elif selected_top_view == "생산코드별 리드지":
         render_leadji_pcode5_dashboard(updated_at, df, leadji_info, leadji_stock)
+
+    with st.sidebar:
+        st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
+        rendered_data_base_dir, rendered_source_label, _ = select_data_source(BASE_DIR)
+        st.caption(sidebar_status_caption)
+        st.caption(f"적용 데이터: {rendered_source_label}")
+        if rendered_data_base_dir.resolve() != BASE_DIR.resolve():
+            st.caption(f"업로드 작업폴더: {rendered_data_base_dir.name}")
 
 
 if __name__ == "__main__":
