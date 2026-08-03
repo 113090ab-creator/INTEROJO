@@ -1107,6 +1107,53 @@ def fetch_plan_api_dataframe_cached(
     return df, ""
 
 
+def fetch_plan_api_dataframe_direct(
+    base_url: str,
+    endpoint: str,
+    params_tuple: tuple[tuple[str, object], ...],
+    api_key: str,
+    api_key_hash: str,
+    source_updated_at: str,
+) -> tuple[pd.DataFrame, str]:
+    if requests is None:
+        return pd.DataFrame(), "requests package is not installed."
+    if not api_key:
+        return pd.DataFrame(), f"{PLAN_API_KEY_ENV} is not configured."
+
+    url = f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}"
+    params = {str(key): value for key, value in params_tuple if value not in (None, "")}
+    disk_cache_path = build_plan_api_disk_cache_path(base_url, endpoint, params_tuple, api_key_hash, source_updated_at)
+    if source_updated_at != "-":
+        cached_df = read_plan_api_disk_cache(disk_cache_path)
+        if cached_df is not None:
+            return cached_df, ""
+
+    try:
+        response = requests.get(
+            url,
+            params=params,
+            headers={"X-API-Key": api_key},
+            timeout=PLAN_API_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        return pd.DataFrame(), str(exc)
+
+    if isinstance(payload, dict) and payload.get("truncated") is True:
+        returned_count = payload.get("returned_count", "?")
+        total_count = payload.get("total_count") or payload.get("source_total_count") or "?"
+        return pd.DataFrame(), f"API response was truncated ({returned_count}/{total_count}); ignored partial API data."
+
+    records = normalize_api_records(payload)
+    if not records:
+        return pd.DataFrame(), "API response did not contain data rows."
+    df = pd.DataFrame.from_records(records)
+    if source_updated_at != "-":
+        write_plan_api_disk_cache(disk_cache_path, df)
+    return df, ""
+
+
 @st.cache_data(show_spinner=False, ttl=PLAN_API_CACHE_TTL_SECONDS, max_entries=CACHE_MAX_ENTRIES)
 def fetch_plan_api_meta_cached(
     base_url: str,
@@ -1156,6 +1203,12 @@ def read_aps_plan_operations_dataframe(
     operations: tuple[str, ...],
     site_filter: str = "전체",
 ) -> tuple[pd.DataFrame, str]:
+    if not is_plan_api_enabled():
+        return pd.DataFrame(), "API 자동조회가 꺼져 있습니다."
+    api_key = get_plan_api_key()
+    api_key_hash = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:12]
+    base_url = get_plan_api_base_url()
+    source_updated_at = get_plan_api_updated_at()
     frames: list[pd.DataFrame] = []
     errors: list[str] = []
     site_param = build_plan_api_site_param(site_filter)
@@ -1167,7 +1220,15 @@ def read_aps_plan_operations_dataframe(
         }
         if site_param:
             params["site"] = site_param
-        frame, error = read_plan_api_dataframe(APS_PLAN_ENDPOINT, params)
+        params_tuple = tuple(sorted(params.items(), key=lambda item: item[0]))
+        frame, error = fetch_plan_api_dataframe_direct(
+            base_url,
+            APS_PLAN_ENDPOINT,
+            params_tuple,
+            api_key,
+            api_key_hash,
+            source_updated_at,
+        )
         return operation, frame, error
 
     max_workers = max(1, min(len(operations), 5))
