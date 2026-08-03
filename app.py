@@ -5,6 +5,7 @@ import pickle
 import re
 import shutil
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
@@ -51,7 +52,7 @@ WAREHOUSE_MAP = {
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 12000
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260803-api-shortage-v2"
+APP_CACHE_VERSION = "20260803-api-fast-plan-v2"
 PLAN_API_BASE_URL_DEFAULT = "https://plan.interojo.net"
 PLAN_API_KEY_ENV = "PLAN_API_KEY"
 PLAN_API_BASE_URL_ENV = "PLAN_API_BASE_URL"
@@ -65,6 +66,8 @@ ALL_ITEM_STATUS_DISK_CACHE_DIR = LOCAL_CACHE_DIR / "all_item_status"
 APS_PLAN_ENDPOINT = "/api/aps-plan"
 APS_WIP_ENDPOINT = "/api/aps-wip"
 APS_PLAN_META_ENDPOINT = "/api/aps-plan/meta"
+APS_PLAN_SHORTAGE_OPERATIONS = ("10", "20", "45", "55", "80")
+APS_PLAN_FLOW_OPERATIONS = ("10", "80")
 ITEM_LIST_BULK_ENDPOINT = "/api/item-list-bulk"
 ALL_ITEM_MASTER_SHEET = "생성가능_P코드"
 ALL_ITEM_SNAPSHOT_FILE = "all_item_status_snapshot.csv.gz"
@@ -1147,6 +1150,39 @@ def read_plan_api_dataframe(endpoint: str, params: dict[str, object] | None = No
         source_updated_at,
         get_plan_api_refresh_nonce(),
     )
+
+
+def read_aps_plan_operations_dataframe(
+    operations: tuple[str, ...],
+    site_filter: str = "전체",
+) -> tuple[pd.DataFrame, str]:
+    frames: list[pd.DataFrame] = []
+    errors: list[str] = []
+    site_param = build_plan_api_site_param(site_filter)
+
+    def fetch_operation(operation: str) -> tuple[str, pd.DataFrame, str]:
+        params: dict[str, object] = {
+            "limit": PLAN_API_DEFAULT_ROW_LIMIT,
+            "oper": operation,
+        }
+        if site_param:
+            params["site"] = site_param
+        frame, error = read_plan_api_dataframe(APS_PLAN_ENDPOINT, params)
+        return operation, frame, error
+
+    max_workers = max(1, min(len(operations), 5))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(fetch_operation, operation) for operation in operations]
+        for future in as_completed(futures):
+            operation, frame, error = future.result()
+            if error:
+                errors.append(f"oper={operation}: {error}")
+                continue
+            if not frame.empty:
+                frames.append(frame)
+    if frames:
+        return pd.concat(frames, ignore_index=True, sort=False), ""
+    return pd.DataFrame(), "; ".join(errors)
 
 
 def find_meta_value(payload: dict[str, object], candidates: list[str]) -> str:
@@ -5156,13 +5192,14 @@ def load_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[pd.Dat
     return preprocess_data(refresh_key, base_dir_str)
 
 
+@st.cache_resource(show_spinner=False)
 def load_api_shortage_data(
     refresh_key: str,
     base_dir_str: str | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     _ = refresh_key
     data_base_dir = Path(base_dir_str) if base_dir_str else BASE_DIR
-    raw, error = read_plan_api_dataframe(APS_PLAN_ENDPOINT, {"limit": PLAN_API_DEFAULT_ROW_LIMIT})
+    raw, error = read_aps_plan_operations_dataframe(APS_PLAN_SHORTAGE_OPERATIONS)
     if error:
         raise ValueError(f"APS API 수요 조회 실패: {error}")
     if raw.empty:
@@ -5472,7 +5509,7 @@ def load_api_shortage_data(
             "재고파일": [f"WIP ({format_reference_timestamp(get_wip_updated_at(data_base_dir))})"],
             "수요파일": [f"APS API ({format_reference_timestamp(get_plan_api_updated_at())})"],
             "행수(현황표)": [len(result)],
-            "API 원천행수": [len(raw)],
+            "API 처리행수": [len(raw)],
             "재작업 시트명": ["API 수요 기준 미사용"],
             "재작업 기준 컬럼": ["API 수요 기준에서는 재작업 시트 매칭을 적용하지 않음"],
             "재작업 시트 컬럼": [""],
@@ -5552,11 +5589,7 @@ def load_api_wip_inventory_df() -> pd.DataFrame:
 
 
 def load_api_demand_like_df(site_filter: str = "전체") -> pd.DataFrame:
-    params: dict[str, object] = {"limit": PLAN_API_DEFAULT_ROW_LIMIT}
-    site_param = build_plan_api_site_param(site_filter)
-    if site_param:
-        params["site"] = site_param
-    raw, error = read_plan_api_dataframe(APS_PLAN_ENDPOINT, params)
+    raw, error = read_aps_plan_operations_dataframe(APS_PLAN_FLOW_OPERATIONS, site_filter)
     output_columns = [
         "사이트코드",
         "거래처",
