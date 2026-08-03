@@ -169,6 +169,10 @@ ALL_ITEM_FLOW_CUSTOMER_ORDER = [
     "MG Medical",
     "T-Garden",
     "HAPA/PPB",
+    "Alcon",
+    "from-eyes",
+    "EYEQUE",
+    "ESSILOR",
     "국내",
     "기타 거래처",
     "거래처 미지정",
@@ -6384,6 +6388,8 @@ def normalize_flow_customer_group(value: object) -> str:
         return "ALENSA"
     if any(token in compact for token in ["FEELGOOD", "CROSSBIRD"]):
         return "FEEL GOOD"
+    if "ALCON" in compact:
+        return "Alcon"
     if any(token in compact for token in ["CHINA", "IRIS", "WENZHOU"]) or "중국" in raw:
         return "CHINA/IRIS"
     if "MGMEDICAL" in compact:
@@ -6392,9 +6398,15 @@ def normalize_flow_customer_group(value: object) -> str:
         return "T-Garden"
     if any(token in compact for token in ["HAPA", "PPB"]) or "피피비" in raw:
         return "HAPA/PPB"
+    if "FROMEYES" in compact:
+        return "from-eyes"
+    if "EYEQUE" in compact:
+        return "EYEQUE"
+    if "ESSILOR" in compact:
+        return "ESSILOR"
     if any(token in compact for token in ["국내", "KOREA", "CLALEN", "LENSME", "LENSVERY"]) or "렌즈미" in raw:
         return "국내"
-    return "기타 거래처"
+    return raw
 
 
 def min_date_text(values: pd.Series) -> str:
@@ -8095,6 +8107,7 @@ def render_all_item_customer_excel_download(
         else:
             st.session_state.pop(data_key, None)
             st.session_state[meta_key] = {"sheet_count": 0, "row_count": 0, "file_name": ""}
+    st.caption("엑셀은 화면의 관/제품분류/거래처 선택과 관계없이 전 관 기준으로 생성됩니다.")
 
     if st.session_state.get(prepare_key, False) and meta_key in st.session_state:
         meta = st.session_state[meta_key]
@@ -8301,7 +8314,7 @@ def render_all_items_dashboard(
 ) -> None:
     st.subheader("전체 품목 현황")
     st.caption(f"업데이트: {updated_at}")
-    st.caption("화면은 수요가 있는 이니셜-제품명만 표시하고, 전체 품목 상세는 엑셀에서 확인합니다.")
+    st.caption("화면은 선택한 관/제품분류/거래처 안에서 수요가 있는 이니셜-제품명만 표시하고, 전체 품목 상세는 엑셀에서 확인합니다.")
 
     if all_items_df.empty:
         st.warning("전체 품목 현황을 계산할 데이터가 없습니다. 전체 품목리스트 파일을 확인해주세요.")
@@ -8386,6 +8399,7 @@ def render_all_items_dashboard(
         return
 
     scoped = primary_scope[primary_scope["거래처그룹"] == customer_group].copy()
+    st.caption(f"현재 화면 필터: {selected_site_group} / {primary_group} / {customer_group}")
     key_token = re.sub(r"[^0-9A-Za-z가-힣_-]+", "_", customer_group).strip("_") or "customer"
     render_all_item_flow_table(
         scoped,
@@ -9992,6 +10006,9 @@ def main() -> None:
                             all_item_site_filter,
                         )
                         code_mismatch_df = pd.DataFrame()
+                        all_items_full_builder = lambda refresh_key=all_item_refresh_key, base_dir_str=str(
+                            data_base_dir
+                        ): build_all_item_flow_status_snapshot(refresh_key, base_dir_str, "전체")
                     else:
                         cached_all_items = read_all_item_status_disk_cache(all_item_refresh_key)
                         if cached_all_items is not None:
