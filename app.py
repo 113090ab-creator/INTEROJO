@@ -5678,9 +5678,9 @@ def normalize_to_master_p_code(value: object) -> str:
         return ""
     if code.startswith("P"):
         return code
-    if code[0] in {"Q", "R"} and len(code) > 1:
+    if re.match(r"^[A-Z]\d{4}", code):
         return f"P{code[1:]}"
-    return code
+    return ""
 
 
 def api_text_series(source: pd.DataFrame, column_name: str | None, default: str = "") -> pd.Series:
@@ -6116,12 +6116,12 @@ def build_code_to_production_map(code_scope: pd.DataFrame) -> dict[str, str]:
 
 
 def resolve_light_production_code(row: pd.Series) -> str:
-    code = normalize_item_code_value(row.get("품목코드", ""))
-    if code:
+    code = normalize_to_master_p_code(row.get("품목코드", ""))
+    if code.startswith("P"):
         return code
     for col in ["R코드", "Q코드"]:
         code = normalize_to_master_p_code(row.get(col, ""))
-        if code:
+        if code.startswith("P"):
             return code
     return ""
 
@@ -6757,6 +6757,7 @@ def build_all_item_status_snapshot(refresh_key: str, base_dir_str: str | None = 
     all_items.loc[all_items["판단"] == "코드 확인 필요", "주의정렬순위"] = 0
 
     for col in [
+        "사이트코드",
         "제품대분류",
         "거래처그룹",
         "거래처",
@@ -6771,6 +6772,8 @@ def build_all_item_status_snapshot(refresh_key: str, base_dir_str: str | None = 
         "신호",
         "판단",
     ]:
+        if col not in all_items.columns:
+            all_items[col] = ""
         all_items[col] = all_items[col].astype(str).replace({"nan": "", "None": ""}).fillna("")
     all_items.loc[all_items["제품대분류"].str.strip().str.lower().isin({"", "nan", "none"}), "제품대분류"] = "기타"
     all_items.loc[
@@ -8001,6 +8004,10 @@ def build_all_item_customer_excel_sheet(scope: pd.DataFrame) -> pd.DataFrame:
     if scope.empty:
         return pd.DataFrame()
     scope = expand_all_item_demand_detail_rows(scope)
+    scope["생산코드"] = scope["생산코드"].map(normalize_to_master_p_code)
+    scope = scope[scope["생산코드"].str.startswith("P", na=False)].copy()
+    if scope.empty:
+        return pd.DataFrame()
 
     base_columns = ["생산코드", "사출코드", "분리코드", "제품명", "파워"]
     rows: dict[tuple[str, ...], dict[str, object]] = {}
@@ -8083,7 +8090,11 @@ def build_all_item_customer_excel_sheet(scope: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_all_item_customer_excel_sheets(working: pd.DataFrame) -> list[tuple[str, pd.DataFrame]]:
-    scoped = filter_all_item_excel_activity_rows(working)
+    scoped = working.copy()
+    if scoped.empty:
+        return []
+    scoped["생산코드"] = scoped["생산코드"].map(normalize_to_master_p_code)
+    scoped = scoped[scoped["생산코드"].str.startswith("P", na=False)].copy()
     if scoped.empty:
         return []
     customer_options = build_customer_tab_options(scoped)
@@ -8128,7 +8139,7 @@ def render_all_item_customer_excel_download(
         else:
             st.session_state.pop(data_key, None)
             st.session_state[meta_key] = {"sheet_count": 0, "row_count": 0, "file_name": ""}
-    st.caption("엑셀은 화면의 관/제품분류/거래처 선택과 관계없이 전 관 기준으로 생성됩니다.")
+    st.caption("엑셀은 화면의 관/제품분류/거래처 선택과 관계없이 전체 P코드 품목 기준으로 생성됩니다.")
 
     if st.session_state.get(prepare_key, False) and meta_key in st.session_state:
         meta = st.session_state[meta_key]
@@ -8147,7 +8158,7 @@ def render_all_item_customer_excel_download(
         return
 
     if not st.session_state.get(prepare_key, False):
-        st.caption("거래처별 전체 엑셀은 필요할 때만 생성합니다.")
+        st.caption("거래처별 전체 엑셀은 수요가 없는 품목의 공정재고까지 확인할 수 있도록 전체 P코드 기준으로 생성합니다.")
         return
 
     if data_key not in st.session_state:
@@ -10092,9 +10103,7 @@ def main() -> None:
                             all_item_site_filter,
                         )
                         code_mismatch_df = pd.DataFrame()
-                        all_items_full_builder = lambda refresh_key=all_item_refresh_key, base_dir_str=str(
-                            data_base_dir
-                        ): build_all_item_flow_status_snapshot(refresh_key, base_dir_str, "전체")
+                        all_items_full_builder = build_full_all_items_for_download
                     else:
                         cached_all_items = read_all_item_status_disk_cache(all_item_refresh_key)
                         if cached_all_items is not None:
