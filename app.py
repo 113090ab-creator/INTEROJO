@@ -8422,50 +8422,50 @@ def render_all_items_dashboard(
     st.caption(f"관 필터: {selected_site_group}")
     render_all_item_site_customer_summary(view_flow, selected_site_group)
 
-    primary_order = ["1-DAY", "FRP"]
-    existing_primary = [group for group in primary_order if (view_flow["제품대분류"] == group).any()]
-    extra_primary = sorted(set(view_flow["제품대분류"].dropna().tolist()) - set(existing_primary) - {"기타"})
-    if (view_flow["제품대분류"] == "기타").any():
-        extra_primary.append("기타")
-    primary_tabs = existing_primary + extra_primary
-    if not primary_tabs:
-        st.info("선택 조건에 맞는 1-DAY/FRP 품목이 없습니다.")
-        return
-
-    primary_group = st.pills(
-        "제품 분류",
-        options=primary_tabs,
-        default=primary_tabs[0],
-        key="all_item_flow_primary_group_v2",
-    )
-    if primary_group is None:
-        st.info("제품 분류를 선택해 주세요.")
-        return
-
-    primary_scope = view_flow[view_flow["제품대분류"] == primary_group].copy()
-    if primary_scope.empty:
-        st.info("표시할 품목이 없습니다.")
-        return
-
-    customer_options = build_customer_tab_options(primary_scope)
+    customer_options = build_customer_tab_options(view_flow)
     if not customer_options:
         st.info("표시할 거래처가 없습니다.")
         return
 
     customer_group = st.pills(
-        "거래처 (선택 제품분류 기준)",
+        "거래처",
         options=customer_options,
         default=customer_options[0],
-        key=f"all_item_flow_customer_group_{primary_group}_v2",
+        key=f"all_item_flow_customer_group_site_{selected_site_group}_v3",
     )
     if customer_group is None:
         st.info("거래처를 선택해 주세요.")
         return
 
-    scoped = primary_scope[primary_scope["거래처그룹"] == customer_group].copy()
-    st.caption(f"현재 화면 필터: {selected_site_group} / {primary_group} / {customer_group}")
-    st.caption("위 거래처 탭은 현재 선택한 제품분류 안에 수요가 있는 거래처만 표시합니다.")
+    customer_scope = view_flow[view_flow["거래처그룹"] == customer_group].copy()
+    if customer_scope.empty:
+        st.info("표시할 품목이 없습니다.")
+        return
+
     key_token = re.sub(r"[^0-9A-Za-z가-힣_-]+", "_", customer_group).strip("_") or "customer"
+    primary_order = ["1-DAY", "FRP"]
+    existing_primary = [group for group in primary_order if (customer_scope["제품대분류"] == group).any()]
+    extra_primary = sorted(set(customer_scope["제품대분류"].dropna().tolist()) - set(existing_primary) - {"기타"})
+    if (customer_scope["제품대분류"] == "기타").any():
+        extra_primary.append("기타")
+    primary_tabs = existing_primary + extra_primary
+    if not primary_tabs:
+        st.info("선택한 거래처에 표시할 1-DAY/FRP/기타 품목이 없습니다.")
+        return
+
+    primary_group = st.pills(
+        "제품 분류 (선택 거래처 기준)",
+        options=primary_tabs,
+        default=primary_tabs[0],
+        key=f"all_item_flow_primary_group_{selected_site_group}_{key_token}_v3",
+    )
+    if primary_group is None:
+        st.info("제품 분류를 선택해 주세요.")
+        return
+
+    scoped = customer_scope[customer_scope["제품대분류"] == primary_group].copy()
+    st.caption(f"현재 화면 필터: {selected_site_group} / {primary_group} / {customer_group}")
+    st.caption("거래처 탭은 현재 관 전체 기준이고, 제품분류는 선택한 거래처 안에 수요가 있는 분류만 표시합니다.")
     render_all_item_flow_table(
         scoped,
         working,
