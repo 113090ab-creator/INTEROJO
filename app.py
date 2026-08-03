@@ -2940,6 +2940,24 @@ def build_data_refresh_key(base_dir: Path) -> str:
     return "|".join(parts)
 
 
+def build_api_shortage_refresh_key(base_dir: Path) -> str:
+    parts = [f"api-shortage:{APP_CACHE_VERSION}", build_plan_api_refresh_key()]
+    try:
+        inv_path, _ = find_excel_files(base_dir)
+        stat = inv_path.stat()
+        parts.append(f"wip:{inv_path.name}:{stat.st_size}:{stat.st_mtime_ns}")
+    except Exception as exc:
+        parts.append(f"wip-error:{exc}")
+
+    ref_path = find_product_name_reference_file(base_dir)
+    if ref_path is None:
+        parts.append("reference:missing")
+    else:
+        stat = ref_path.stat()
+        parts.append(f"reference:{ref_path.name}:{stat.st_size}:{stat.st_mtime_ns}")
+    return "|".join(parts)
+
+
 def build_reference_refresh_key(base_dir: Path) -> str:
     ref_path = find_product_name_reference_file(base_dir)
     if ref_path is None:
@@ -5072,6 +5090,132 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
 
 def load_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     return preprocess_data(refresh_key, base_dir_str)
+
+
+def load_api_shortage_data(
+    refresh_key: str,
+    base_dir_str: str | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    _ = refresh_key
+    data_base_dir = Path(base_dir_str) if base_dir_str else BASE_DIR
+    flow = build_all_item_flow_status_snapshot(refresh_key, str(data_base_dir), "전체")
+    if flow.empty:
+        empty_info = pd.DataFrame(
+            {
+                "재고파일": [format_reference_timestamp(get_wip_updated_at(data_base_dir))],
+                "수요파일": [f"APS API ({format_reference_timestamp(get_plan_api_updated_at())})"],
+                "행수(현황표)": [0],
+            }
+        )
+        return pd.DataFrame(), empty_info, pd.DataFrame()
+
+    def flow_text(col: str, default: str = "") -> pd.Series:
+        if col in flow.columns:
+            return flow[col]
+        return pd.Series(default, index=flow.index, dtype="object")
+
+    def flow_number(col: str, default: float = 0.0) -> pd.Series:
+        if col in flow.columns:
+            return parse_mixed_numeric(flow[col]).fillna(default)
+        return pd.Series(default, index=flow.index, dtype="float64")
+
+    result = pd.DataFrame(index=flow.index)
+    result["사이트코드"] = flow_text("사이트코드")
+    result["거래처"] = flow_text("거래처")
+    result[ORDER_NO_COL] = ""
+    result["이니셜"] = flow_text("이니셜")
+    result["품목코드"] = flow_text("생산코드")
+    result["R코드"] = flow_text("사출코드")
+    result["Q코드"] = flow_text("분리코드")
+    result["U코드"] = ""
+    result["제품명"] = flow_text("제품명")
+    result[DEMAND_QTY_COL] = flow_number("오더수량")
+    result["납기일"] = flow_text("납기일")
+    result["사출납기일"] = flow_text("납기일")
+    result[SEPARATION_REQUIRED_DUE_COL] = ""
+    result[LEADJI_REQUIRED_DUE_COL] = flow_text("납기일")
+    result[ADHESION_REQUIRED_DUE_COL] = ""
+    result["부족수량"] = flow_number("생산부족수량")
+    result["사출생산필요수량"] = flow_number("사출부족수량")
+    result[SEPARATION_REQUIRED_QTY_COL] = 0
+    result[LEADJI_REQUIRED_QTY_COL] = result["부족수량"]
+    result[ADHESION_REQUIRED_QTY_COL] = 0
+    result["사출창고"] = flow_number("사출창고")
+    result["분리창고"] = flow_number("분리창고")
+    result["검사접착창고"] = flow_number("검사접착창고")
+    result["검사접착재작업창고"] = 0
+    result["누수규격검사 창고"] = flow_number("누수규격검사")
+    result["공정재고 합계"] = flow_number("공정재고합계")
+    result["파워"] = flow_text("파워")
+    result.loc[result["파워"].astype(str).str.strip().eq(""), "파워"] = result["품목코드"].map(extract_power_from_code)
+    result["시트분류"] = flow_text("거래처그룹")
+    result["분류별요약"] = flow_text("제품대분류")
+    result["수동시트분류"] = ""
+    result["분류 판단 근거"] = "APS API 수요 기준"
+    result["R코드 제품명"] = result["제품명"]
+    result[REWORK_AVAILABLE_QTY_COL] = 0
+    result["재작업"] = ""
+    result["비고"] = ""
+
+    for text_col in [
+        "사이트코드",
+        "거래처",
+        ORDER_NO_COL,
+        "이니셜",
+        "품목코드",
+        "R코드",
+        "Q코드",
+        "U코드",
+        "제품명",
+        "납기일",
+        "사출납기일",
+        "파워",
+        "시트분류",
+        "분류별요약",
+        "R코드 제품명",
+    ]:
+        result[text_col] = result[text_col].astype(str).replace({"nan": "", "None": ""}).fillna("")
+
+    result = result[(result["부족수량"] > 0) | (result["사출생산필요수량"] > 0)].copy()
+
+    process_map_df = pd.DataFrame(
+        {
+            "공정창고": ["사출창고", "분리창고", "검사접착창고", "검사접착재작업창고", "누수규격검사 창고"],
+            "수요정보 공정코드": ["APS API", "APS API", "APS API", "-", "APS API"],
+            "재고코드 매핑 규칙": [
+                "APS API 사출코드와 WIP 사출창고 매칭",
+                "APS API 분리코드와 WIP 분리창고 매칭",
+                "APS API 생산코드와 WIP 검사접착창고 매칭",
+                "API 수요 기준에서는 재작업 시트 미사용",
+                "APS API 생산코드와 WIP 누수규격검사 창고 매칭",
+            ],
+            "재고>0 품목수": [
+                int((result["사출창고"] > 0).sum()),
+                int((result["분리창고"] > 0).sum()),
+                int((result["검사접착창고"] > 0).sum()),
+                int((result["검사접착재작업창고"] > 0).sum()),
+                int((result["누수규격검사 창고"] > 0).sum()),
+            ],
+        }
+    )
+
+    file_info_df = pd.DataFrame(
+        {
+            "재고파일": [f"WIP ({format_reference_timestamp(get_wip_updated_at(data_base_dir))})"],
+            "수요파일": [f"APS API ({format_reference_timestamp(get_plan_api_updated_at())})"],
+            "행수(현황표)": [len(result)],
+            "재작업 시트명": ["API 수요 기준 미사용"],
+            "재작업 기준 컬럼": ["API 수요 기준에서는 재작업 시트 매칭을 적용하지 않음"],
+            "재작업 시트 컬럼": [""],
+            "재작업 리스트 키 수": [0],
+            "재작업 리스트 수량 합계": [0.0],
+            "재작업 비고 키 수": [0],
+            "재작업 매칭 키 수": [0],
+            "재작업 매칭 수량 합계": [0.0],
+            "재작업 매칭 키 샘플": [""],
+        }
+    )
+    return result.reset_index(drop=True), file_info_df, process_map_df
 
 
 def normalize_item_code_value(value: object) -> str:
@@ -9366,7 +9510,7 @@ def main() -> None:
             sidebar_live_updated_at = get_leadji_status_updated_at(data_base_dir)
         else:
             sidebar_meta_key = "data_updated_at"
-            sidebar_live_updated_at = data_live_updated_at
+            sidebar_live_updated_at = get_plan_api_updated_at() if is_plan_api_enabled() else data_live_updated_at
 
         if cloud_snapshots_available and is_cloud_snapshot_fresh(sidebar_meta_key, sidebar_live_updated_at):
             updated_at = get_cloud_snapshot_meta_value(sidebar_meta_key, sidebar_live_updated_at)
@@ -9374,9 +9518,9 @@ def main() -> None:
         elif cloud_snapshots_available:
             updated_at = sidebar_live_updated_at
             st.caption("Cloud 모드: 원본 엑셀 자동 반영")
-        elif is_plan_api_enabled() and selected_top_view == "전체 품목 현황":
+        elif is_plan_api_enabled() and selected_top_view in {"전체 품목 현황", "생산 부족 현황"}:
             updated_at = sidebar_live_updated_at
-            st.caption("API 모드: APS 갱신시점 기준")
+            st.caption("API 모드: APS 수요 + WIP 기준")
         elif is_plan_api_enabled():
             updated_at = sidebar_live_updated_at
             st.caption("파일 계산 모드: WIP/로컬 수요 파일 기준")
@@ -9447,23 +9591,32 @@ def main() -> None:
                     updated_at = get_cloud_snapshot_meta_value("all_item_updated_at", all_item_live_updated_at)
 
         if selected_top_view == "생산 부족 현황":
-            use_data_cloud_snapshot = cloud_snapshots_available and is_cloud_snapshot_fresh(
-                "data_updated_at", data_live_updated_at
-            )
-            if use_data_cloud_snapshot:
-                df, file_info_df, _ = load_cloud_shortage_snapshot()
-                updated_at = get_cloud_snapshot_meta_value("data_updated_at", data_live_updated_at)
-            else:
+            if is_plan_api_enabled():
                 try:
-                    refresh_key = build_data_refresh_key(data_base_dir)
-                    df, file_info_df, _ = load_data(refresh_key, str(data_base_dir))
-                    updated_at = data_live_updated_at
+                    refresh_key = build_api_shortage_refresh_key(data_base_dir)
+                    df, file_info_df, _ = load_api_shortage_data(refresh_key, str(data_base_dir))
+                    updated_at = get_plan_api_updated_at()
                 except Exception as live_exc:
-                    if not cloud_snapshots_available:
-                        raise
-                    st.warning(f"원본 엑셀 자동 반영 실패로 기존 스냅샷을 표시합니다: {live_exc}")
+                    st.error(f"APS API 수요 기준 생산 부족 현황 계산 실패: {live_exc}")
+                    st.stop()
+            else:
+                use_data_cloud_snapshot = cloud_snapshots_available and is_cloud_snapshot_fresh(
+                    "data_updated_at", data_live_updated_at
+                )
+                if use_data_cloud_snapshot:
                     df, file_info_df, _ = load_cloud_shortage_snapshot()
                     updated_at = get_cloud_snapshot_meta_value("data_updated_at", data_live_updated_at)
+                else:
+                    try:
+                        refresh_key = build_data_refresh_key(data_base_dir)
+                        df, file_info_df, _ = load_data(refresh_key, str(data_base_dir))
+                        updated_at = data_live_updated_at
+                    except Exception as live_exc:
+                        if not cloud_snapshots_available:
+                            raise
+                        st.warning(f"원본 엑셀 자동 반영 실패로 기존 스냅샷을 표시합니다: {live_exc}")
+                        df, file_info_df, _ = load_cloud_shortage_snapshot()
+                        updated_at = get_cloud_snapshot_meta_value("data_updated_at", data_live_updated_at)
 
         leadji_info = pd.DataFrame()
         leadji_stock = pd.DataFrame()
