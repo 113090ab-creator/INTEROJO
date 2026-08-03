@@ -3989,9 +3989,13 @@ def dataframe_to_excel_bytes(df: pd.DataFrame, sheet_name: str = "data") -> byte
 
 
 def sanitize_excel_sheet_name(value: object, fallback: str = "data") -> str:
-    safe_sheet = re.sub(r"[:\\\\/?*\\[\\]]", "_", str(value)).strip()
+    text = clean_text_value(value) or clean_text_value(fallback) or "data"
+    safe_sheet = re.sub(r"[\[\]\*:/\\?]", "_", text)
+    safe_sheet = re.sub(r"[\x00-\x1f]", "_", safe_sheet)
+    safe_sheet = re.sub(r"\s+", " ", safe_sheet).strip().strip("'")
+    safe_sheet = re.sub(r"_+", "_", safe_sheet).strip(" _")
     if not safe_sheet:
-        safe_sheet = fallback
+        safe_sheet = clean_text_value(fallback) or "data"
     return safe_sheet[:31]
 
 
@@ -3999,11 +4003,11 @@ def unique_excel_sheet_name(value: object, used_names: set[str], fallback: str =
     base = sanitize_excel_sheet_name(value, fallback)
     sheet_name = base
     suffix = 2
-    while sheet_name in used_names:
+    while sheet_name.casefold() in used_names:
         suffix_text = f"_{suffix}"
         sheet_name = f"{base[:31 - len(suffix_text)]}{suffix_text}"
         suffix += 1
-    used_names.add(sheet_name)
+    used_names.add(sheet_name.casefold())
     return sheet_name
 
 
