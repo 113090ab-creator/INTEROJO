@@ -2624,6 +2624,25 @@ def clean_text_value(value: object) -> str:
     return "" if text.lower() in INVALID_CATEGORY_VALUES else text
 
 
+def clean_initial_value(value: object) -> str:
+    text = clean_text_value(value)
+    if not text:
+        return ""
+    parts = [part.strip() for part in re.split(r"[,;\n\r]+", text)]
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        if not part:
+            continue
+        token_key = normalize_keyword_key(part)
+        if token_key in {"이니셜", "initial", "initialcode"}:
+            continue
+        if part not in seen:
+            seen.add(part)
+            cleaned.append(part)
+    return ", ".join(cleaned)
+
+
 def normalize_site_group(value: object) -> str:
     text = clean_text_value(value).upper()
     compact = re.sub(r"[\s_./()\-]+", "", text)
@@ -6257,7 +6276,8 @@ def build_all_item_demand_summary(shortage_df: pd.DataFrame, code_to_p: dict[str
             ]
         )
 
-    demand["_이니셜키"] = demand["이니셜"].map(clean_text_value)
+    demand["이니셜"] = demand["이니셜"].map(clean_initial_value)
+    demand["_이니셜키"] = demand["이니셜"].map(clean_initial_value)
     demand.loc[demand["_이니셜키"].str.strip().str.lower().isin(INVALID_CATEGORY_VALUES), "_이니셜키"] = "미지정"
     demand["_거래처키"] = demand["거래처"].map(clean_text_value)
     demand.loc[demand["_거래처키"].str.strip().str.lower().isin(INVALID_CATEGORY_VALUES), "_거래처키"] = ""
@@ -7692,6 +7712,7 @@ def prepare_all_item_flow_data(all_items_df: pd.DataFrame) -> pd.DataFrame:
         if col not in working.columns:
             working[col] = ""
         working[col] = working[col].map(clean_text_value)
+    working["이니셜"] = working["이니셜"].map(clean_initial_value)
     working["사이트코드"] = working["사이트코드"].map(normalize_site_group)
 
     if working["제품대분류"].str.strip().eq("").all() or "기타" in set(working["제품대분류"]):
@@ -7714,7 +7735,7 @@ def prepare_all_item_flow_data(all_items_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_initial_order_map_text(initial: object, qty: object) -> str:
-    initial_text = clean_text_value(initial) or "미지정"
+    initial_text = clean_initial_value(initial) or "미지정"
     qty_value = numeric_scalar(qty)
     if not qty_value:
         return ""
@@ -7740,7 +7761,7 @@ def parse_demand_detail_rows(value: object, fallback_source: pd.Series | None = 
                     {
                         "거래처": clean_text_value(item.get("거래처", "")),
                         "사이트코드": normalize_site_group(item.get("사이트코드", "")),
-                        "이니셜": clean_text_value(item.get("이니셜", "")) or "미지정",
+                        "이니셜": clean_initial_value(item.get("이니셜", "")) or "미지정",
                         "제품명": clean_text_value(item.get("제품명", "")) or "-",
                         "오더수량": order_qty,
                         "납기일": clean_text_value(item.get("납기일", "")) or "-",
@@ -7755,7 +7776,7 @@ def parse_demand_detail_rows(value: object, fallback_source: pd.Series | None = 
         {
             "거래처": clean_text_value(fallback_source.get("거래처", "")),
             "사이트코드": normalize_site_group(fallback_source.get("사이트코드", "")),
-            "이니셜": clean_text_value(fallback_source.get("이니셜", "")) or "미지정",
+            "이니셜": clean_initial_value(fallback_source.get("이니셜", "")) or "미지정",
             "제품명": clean_text_value(fallback_source.get("제품명", "")) or "-",
             "오더수량": numeric_scalar(fallback_source.get("오더수량", 0)),
             "납기일": clean_text_value(fallback_source.get("납기일", "")) or "-",
@@ -7791,7 +7812,7 @@ def filter_rows_with_demand_initial(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty or "오더수량" not in df.columns or "이니셜" not in df.columns:
         return df.iloc[0:0].copy()
 
-    initial = df["이니셜"].map(clean_text_value)
+    initial = df["이니셜"].map(clean_initial_value)
     order_qty = parse_mixed_numeric(df["오더수량"]).fillna(0)
     valid_initial = initial.ne("") & ~initial.str.lower().isin(INVALID_CATEGORY_VALUES | {"미지정"})
     return df[(order_qty > 0) & valid_initial].copy()
@@ -7950,7 +7971,7 @@ def parse_initial_order_qty_map(
 
     if isinstance(payload, dict):
         for raw_initial, raw_qty in payload.items():
-            initial = clean_text_value(raw_initial) or "미지정"
+            initial = clean_initial_value(raw_initial) or "미지정"
             qty = numeric_scalar(raw_qty)
             if qty:
                 result[initial] = result.get(initial, 0) + qty
@@ -7958,7 +7979,7 @@ def parse_initial_order_qty_map(
     if not result:
         qty = numeric_scalar(fallback_qty)
         if qty:
-            initial = clean_text_value(fallback_initial) or "미지정"
+            initial = clean_initial_value(fallback_initial) or "미지정"
             result[initial] = qty
     return result
 
