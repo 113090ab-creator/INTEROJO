@@ -8745,30 +8745,25 @@ def render_shortage_dashboard(
                     hide_index=True,
                 )
 
-        inj_shortage_total = (
-            parse_mixed_numeric(filtered["사출생산필요수량"]).sum()
-            if "사출생산필요수량" in filtered.columns
-            else 0
-        )
         c1, c2, c3 = st.columns(3, gap="medium")
         with c1:
-            render_dashboard_kpi("부족수량 합계", f"{filtered['부족수량'].sum():,.0f}", "risk")
+            shortage_kpi_slot = st.empty()
         with c2:
-            render_dashboard_kpi("사출부족수량 합계", f"{inj_shortage_total:,.0f}", "risk")
+            injection_kpi_slot = st.empty()
         with c3:
-            render_dashboard_kpi("공정재고 합계", f"{filtered['공정재고 합계'].sum():,.0f}", "stock")
+            process_stock_kpi_slot = st.empty()
 
         c1, c2, c3, c4, c5 = st.columns(5, gap="medium")
         with c1:
-            render_dashboard_kpi("사출 재고", f"{filtered['사출창고'].sum():,.0f}", "stock")
+            injection_stock_kpi_slot = st.empty()
         with c2:
-            render_dashboard_kpi("분리 재고", f"{filtered['분리창고'].sum():,.0f}", "stock")
+            separation_stock_kpi_slot = st.empty()
         with c3:
-            render_dashboard_kpi("검사접착 재고", f"{filtered['검사접착창고'].sum():,.0f}", "stock")
+            adhesion_stock_kpi_slot = st.empty()
         with c4:
-            render_dashboard_kpi("검사접착재작업 재고", f"{filtered['검사접착재작업창고'].sum():,.0f}", "stock")
+            adhesion_rework_stock_kpi_slot = st.empty()
         with c5:
-            render_dashboard_kpi("누수규격 재고", f"{filtered['누수규격검사 창고'].sum():,.0f}", "stock")
+            leakage_stock_kpi_slot = st.empty()
 
         initial_inj_summary = build_initial_injection_summary(filtered)
         with st.expander("이니셜별 사출부족수량 요약", expanded=False):
@@ -9052,6 +9047,53 @@ def render_shortage_dashboard(
             ascending=[False, False, False, True, True],
         )[p_detail_columns]
         p_table_ui = p_table.drop(columns=["상태"], errors="ignore")
+        kpi_source = p_table_ui.copy()
+        kpi_totals = {
+            "부족수량": parse_mixed_numeric(kpi_source["부족수량"]).sum() if "부족수량" in kpi_source.columns else 0,
+            "사출 부족수량": (
+                parse_mixed_numeric(kpi_source["사출 부족수량"]).sum()
+                if "사출 부족수량" in kpi_source.columns
+                else 0
+            ),
+            "공정재고 합계": (
+                parse_mixed_numeric(kpi_source["공정재고 합계"]).sum()
+                if "공정재고 합계" in kpi_source.columns
+                else 0
+            ),
+            "사출창고": parse_mixed_numeric(kpi_source["사출창고"]).sum() if "사출창고" in kpi_source.columns else 0,
+            "분리창고": parse_mixed_numeric(kpi_source["분리창고"]).sum() if "분리창고" in kpi_source.columns else 0,
+            "검사접착창고": (
+                parse_mixed_numeric(kpi_source["검사접착창고"]).sum()
+                if "검사접착창고" in kpi_source.columns
+                else 0
+            ),
+            "검사접착재작업창고": (
+                parse_mixed_numeric(kpi_source["검사접착재작업창고"]).sum()
+                if "검사접착재작업창고" in kpi_source.columns
+                else 0
+            ),
+            "누수규격검사 창고": (
+                parse_mixed_numeric(kpi_source["누수규격검사 창고"]).sum()
+                if "누수규격검사 창고" in kpi_source.columns
+                else 0
+            ),
+        }
+        with shortage_kpi_slot.container():
+            render_dashboard_kpi("부족수량 합계", f"{kpi_totals['부족수량']:,.0f}", "risk")
+        with injection_kpi_slot.container():
+            render_dashboard_kpi("사출부족수량 합계", f"{kpi_totals['사출 부족수량']:,.0f}", "risk")
+        with process_stock_kpi_slot.container():
+            render_dashboard_kpi("공정재고 합계", f"{kpi_totals['공정재고 합계']:,.0f}", "stock")
+        with injection_stock_kpi_slot.container():
+            render_dashboard_kpi("사출 재고", f"{kpi_totals['사출창고']:,.0f}", "stock")
+        with separation_stock_kpi_slot.container():
+            render_dashboard_kpi("분리 재고", f"{kpi_totals['분리창고']:,.0f}", "stock")
+        with adhesion_stock_kpi_slot.container():
+            render_dashboard_kpi("검사접착 재고", f"{kpi_totals['검사접착창고']:,.0f}", "stock")
+        with adhesion_rework_stock_kpi_slot.container():
+            render_dashboard_kpi("검사접착재작업 재고", f"{kpi_totals['검사접착재작업창고']:,.0f}", "stock")
+        with leakage_stock_kpi_slot.container():
+            render_dashboard_kpi("누수규격 재고", f"{kpi_totals['누수규격검사 창고']:,.0f}", "stock")
         p_table_total_count = len(p_table_ui)
         result_caption.caption(f"표시 {len(p_table_ui):,}건 / 전체 {p_table_total_count:,}건")
         p_table_display_source, _ = limit_dataframe_for_display(p_table_ui)
