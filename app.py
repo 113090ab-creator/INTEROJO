@@ -41,6 +41,19 @@ SEPARATION_REQUIRED_QTY_COL = "분리생산필요수량"
 SEPARATION_REQUIRED_DUE_COL = "분리납기일"
 DEMAND_DATA_SHEET_NAME = "Sheet1"
 REWORK_SHEET_NAMES = ("재작업", "재작업리스트")
+PRODUCTION_STATUS_SHEET_NAME = "생산현황"
+REWORK_PRODUCTION_FILE_STEM_PREFIX = "shortage_production"
+REWORK_PRODUCTION_DEMAND_COLUMNS = (
+    "거래처",
+    "이니셜",
+    "품목코드",
+    "R코드",
+    "Q코드",
+    "제품명",
+    "파워",
+    "납기일",
+    "부족수량",
+)
 
 WAREHOUSE_MAP = {
     "사출창고": "사출창고",
@@ -765,6 +778,30 @@ def unique_existing_paths(paths: list[Path | None]) -> list[Path]:
     return result
 
 
+def find_rework_production_source_file(base_dir: Path) -> Path | None:
+    search_dirs = [base_dir]
+    try:
+        if base_dir.resolve() != BASE_DIR.resolve():
+            search_dirs.append(BASE_DIR)
+    except OSError:
+        search_dirs.append(BASE_DIR)
+
+    candidates: list[Path] = []
+    for search_dir in unique_existing_paths(search_dirs):
+        for path in search_dir.glob("*.xlsx"):
+            if path.name.startswith("~$"):
+                continue
+            normalized_stem = path.stem.replace(" ", "").lower()
+            if not normalized_stem.startswith(REWORK_PRODUCTION_FILE_STEM_PREFIX):
+                continue
+            if workbook_has_any_sheet(path, (PRODUCTION_STATUS_SHEET_NAME,)):
+                candidates.append(path)
+
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
 def build_files_refresh_key(paths: list[Path]) -> str:
     parts: list[str] = []
     for path in paths:
@@ -1361,8 +1398,9 @@ def get_data_updated_at(base_dir: Path) -> str:
         inv_path = None
         dem_path = find_demand_update_file(base_dir)
     ref_path = find_product_name_reference_file(base_dir)
+    rework_source_path = find_rework_production_source_file(base_dir)
 
-    return get_latest_files_updated_at(unique_existing_paths([inv_path, dem_path, ref_path]))
+    return get_latest_files_updated_at(unique_existing_paths([inv_path, dem_path, ref_path, rework_source_path]))
 
 
 def get_wip_updated_at(base_dir: Path) -> str:
@@ -3184,10 +3222,13 @@ def normalize_leadji_code_key(value: object) -> str:
 def build_data_refresh_key(base_dir: Path) -> str:
     inv_path, dem_path = find_excel_files(base_dir)
     ref_path = find_product_name_reference_file(base_dir)
+    rework_source_path = find_rework_production_source_file(base_dir)
 
     paths = [inv_path, dem_path]
     if ref_path is not None:
         paths.append(ref_path)
+    if rework_source_path is not None:
+        paths.append(rework_source_path)
 
     parts = [f"app:{APP_CACHE_VERSION}"]
     upload_signature = read_upload_workspace_signature(base_dir)

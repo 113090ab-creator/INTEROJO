@@ -183,6 +183,40 @@ def input_row(ws, rec, row_idx):
     return row
 
 
+def customer_formula_row(ws, source_row_idx):
+    source_start_col = INPUT_HEADERS.index("생산코드") + 1
+    status_col = INPUT_HEADERS.index("상태") + 1
+    values = [
+        f"='전체코드_입력'!{get_column_letter(source_col)}{source_row_idx}"
+        for source_col in range(source_start_col, status_col + 1)
+    ]
+    row = []
+    numeric_headers = {
+        "오더수량1",
+        "오더수량2",
+        "오더합계",
+        "제품부족수량",
+        "사출부족수량",
+        "사출재고",
+        "분리재고",
+        "검사접착재고",
+        "누수규격검사재고",
+        "공정재고 합계",
+        "완제품재고",
+        "재고변화",
+        "DOI기준오더",
+    }
+    for col_idx, value in enumerate(values, start=1):
+        header = CUSTOMER_HEADERS[col_idx - 1]
+        number_format = None
+        if header in numeric_headers:
+            number_format = "#,##0"
+        elif header == "DOI":
+            number_format = "0.0"
+        row.append(make_cell(ws, value, font=Font(name="맑은 고딕", size=10, color=TEXT), number_format=number_format))
+    return row
+
+
 def build_workbook():
     payload = json.loads(INPUT_JSON.read_text(encoding="utf-8"))
     rows = payload["rows"]
@@ -193,9 +227,11 @@ def build_workbook():
     customer_last_col = get_column_letter(INPUT_HEADERS.index("상태") + 1)
 
     counts = {}
-    for rec in rows:
+    customer_source_rows = {}
+    for source_idx, rec in enumerate(rows, start=FIRST_DATA_ROW):
         key = rec.get("거래처그룹") or "거래처 미지정"
         counts[key] = counts.get(key, 0) + 1
+        customer_source_rows.setdefault(key, []).append(source_idx)
 
     wb = Workbook(write_only=True)
     try:
@@ -219,7 +255,7 @@ def build_workbook():
     styled_header(guide, ["구분", "사용 방법", "비고", ""])
     guide_rows = [
         ["전체코드_입력", "전체 P코드 기준 원장입니다. 값은 이 시트에서만 수정합니다.", f"{row_count:,}개 P코드", ""],
-        ["거래처별 시트", "각 거래처 시트는 FILTER 수식으로 자동 조회됩니다.", f"{len(customers):,}개 거래처그룹", ""],
+        ["거래처별 시트", "각 거래처 시트는 전체코드_입력 행을 직접 참조하는 수식으로 자동 조회됩니다.", f"{len(customers):,}개 거래처그룹", ""],
         ["완제품 재고", "완제품 재고 변화 파일의 종료재고, 변화, DOI, 신호, 대응판단을 P코드 기준으로 반영했습니다.", payload.get("finished_goods_stock", ""), ""],
         ["오더합계", "오더수량1 + 오더수량2 수식입니다.", "필요 시 오더수량 열 추가 가능", ""],
         ["공정재고 합계", "사출재고 + 분리재고 + 검사접착재고 + 누수규격검사재고 수식입니다.", "", ""],
@@ -267,7 +303,7 @@ def build_workbook():
 
     for cust, sheet_name, _count in sheet_map:
         ws = wb.create_sheet(sheet_name)
-        append_title(ws, f"{cust} 자동조회", "전체코드_입력 시트에서 거래처그룹이 같은 행만 자동 표시합니다.", len(CUSTOMER_HEADERS))
+        append_title(ws, f"{cust} 자동조회", "전체코드_입력 시트의 해당 거래처 행을 직접 참조합니다.", len(CUSTOMER_HEADERS))
         ws.append(
             [
                 make_cell(ws, "조회 거래처", fill=PatternFill("solid", fgColor=LIGHT_BLUE), font=Font(name="맑은 고딕", bold=True), border=True),
@@ -277,12 +313,12 @@ def build_workbook():
         )
         ws.append([])
         styled_header(ws, CUSTOMER_HEADERS)
-        formula = (
-            f'=FILTER(\'전체코드_입력\'!$C${FIRST_DATA_ROW}:${customer_last_col}${last_row},'
-            f'\'전체코드_입력\'!$A${FIRST_DATA_ROW}:$A${last_row}=$B$3,"")'
-        )
-        ws.append([make_cell(ws, formula)] + [make_cell(ws, "") for _ in range(len(CUSTOMER_HEADERS) - 1)])
+        source_rows = customer_source_rows.get(cust, [])
+        for source_row_idx in source_rows:
+            ws.append(customer_formula_row(ws, source_row_idx))
         ws.freeze_panes = "E6"
+        if source_rows:
+            ws.auto_filter.ref = f"A{HEADER_ROW}:{get_column_letter(len(CUSTOMER_HEADERS))}{HEADER_ROW + len(source_rows)}"
         set_widths(ws, [18, 18, 18, 34, 10, 12, 12, 13, 15, 15, 13, 13, 15, 18, 15, 15, 14, 14, 10, 12, 12, 32, 15])
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -306,6 +342,7 @@ def verify(path: Path):
         "source_stock_signal_header": source["W5"].value,
         "customer_sheet": first_customer,
         "customer_a6_formula": customer["A6"].value,
+        "customer_b6_formula": customer["B6"].value,
     }
     wb.close()
     return checks
