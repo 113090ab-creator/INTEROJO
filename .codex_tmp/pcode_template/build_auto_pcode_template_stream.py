@@ -226,6 +226,7 @@ def append_source_sheet(wb, name, title, subtitle, headers, rows, widths, formul
     ws = wb.create_sheet(name)
     append_title(ws, title, subtitle, len(headers))
     ws.append([])
+    ws.append([])
     styled_header(ws, headers)
     formula_cols = formula_cols or {}
     number_cols = set(number_cols or [])
@@ -451,6 +452,8 @@ def build_workbook():
 def verify(path: Path):
     wb = load_workbook(path, read_only=True, data_only=False)
     customer_sheet = wb.worksheets[5]
+    customer_headers = next(customer_sheet.iter_rows(min_row=HEADER_ROW, max_row=HEADER_ROW, values_only=True))
+    status_col = len([value for value in customer_headers if value is not None])
     checks = {
         "sheets": len(wb.sheetnames),
         "master_headers": [wb[MASTER_SHEET].cell(HEADER_ROW, c).value for c in range(1, len(MASTER_HEADERS) + 1)],
@@ -458,7 +461,7 @@ def verify(path: Path):
         "customer_sheet": customer_sheet.title,
         "customer_a6": customer_sheet["A6"].value,
         "customer_order_formula": customer_sheet.cell(FIRST_DATA_ROW, 6).value,
-        "customer_status_formula": customer_sheet.cell(FIRST_DATA_ROW, customer_sheet.max_column).value,
+        "customer_status_formula": customer_sheet.cell(FIRST_DATA_ROW, status_col).value,
     }
     wb.close()
     return checks
