@@ -65,7 +65,7 @@ WAREHOUSE_MAP = {
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 12000
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260804-rework-demand-v1"
+APP_CACHE_VERSION = "20260804-performance-v3"
 PLAN_API_BASE_URL_DEFAULT = "https://plan.interojo.net"
 PLAN_API_KEY_ENV = "PLAN_API_KEY"
 PLAN_API_BASE_URL_ENV = "PLAN_API_BASE_URL"
@@ -76,6 +76,8 @@ LOCAL_CACHE_DIR = BASE_DIR / ".local_cache"
 PLAN_API_DISK_CACHE_DIR = LOCAL_CACHE_DIR / "plan_api"
 PLAN_API_KEY_LOCAL_CACHE_FILE = LOCAL_CACHE_DIR / "plan_api_key.txt"
 ALL_ITEM_STATUS_DISK_CACHE_DIR = LOCAL_CACHE_DIR / "all_item_status"
+ALL_ITEM_FLOW_STATUS_DISK_CACHE_DIR = LOCAL_CACHE_DIR / "all_item_flow_status"
+FINISHED_GOODS_STOCK_DISK_CACHE_DIR = LOCAL_CACHE_DIR / "finished_goods_stock"
 APS_PLAN_ENDPOINT = "/api/aps-plan"
 APS_WIP_ENDPOINT = "/api/aps-wip"
 APS_PLAN_META_ENDPOINT = "/api/aps-plan/meta"
@@ -740,8 +742,7 @@ def find_finished_goods_stock_file(base_dir: Path) -> Path | None:
             is_lot_stock = "LOT" in normalized_name.upper() and "품목코드" in normalized_name and "재고" in normalized_name
             if not (is_staged_upload or is_stock_change or is_lot_stock):
                 continue
-            if workbook_has_any_sheet(path, FINISHED_GOODS_STOCK_SHEET_HINTS):
-                candidates.append(path)
+            candidates.append(path)
 
     if not candidates:
         return None
@@ -1931,6 +1932,39 @@ def write_all_item_status_disk_cache(
             temp_path,
             compression="gzip",
         )
+        temp_path.replace(cache_path)
+    except Exception:
+        pass
+
+
+def build_all_item_flow_status_disk_cache_path(refresh_key: str, site_filter: str) -> Path:
+    cache_hash = build_local_cache_hash(APP_CACHE_VERSION, "all_item_flow_status", refresh_key, site_filter)
+    return ALL_ITEM_FLOW_STATUS_DISK_CACHE_DIR / f"{cache_hash}.pkl.gz"
+
+
+def read_all_item_flow_status_disk_cache(refresh_key: str, site_filter: str) -> pd.DataFrame | None:
+    cache_path = build_all_item_flow_status_disk_cache_path(refresh_key, site_filter)
+    if not cache_path.exists():
+        return None
+    try:
+        cached = pd.read_pickle(cache_path, compression="gzip")
+    except Exception:
+        return None
+    if not isinstance(cached, pd.DataFrame):
+        return None
+    if DEMAND_DETAIL_ROWS_COL not in cached.columns:
+        return None
+    return cached
+
+
+def write_all_item_flow_status_disk_cache(refresh_key: str, site_filter: str, all_items: pd.DataFrame) -> None:
+    if all_items.empty:
+        return
+    cache_path = build_all_item_flow_status_disk_cache_path(refresh_key, site_filter)
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = cache_path.with_suffix(cache_path.suffix + f".{uuid.uuid4().hex}.tmp")
+        all_items.to_pickle(temp_path, compression="gzip")
         temp_path.replace(cache_path)
     except Exception:
         pass
@@ -6789,6 +6823,240 @@ def find_finished_goods_stock_sheet(xls: pd.ExcelFile) -> str | None:
     return xls.sheet_names[0] if xls.sheet_names else None
 
 
+def build_finished_goods_stock_disk_cache_path(stock_path: Path) -> Path:
+    try:
+        stat = stock_path.stat()
+        source_key = f"{stock_path.resolve()}:{stat.st_size}:{stat.st_mtime_ns}"
+    except OSError:
+        source_key = str(stock_path)
+    cache_hash = build_local_cache_hash(APP_CACHE_VERSION, "finished_goods_stock_summary_v2", source_key)
+    return FINISHED_GOODS_STOCK_DISK_CACHE_DIR / f"{cache_hash}.pkl"
+
+
+def read_finished_goods_stock_disk_cache(stock_path: Path, output_columns: list[str]) -> pd.DataFrame | None:
+    cached = read_pickle_cache(build_finished_goods_stock_disk_cache_path(stock_path))
+    if not isinstance(cached, pd.DataFrame):
+        return None
+    if not set(output_columns).issubset(cached.columns):
+        return None
+    return cached[output_columns].copy()
+
+
+def write_finished_goods_stock_disk_cache(stock_path: Path, summary: pd.DataFrame) -> None:
+    if summary.empty:
+        return
+    write_pickle_cache(build_finished_goods_stock_disk_cache_path(stock_path), summary)
+
+
+def fast_excel_numeric_value(value: object) -> float:
+    if value is None:
+        return 0.0
+    if isinstance(value, bool):
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    text = str(value).strip()
+    if not text or text.lower() in INVALID_CATEGORY_VALUES or text == "-":
+        return 0.0
+
+    negative = text.startswith("(") and text.endswith(")")
+    if negative:
+        text = text[1:-1]
+    text = text.replace(",", "").replace("\u00a0", "").replace(" ", "")
+    if text.endswith("%"):
+        text = text[:-1]
+    try:
+        parsed = float(text)
+    except ValueError:
+        return 0.0
+    return -parsed if negative else parsed
+
+
+def summarize_unique_text_list(values: list[str], head_count: int = 1) -> str:
+    uniq: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value).strip()
+        if not text or text.lower() in INVALID_CATEGORY_VALUES:
+            continue
+        if text in seen:
+            continue
+        seen.add(text)
+        uniq.append(text)
+
+    if not uniq:
+        return "-"
+    if len(uniq) <= head_count:
+        return ", ".join(uniq)
+    return f"{', '.join(uniq[:head_count])} \uc678 {len(uniq) - head_count}"
+
+
+def summarize_signal_text_list(values: list[str]) -> str:
+    cleaned = [str(value).strip() for value in values if str(value).strip()]
+    if not cleaned:
+        return ""
+    priority = {"\uc18c\uc9c4": 0, "\uac10\uc18c": 1, "\uc2e0\uaddc": 2, "\uc99d\uac00": 3, "\uc720\uc9c0": 4}
+    ordered = sorted(dict.fromkeys(cleaned), key=lambda value: (priority.get(value, 9), value))
+    if len(ordered) <= 2:
+        return ", ".join(ordered)
+    return f"{', '.join(ordered[:2])} \uc678 {len(ordered) - 2}"
+
+
+def median_positive(values: list[float]) -> float:
+    positives = sorted(value for value in values if value > 0)
+    count = len(positives)
+    if count == 0:
+        return 0.0
+    midpoint = count // 2
+    if count % 2:
+        return positives[midpoint]
+    return (positives[midpoint - 1] + positives[midpoint]) / 2
+
+
+def row_value_at(row: tuple[object, ...], idx: int | None) -> object:
+    if idx is None or idx < 0 or idx >= len(row):
+        return None
+    return row[idx]
+
+
+def read_finished_goods_stock_summary_fast(stock_path: Path, output_columns: list[str]) -> pd.DataFrame | None:
+    if len(output_columns) < 11:
+        return None
+
+    code_candidates = ["\ud488\ubaa9\ucf54\ub4dc", "\uc81c\ud488\ucf54\ub4dc", "ITEM_ID", "\uc81c\ud488 \ucf54\ub4dc"]
+    column_candidates = {
+        "customer": ["\uac70\ub798\ucc98", "\uac70\ub798\ucc98\uba85", "CUSTOMER", "CUSTOMER_NAME"],
+        "category": [
+            "\uc2e0\uaddc\ubd84\ub958\uc694\uc57d",
+            "\ubd84\ub958\uc694\uc57d",
+            "\uc2e0\uaddc\ubd84\ub958",
+            "\ud310\ub9e4\uc81c\ud488\uad70",
+            "\uc0dd\uc0b0\uc81c\ud488\uad70",
+        ],
+        "wear": ["\ucc29\uc6a9\uc8fc\uae30", "\ucc29\uc6a9 \uc8fc\uae30", "WEARING_PERIOD"],
+        "end_stock": ["\uc885\ub8cc\uc7ac\uace0", "\uae30\ub9d0\uc7ac\uace0", "\ud604\uc7ac\uc7ac\uace0", "\uc7ac\uace0"],
+        "change": ["\ubcc0\ud654", "\uc7ac\uace0\ubcc0\ud654", "\uc99d\uac10", "\uc99d\uac10\uc218\ub7c9"],
+        "order": ["\uc624\ub354", "\uc624\ub354\uc218\ub7c9", "\ucd1d\uc624\ub354", "ORDER_QTY"],
+        "doi": ["DOI(\uc77c)", "DOI", "DOI\uc77c"],
+        "ratio": ["\ube44\uc728", "\uc7ac\uace0\ube44\uc728", "\uc99d\uac10\ube44\uc728"],
+        "signal": ["\uc2e0\ud638", "SIGNAL", "Signal"],
+        "action": ["\ub300\uc751\ud310\ub2e8", "\ud310\ub2e8", "\uc870\uce58\ud310\ub2e8"],
+    }
+
+    wb = None
+    try:
+        wb = openpyxl.load_workbook(stock_path, read_only=True, data_only=True)
+        normalized_to_original = {normalize_excel_sheet_name(name): name for name in wb.sheetnames}
+        sheet_name = None
+        for hint in FINISHED_GOODS_STOCK_SHEET_HINTS:
+            sheet_name = normalized_to_original.get(normalize_excel_sheet_name(hint))
+            if sheet_name is not None:
+                break
+        if sheet_name is None:
+            sheet_name = wb.sheetnames[0] if wb.sheetnames else None
+        if sheet_name is None:
+            return pd.DataFrame(columns=output_columns)
+
+        ws = wb[sheet_name]
+        header_row = None
+        column_indices: dict[str, int | None] = {}
+        for candidate_header_row in (2, 1, 3):
+            header_values = next(
+                ws.iter_rows(min_row=candidate_header_row, max_row=candidate_header_row, values_only=True),
+                None,
+            )
+            if not header_values:
+                continue
+            header_labels = {
+                idx: str(value).strip()
+                for idx, value in enumerate(header_values)
+                if value is not None and str(value).strip()
+            }
+            code_idx = pick_first_existing_column_index(header_labels, code_candidates)
+            if code_idx is None:
+                continue
+            column_indices = {"code": code_idx}
+            for key, candidates in column_candidates.items():
+                column_indices[key] = pick_first_existing_column_index(header_labels, candidates)
+            header_row = candidate_header_row
+            break
+
+        if header_row is None:
+            return None
+
+        aggregated: dict[str, dict[str, object]] = {}
+        for row in ws.iter_rows(min_row=header_row + 1, values_only=True):
+            code = normalize_item_code_value(row_value_at(row, column_indices.get("code")))
+            if not code.startswith("P"):
+                continue
+
+            item = aggregated.get(code)
+            if item is None:
+                item = {
+                    "stock": 0.0,
+                    "change": 0.0,
+                    "order": 0.0,
+                    "doi_values": [],
+                    "ratio": [],
+                    "signal": [],
+                    "action": [],
+                    "customer": [],
+                    "category": [],
+                    "wear": [],
+                }
+                aggregated[code] = item
+
+            item["stock"] = float(item["stock"]) + fast_excel_numeric_value(
+                row_value_at(row, column_indices.get("end_stock"))
+            )
+            item["change"] = float(item["change"]) + fast_excel_numeric_value(
+                row_value_at(row, column_indices.get("change"))
+            )
+            item["order"] = float(item["order"]) + fast_excel_numeric_value(row_value_at(row, column_indices.get("order")))
+
+            doi_value = fast_excel_numeric_value(row_value_at(row, column_indices.get("doi")))
+            if doi_value > 0:
+                item["doi_values"].append(doi_value)  # type: ignore[union-attr]
+
+            for key in ("ratio", "signal", "action", "customer", "category", "wear"):
+                text = clean_text_value(row_value_at(row, column_indices.get(key)))
+                if text:
+                    item[key].append(text)  # type: ignore[union-attr]
+
+        records: list[dict[str, object]] = []
+        for code in sorted(aggregated):
+            item = aggregated[code]
+            stock_qty = float(item["stock"])
+            order_qty = float(item["order"])
+            doi = stock_qty / order_qty * 181 if order_qty > 0 else median_positive(item["doi_values"])  # type: ignore[arg-type]
+            records.append(
+                {
+                    output_columns[0]: code,
+                    output_columns[1]: stock_qty,
+                    output_columns[2]: float(item["change"]),
+                    output_columns[3]: order_qty,
+                    output_columns[4]: doi,
+                    output_columns[5]: summarize_unique_text_list(item["ratio"]),  # type: ignore[arg-type]
+                    output_columns[6]: summarize_signal_text_list(item["signal"]),  # type: ignore[arg-type]
+                    output_columns[7]: summarize_unique_text_list(item["action"]),  # type: ignore[arg-type]
+                    output_columns[8]: summarize_unique_text_list(item["customer"], head_count=2),  # type: ignore[arg-type]
+                    output_columns[9]: summarize_unique_text_list(item["category"], head_count=2),  # type: ignore[arg-type]
+                    output_columns[10]: summarize_unique_text_list(item["wear"], head_count=2),  # type: ignore[arg-type]
+                }
+            )
+
+        return pd.DataFrame.from_records(records, columns=output_columns)
+    except Exception:
+        return None
+    finally:
+        if wb is not None:
+            try:
+                wb.close()
+            except Exception:
+                pass
+
+
 @st.cache_data(show_spinner=False, max_entries=CACHE_MAX_ENTRIES)
 def read_finished_goods_stock_summary(stock_path_str: str, refresh_key: str) -> pd.DataFrame:
     _ = refresh_key
@@ -6809,6 +7077,15 @@ def read_finished_goods_stock_summary(stock_path_str: str, refresh_key: str) -> 
     if not stock_path.exists():
         return pd.DataFrame(columns=output_columns)
 
+    cached_summary = read_finished_goods_stock_disk_cache(stock_path, output_columns)
+    if cached_summary is not None:
+        return cached_summary
+
+    fast_summary = read_finished_goods_stock_summary_fast(stock_path, output_columns)
+    if fast_summary is not None:
+        write_finished_goods_stock_disk_cache(stock_path, fast_summary)
+        return fast_summary
+
     try:
         xls = pd.ExcelFile(stock_path)
     except Exception:
@@ -6819,16 +7096,39 @@ def read_finished_goods_stock_summary(stock_path_str: str, refresh_key: str) -> 
         return pd.DataFrame(columns=output_columns)
 
     parsed = pd.DataFrame()
+    column_candidate_groups = [
+        ["품목코드", "제품코드", "ITEM_ID", "제품 코드"],
+        ["거래처", "거래처명", "CUSTOMER", "CUSTOMER_NAME"],
+        ["신규분류요약", "분류요약", "신규분류", "판매제품군", "생산제품군"],
+        ["착용주기", "착용 주기", "WEARING_PERIOD"],
+        ["종료재고", "기말재고", "현재재고", "재고"],
+        ["변화", "재고변화", "증감", "증감수량"],
+        ["오더", "오더수량", "총오더", "ORDER_QTY"],
+        ["DOI(일)", "DOI", "DOI일"],
+        ["비율", "재고비율", "증감비율"],
+        ["신호", "SIGNAL", "Signal"],
+        ["대응판단", "판단", "조치판단"],
+    ]
     for header_row in (1, 0, 2):
         try:
-            candidate = pd.read_excel(stock_path, sheet_name=sheet_name, header=header_row)
+            header_candidate = pd.read_excel(stock_path, sheet_name=sheet_name, header=header_row, nrows=0)
         except Exception:
             continue
-        candidate.columns = [str(col).strip() for col in candidate.columns]
-        columns = candidate.columns.tolist()
+        header_candidate.columns = [str(col).strip() for col in header_candidate.columns]
+        columns = header_candidate.columns.tolist()
         code_col = pick_first_existing_column(columns, ["품목코드", "제품코드", "ITEM_ID", "제품 코드"])
         if code_col is None:
             continue
+        selected_cols: list[str] = []
+        for candidates in column_candidate_groups:
+            selected_col = pick_first_existing_column(columns, candidates)
+            if selected_col is not None and selected_col not in selected_cols:
+                selected_cols.append(selected_col)
+        try:
+            candidate = pd.read_excel(stock_path, sheet_name=sheet_name, header=header_row, usecols=selected_cols)
+        except Exception:
+            continue
+        candidate.columns = [str(col).strip() for col in candidate.columns]
         parsed = candidate
         break
 
@@ -6888,7 +7188,9 @@ def read_finished_goods_stock_summary(stock_path_str: str, refresh_key: str) -> 
         grouped.loc[doi_order_mask, "완제품재고"] / grouped.loc[doi_order_mask, "DOI기준오더"] * 181
     )
     grouped["DOI"] = parse_mixed_numeric(grouped["DOI"]).fillna(0)
-    return grouped[output_columns]
+    result = grouped[output_columns]
+    write_finished_goods_stock_disk_cache(stock_path, result)
+    return result
 
 
 def build_code_mismatch_df(
@@ -10551,11 +10853,16 @@ def main() -> None:
                         return full_items
 
                     if is_plan_api_enabled():
-                        all_items_df = build_all_item_flow_status_snapshot(
-                            all_item_refresh_key,
-                            str(data_base_dir),
-                            all_item_site_filter,
-                        )
+                        cached_flow_items = read_all_item_flow_status_disk_cache(all_item_refresh_key, all_item_site_filter)
+                        if cached_flow_items is not None:
+                            all_items_df = cached_flow_items
+                        else:
+                            all_items_df = build_all_item_flow_status_snapshot(
+                                all_item_refresh_key,
+                                str(data_base_dir),
+                                all_item_site_filter,
+                            )
+                            write_all_item_flow_status_disk_cache(all_item_refresh_key, all_item_site_filter, all_items_df)
                         code_mismatch_df = pd.DataFrame()
                         all_items_full_builder = build_full_all_items_for_download
                     else:
