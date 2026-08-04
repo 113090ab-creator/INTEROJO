@@ -52,7 +52,7 @@ WAREHOUSE_MAP = {
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 12000
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260803-api-fast-plan-v2"
+APP_CACHE_VERSION = "20260804-finished-goods-v1"
 PLAN_API_BASE_URL_DEFAULT = "https://plan.interojo.net"
 PLAN_API_KEY_ENV = "PLAN_API_KEY"
 PLAN_API_BASE_URL_ENV = "PLAN_API_BASE_URL"
@@ -74,7 +74,7 @@ ALL_ITEM_SNAPSHOT_FILE = "all_item_status_snapshot.csv.gz"
 CODE_MISMATCH_SNAPSHOT_FILE = "code_mismatch_snapshot.csv.gz"
 FINISHED_GOODS_STOCK_UPLOAD_FILE = "완제품_재고변화_uploaded.xlsx"
 FINISHED_GOODS_STOCK_SHEET_HINTS = ("전체 품목코드 재고", "품목코드 변화 조회결과")
-USE_FINISHED_GOODS_STOCK_CHANGE = False
+USE_FINISHED_GOODS_STOCK_CHANGE = True
 ALL_ITEM_DOWNLOAD_COLUMNS = [
     "사이트코드",
     "제품대분류",
@@ -99,9 +99,12 @@ ALL_ITEM_DOWNLOAD_COLUMNS = [
     "누수규격검사",
     "공정재고합계",
     "완제품재고",
+    "재고변화",
     "DOI기준오더",
     "DOI",
+    "재고비율",
     "신호",
+    "재고대응판단",
     "초과재고수량",
     "부족수량",
     "샘플 신청가능수량",
@@ -121,6 +124,7 @@ ALL_ITEM_NUMERIC_COLUMNS = [
     "누수규격검사",
     "공정재고합계",
     "완제품재고",
+    "재고변화",
     "DOI기준오더",
     "DOI",
     "초과재고수량",
@@ -135,6 +139,11 @@ ALL_ITEM_FLOW_DISPLAY_COLUMNS = [
     "부족수량",
     "사출부족수량",
     "공정재고",
+    "완제품재고",
+    "재고변화",
+    "DOI",
+    "신호",
+    "재고대응판단",
 ]
 ALL_ITEM_FLOW_POWER_DETAIL_COLUMNS = [
     "사이트코드",
@@ -155,6 +164,13 @@ ALL_ITEM_FLOW_POWER_DETAIL_COLUMNS = [
     "분리창고",
     "검사접착창고",
     "누수규격검사",
+    "완제품재고",
+    "재고변화",
+    "DOI기준오더",
+    "DOI",
+    "재고비율",
+    "신호",
+    "재고대응판단",
 ]
 ALL_ITEM_FLOW_CUSTOMER_ORDER = [
     "PIA",
@@ -1674,6 +1690,12 @@ def select_data_source(base_dir: Path) -> tuple[Path, str, str]:
             type=["xlsx"],
             key="upload_reference_xlsx",
             help="미업로드 시 로컬의 '제품명 기준 정보.xlsx'를 사용합니다.",
+        )
+        finished_goods_stock_file = st.file_uploader(
+            "완제품 재고 변화 파일(.xlsx, 선택)",
+            type=["xlsx"],
+            key="upload_finished_goods_stock_xlsx",
+            help="미업로드 시 로컬/최근 업로드의 완제품 재고 변화 파일을 사용합니다.",
         )
     else:
         st.caption("현재 설정: 로컬 폴더의 파일 사용")
@@ -6467,9 +6489,12 @@ def read_finished_goods_stock_summary(stock_path_str: str, refresh_key: str) -> 
     output_columns = [
         "생산코드",
         "완제품재고",
+        "재고변화",
         "DOI기준오더",
         "DOI",
+        "재고비율",
         "신호",
+        "재고대응판단",
         "거래처_완제품",
         "신규분류_완제품",
         "착용주기_완제품",
@@ -6511,9 +6536,12 @@ def read_finished_goods_stock_summary(stock_path_str: str, refresh_key: str) -> 
     category_col = pick_first_existing_column(columns, ["신규분류요약", "분류요약", "신규분류", "판매제품군", "생산제품군"])
     wear_col = pick_first_existing_column(columns, ["착용주기", "착용 주기", "WEARING_PERIOD"])
     end_stock_col = pick_first_existing_column(columns, ["종료재고", "기말재고", "현재재고", "재고"])
+    change_col = pick_first_existing_column(columns, ["변화", "재고변화", "증감", "증감수량"])
     order_col = pick_first_existing_column(columns, ["오더", "오더수량", "총오더", "ORDER_QTY"])
     doi_col = pick_first_existing_column(columns, ["DOI(일)", "DOI", "DOI일"])
+    ratio_col = pick_first_existing_column(columns, ["비율", "재고비율", "증감비율"])
     signal_col = pick_first_existing_column(columns, ["신호", "SIGNAL", "Signal"])
+    action_col = pick_first_existing_column(columns, ["대응판단", "판단", "조치판단"])
 
     stock = pd.DataFrame({"생산코드": parsed[code_col].map(normalize_item_code_value)})
     stock = stock[stock["생산코드"].str.startswith("P", na=False)].copy()
@@ -6521,9 +6549,12 @@ def read_finished_goods_stock_summary(stock_path_str: str, refresh_key: str) -> 
         return pd.DataFrame(columns=output_columns)
 
     stock["완제품재고"] = parse_mixed_numeric(parsed.loc[stock.index, end_stock_col]) if end_stock_col else 0
+    stock["재고변화"] = parse_mixed_numeric(parsed.loc[stock.index, change_col]) if change_col else 0
     stock["DOI기준오더"] = parse_mixed_numeric(parsed.loc[stock.index, order_col]) if order_col else 0
     stock["DOI"] = parse_mixed_numeric(parsed.loc[stock.index, doi_col]) if doi_col else 0
+    stock["재고비율"] = parsed.loc[stock.index, ratio_col].map(clean_text_value) if ratio_col else ""
     stock["신호"] = parsed.loc[stock.index, signal_col].map(clean_text_value) if signal_col else ""
+    stock["재고대응판단"] = parsed.loc[stock.index, action_col].map(clean_text_value) if action_col else ""
     stock["거래처_완제품"] = parsed.loc[stock.index, customer_col].map(clean_text_value) if customer_col else ""
     stock["신규분류_완제품"] = parsed.loc[stock.index, category_col].map(clean_text_value) if category_col else ""
     stock["착용주기_완제품"] = parsed.loc[stock.index, wear_col].map(clean_text_value) if wear_col else ""
@@ -6533,9 +6564,12 @@ def read_finished_goods_stock_summary(stock_path_str: str, refresh_key: str) -> 
         .agg(
             {
                 "완제품재고": "sum",
+                "재고변화": "sum",
                 "DOI기준오더": "sum",
                 "DOI": lambda s: s[s > 0].median() if (s > 0).any() else 0,
+                "재고비율": lambda s: summarize_unique(s, head_count=1),
                 "신호": summarize_signal_values,
+                "재고대응판단": lambda s: summarize_unique(s, head_count=1),
                 "거래처_완제품": lambda s: summarize_unique(s, head_count=2),
                 "신규분류_완제품": lambda s: summarize_unique(s, head_count=2),
                 "착용주기_완제품": lambda s: summarize_unique(s, head_count=2),
@@ -6707,10 +6741,10 @@ def build_all_item_status_snapshot(refresh_key: str, base_dir_str: str | None = 
         finished_goods_summary = read_finished_goods_stock_summary(str(finished_goods_stock_path), refresh_key)
         if not finished_goods_summary.empty:
             all_items = all_items.merge(finished_goods_summary, on="생산코드", how="left")
-    for col in ["완제품재고", "DOI기준오더", "DOI"]:
+    for col in ["완제품재고", "재고변화", "DOI기준오더", "DOI"]:
         if col not in all_items.columns:
             all_items[col] = 0
-    for col in ["신호", "거래처_완제품", "신규분류_완제품", "착용주기_완제품"]:
+    for col in ["재고비율", "신호", "재고대응판단", "거래처_완제품", "신규분류_완제품", "착용주기_완제품"]:
         if col not in all_items.columns:
             all_items[col] = ""
     all_items["거래처"] = apply_nonempty_override(all_items["거래처"], all_items["거래처_완제품"])
@@ -6769,7 +6803,9 @@ def build_all_item_status_snapshot(refresh_key: str, base_dir_str: str | None = 
         "사출코드",
         "분리코드",
         "생산코드",
+        "재고비율",
         "신호",
+        "재고대응판단",
         "판단",
     ]:
         if col not in all_items.columns:
@@ -6902,10 +6938,17 @@ def build_all_item_flow_status_snapshot(
         for initial, qty in zip(all_items["이니셜"], all_items["오더수량"])
     ]
     all_items[DEMAND_DETAIL_ROWS_COL] = ROW_DETAIL_MARKER
-    all_items["완제품재고"] = 0
-    all_items["DOI기준오더"] = 0
-    all_items["DOI"] = 0
-    all_items["신호"] = ""
+    finished_goods_stock_path = find_finished_goods_stock_file(data_base_dir)
+    if finished_goods_stock_path is not None:
+        finished_goods_summary = read_finished_goods_stock_summary(str(finished_goods_stock_path), refresh_key)
+        if not finished_goods_summary.empty:
+            all_items = all_items.merge(finished_goods_summary, on="생산코드", how="left")
+    for col in ["완제품재고", "재고변화", "DOI기준오더", "DOI"]:
+        if col not in all_items.columns:
+            all_items[col] = 0
+    for col in ["재고비율", "신호", "재고대응판단"]:
+        if col not in all_items.columns:
+            all_items[col] = ""
     all_items["초과재고수량"] = (all_items["공정재고합계"] - all_items["총수요수량"]).clip(lower=0)
     all_items["샘플 신청가능수량"] = 0
     all_items["판단"] = "수요 있음"
@@ -7845,9 +7888,12 @@ def build_all_item_product_flow_summary(working: pd.DataFrame) -> pd.DataFrame:
                 "사출부족수량",
                 "공정재고합계",
                 "완제품재고",
+                "재고변화",
                 "DOI기준오더",
                 "DOI",
+                "재고비율",
                 "신호",
+                "재고대응판단",
                 INITIAL_ORDER_MAP_COL,
                 DEMAND_DETAIL_ROWS_COL,
             ]
@@ -7874,10 +7920,6 @@ def build_all_item_product_flow_summary(working: pd.DataFrame) -> pd.DataFrame:
                 "_납기일_dt": "min",
                 "생산부족수량": "sum",
                 "사출부족수량": "sum",
-                "완제품재고": "max",
-                "DOI기준오더": "max",
-                "DOI": "max",
-                "신호": "first",
             }
         )
         .rename(columns={"생산부족수량": "부족수량"})
@@ -7888,8 +7930,27 @@ def build_all_item_product_flow_summary(working: pd.DataFrame) -> pd.DataFrame:
         .sum()
         .rename(columns={"공정재고합계": "공정재고"})
     )
-    grouped = order_group.merge(stock_group, on=group_keys, how="left")
+    finished_stock_group = (
+        base.drop_duplicates([*group_keys, "생산코드"])
+        .groupby(group_keys, as_index=False)
+        .agg(
+            {
+                "완제품재고": "sum",
+                "재고변화": "sum",
+                "DOI기준오더": "sum",
+                "DOI": "max",
+                "재고비율": lambda s: summarize_unique(s, head_count=1),
+                "신호": summarize_signal_values,
+                "재고대응판단": lambda s: summarize_unique(s, head_count=1),
+            }
+        )
+    )
+    grouped = order_group.merge(stock_group, on=group_keys, how="left").merge(finished_stock_group, on=group_keys, how="left")
     grouped["공정재고"] = parse_mixed_numeric(grouped["공정재고"]).fillna(0)
+    for col in ["완제품재고", "재고변화", "DOI기준오더", "DOI"]:
+        grouped[col] = parse_mixed_numeric(grouped.get(col, pd.Series(0, index=grouped.index))).fillna(0)
+    for col in ["재고비율", "신호", "재고대응판단"]:
+        grouped[col] = grouped.get(col, pd.Series("", index=grouped.index)).astype(str).replace({"nan": "", "None": ""}).fillna("")
     grouped["납기일"] = pd.to_datetime(grouped["_납기일_dt"], errors="coerce").dt.strftime("%Y-%m-%d").fillna("-")
     grouped = grouped.drop(columns=["_납기일_dt"], errors="ignore")
     doi_order_mask = grouped["DOI기준오더"] > 0
@@ -7907,7 +7968,7 @@ def build_all_item_product_flow_summary(working: pd.DataFrame) -> pd.DataFrame:
 def filter_all_item_flow_query(df: pd.DataFrame, query: str) -> pd.DataFrame:
     search_columns = [
         col
-        for col in ["사이트코드", "제품대분류", "거래처그룹", "거래처", "이니셜", "신규분류", "제품명", "생산코드", "신호"]
+        for col in ["사이트코드", "제품대분류", "거래처그룹", "거래처", "이니셜", "신규분류", "제품명", "생산코드", "재고비율", "신호", "재고대응판단"]
         if col in df.columns
     ]
     return filter_with_terms_any(df, search_columns, query) if query else df
@@ -7994,8 +8055,10 @@ def filter_all_item_excel_activity_rows(working: pd.DataFrame) -> pd.DataFrame:
         | (working["사출부족수량"] > 0)
         | (working["공정재고합계"] > 0)
         | (working["완제품재고"] > 0)
+        | (working["재고변화"] != 0)
         | (working["DOI"] > 0)
         | working["신호"].astype(str).str.strip().ne("")
+        | working["재고대응판단"].astype(str).str.strip().ne("")
     )
     return working[activity_mask].copy()
 
@@ -8029,8 +8092,14 @@ def build_all_item_customer_excel_sheet(scope: pd.DataFrame) -> pd.DataFrame:
                 "검사접착재고": 0.0,
                 "누수규격재고": 0.0,
                 "공정재고 합계": 0.0,
+                "완제품재고": 0.0,
+                "재고변화": 0.0,
+                "DOI기준오더": 0.0,
                 "DOI": 0.0,
+                "재고비율": "",
                 "_상태값": [],
+                "_재고신호값": [],
+                "_재고대응판단값": [],
                 "_이니셜오더": {},
             }
 
@@ -8053,7 +8122,19 @@ def build_all_item_customer_excel_sheet(scope: pd.DataFrame) -> pd.DataFrame:
         row["검사접착재고"] = max(numeric_scalar(row["검사접착재고"]), numeric_scalar(source.get("검사접착창고", 0)))
         row["누수규격재고"] = max(numeric_scalar(row["누수규격재고"]), numeric_scalar(source.get("누수규격검사", 0)))
         row["공정재고 합계"] = max(numeric_scalar(row["공정재고 합계"]), numeric_scalar(source.get("공정재고합계", 0)))
+        row["완제품재고"] = max(numeric_scalar(row["완제품재고"]), numeric_scalar(source.get("완제품재고", 0)))
+        row["재고변화"] = numeric_scalar(source.get("재고변화", row["재고변화"]))
+        row["DOI기준오더"] = max(numeric_scalar(row["DOI기준오더"]), numeric_scalar(source.get("DOI기준오더", 0)))
         row["DOI"] = max(numeric_scalar(row["DOI"]), numeric_scalar(source.get("DOI", 0)))
+        stock_ratio = clean_text_value(source.get("재고비율", ""))
+        if stock_ratio:
+            row["재고비율"] = stock_ratio
+        stock_signal = clean_text_value(source.get("신호", ""))
+        if stock_signal and stock_signal not in row["_재고신호값"]:
+            row["_재고신호값"].append(stock_signal)
+        stock_action = clean_text_value(source.get("재고대응판단", ""))
+        if stock_action and stock_action not in row["_재고대응판단값"]:
+            row["_재고대응판단값"].append(stock_action)
         status = clean_text_value(source.get("상태", ""))
         if status and status not in row["_상태값"]:
             row["_상태값"].append(status)
@@ -8076,7 +8157,13 @@ def build_all_item_customer_excel_sheet(scope: pd.DataFrame) -> pd.DataFrame:
                 "검사접착재고": row["검사접착재고"],
                 "누수규격재고": row["누수규격재고"],
                 "공정재고 합계": row["공정재고 합계"],
+                "완제품재고": row["완제품재고"],
+                "재고변화": row["재고변화"],
+                "DOI기준오더": row["DOI기준오더"],
                 "DOI": row["DOI"],
+                "재고비율": row["재고비율"],
+                "신호": ", ".join(row["_재고신호값"]),
+                "재고대응판단": ", ".join(row["_재고대응판단값"]),
                 "상태": ", ".join(row["_상태값"]),
             }
         )
