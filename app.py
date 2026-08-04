@@ -8738,9 +8738,15 @@ def render_all_item_site_customer_summary(view_flow: pd.DataFrame, selected_site
     if view_flow.empty or "거래처그룹" not in view_flow.columns:
         return
 
-    initial_col, product_col, order_col, _due_col, shortage_col, injection_col, stock_col = (
-        ALL_ITEM_FLOW_DISPLAY_COLUMNS
-    )
+    initial_col = "이니셜"
+    product_col = "제품명"
+    order_col = "오더수량"
+    shortage_col = "부족수량"
+    injection_col = "사출부족수량"
+    stock_col = "공정재고"
+    finished_stock_col = "완제품재고"
+    stock_change_col = "재고변화"
+    doi_col = "DOI"
     required_columns = [
         "제품대분류",
         "거래처그룹",
@@ -8755,20 +8761,30 @@ def render_all_item_site_customer_summary(view_flow: pd.DataFrame, selected_site
         return
 
     summary_source = view_flow.copy()
-    for qty_col in [order_col, shortage_col, injection_col, stock_col]:
-        summary_source[qty_col] = parse_mixed_numeric(summary_source[qty_col]).fillna(0)
+    optional_numeric_columns = [finished_stock_col, stock_change_col, doi_col]
+    for qty_col in [order_col, shortage_col, injection_col, stock_col, *optional_numeric_columns]:
+        if qty_col in summary_source.columns:
+            summary_source[qty_col] = parse_mixed_numeric(summary_source[qty_col]).fillna(0)
+
+    agg_map = {
+        "제품분류": ("제품대분류", summarize_unique),
+        "제품수": (product_col, "nunique"),
+        "이니셜수": (initial_col, "nunique"),
+        "오더수량": (order_col, "sum"),
+        "부족수량": (shortage_col, "sum"),
+        "사출부족수량": (injection_col, "sum"),
+        "공정재고": (stock_col, "sum"),
+    }
+    if finished_stock_col in summary_source.columns:
+        agg_map["완제품재고"] = (finished_stock_col, "sum")
+    if stock_change_col in summary_source.columns:
+        agg_map["재고변화"] = (stock_change_col, "sum")
+    if doi_col in summary_source.columns:
+        agg_map["최대DOI"] = (doi_col, "max")
 
     summary = (
         summary_source.groupby("거래처그룹", as_index=False)
-        .agg(
-            제품분류=("제품대분류", summarize_unique),
-            제품수=(product_col, "nunique"),
-            이니셜수=(initial_col, "nunique"),
-            오더수량=(order_col, "sum"),
-            부족수량=(shortage_col, "sum"),
-            사출부족수량=(injection_col, "sum"),
-            공정재고=(stock_col, "sum"),
-        )
+        .agg(**agg_map)
         .sort_values(["오더수량", "부족수량", "사출부족수량"], ascending=[False, False, False])
         .reset_index(drop=True)
     )
