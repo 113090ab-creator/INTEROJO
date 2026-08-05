@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -13,7 +14,7 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 WORK_DIR = BASE_DIR / ".codex_tmp" / "pcode_template"
 OUTPUT_DIR = BASE_DIR / "outputs" / "pcode_template"
 INPUT_JSON = WORK_DIR / "pcode_auto_rows.json"
-OUTPUT_PATH = OUTPUT_DIR / "전체_P코드_수식형_거래처별_양식.xlsx"
+OUTPUT_FILE_STEM = "전체_P코드_수식형_거래처별_양식"
 
 MASTER_SHEET = "품목마스터"
 DEMAND_SHEET = "수요_집계"
@@ -115,6 +116,12 @@ def safe_sheet_name(raw, used):
         idx += 1
     used.add(name)
     return name
+
+
+def output_path_for(site_filter=None):
+    site = clean_text(site_filter)
+    suffix = f"_{site}" if site else ""
+    return OUTPUT_DIR / f"{OUTPUT_FILE_STEM}{suffix}.xlsx"
 
 
 def set_widths(ws, widths):
@@ -277,9 +284,10 @@ def customer_formula_row(ws, master_row, row_idx, headers, initial_headers, rang
     values.append(
         f'=IF(COUNTIFS(\'{DEMAND_SHEET}\'!$A${FIRST_DATA_ROW}:$A${ranges["demand_last"]},$B$3,'
         f'\'{DEMAND_SHEET}\'!$B${FIRST_DATA_ROW}:$B${ranges["demand_last"]},$A{row_idx})=0,"",'
-        f'MINIFS(\'{DEMAND_SHEET}\'!$E${FIRST_DATA_ROW}:$E${ranges["demand_last"]},'
-        f'\'{DEMAND_SHEET}\'!$A${FIRST_DATA_ROW}:$A${ranges["demand_last"]},$B$3,'
-        f'\'{DEMAND_SHEET}\'!$B${FIRST_DATA_ROW}:$B${ranges["demand_last"]},$A{row_idx}))'
+        f'IFERROR(AGGREGATE(15,6,\'{DEMAND_SHEET}\'!$E${FIRST_DATA_ROW}:$E${ranges["demand_last"]}/'
+        f'((\'{DEMAND_SHEET}\'!$A${FIRST_DATA_ROW}:$A${ranges["demand_last"]}=$B$3)*'
+        f'(\'{DEMAND_SHEET}\'!$B${FIRST_DATA_ROW}:$B${ranges["demand_last"]}=$A{row_idx})*'
+        f'(\'{DEMAND_SHEET}\'!$E${FIRST_DATA_ROW}:$E${ranges["demand_last"]}>0)),1),""))'
     )
     values.append(
         f'=SUMIFS(\'{DEMAND_SHEET}\'!$F${FIRST_DATA_ROW}:$F${ranges["demand_last"]},'
@@ -351,9 +359,12 @@ def append_customer_sheet(wb, customer, rows, initial_headers, ranges, used_name
     return sheet_name
 
 
-def build_workbook():
+def build_workbook(site_filter=None):
     payload = json.loads(INPUT_JSON.read_text(encoding="utf-8"))
+    site_filter = clean_text(site_filter)
     rows = payload["rows"]
+    if site_filter:
+        rows = [row for row in rows if clean_text(row.get("관")) == site_filter]
     master_rows, demand_rows, wip_rows, finished_rows, customers, customer_rows, customer_initials = build_source_rows(rows)
     ranges = {
         "demand_last": HEADER_ROW + max(len(demand_rows), 1),
@@ -379,6 +390,7 @@ def build_workbook():
     guide.append([])
     styled_header(guide, ["구분", "내용", "행수/비고", ""])
     guide_rows = [
+        ["관 필터", site_filter or "전체", "생성 시점 필터", ""],
         ["품목마스터", "품목리스트(대량) 기준으로 전체 P코드를 고정값으로 보관합니다.", f"{len(master_rows):,}개 P코드", ""],
         ["수요_집계", "오더수량, 납기일, 부족수량, 사출부족수량의 계산 원천입니다.", f"{len(demand_rows):,}행", ""],
         ["공정재고_집계", "사출/분리/검사접착/누수규격 재고와 공정재고 합계 원천입니다.", f"{len(wip_rows):,}행", ""],
@@ -445,8 +457,9 @@ def build_workbook():
         sheet_map.append((customer, sheet_name, len(customer_rows[customer]), len(customer_initials.get(customer, []))))
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    wb.save(OUTPUT_PATH)
-    return OUTPUT_PATH, len(master_rows), len(demand_rows), len(customers), sheet_map
+    output_path = output_path_for(site_filter)
+    wb.save(output_path)
+    return output_path, len(master_rows), len(demand_rows), len(customers), sheet_map
 
 
 def verify(path: Path):
@@ -468,18 +481,22 @@ def verify(path: Path):
 
 
 if __name__ == "__main__":
-    path, rows, demand_rows, customers, sheet_map = build_workbook()
-    checks = verify(path)
-    print(
-        json.dumps(
+    site_filters = [arg.strip() for arg in sys.argv[1:] if arg.strip()]
+    if not site_filters:
+        site_filters = [""]
+
+    results = []
+    for site_filter in site_filters:
+        path, rows, demand_rows, customers, sheet_map = build_workbook(site_filter)
+        checks = verify(path)
+        results.append(
             {
+                "site_filter": site_filter or "전체",
                 "output": str(path),
                 "rows": rows,
                 "demand_rows": demand_rows,
                 "customers": customers,
                 "checks": checks,
-            },
-            ensure_ascii=False,
-            indent=2,
+            }
         )
-    )
+    print(json.dumps(results, ensure_ascii=False, indent=2))

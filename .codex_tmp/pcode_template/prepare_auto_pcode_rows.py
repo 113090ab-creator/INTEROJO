@@ -287,6 +287,7 @@ def main() -> None:
     for rec in data.to_dict(orient="records"):
         rows.append(
             {
+                "관": rec["site"],
                 "거래처그룹": rec["customer_group"],
                 "제품분류": rec["primary"],
                 "생산코드": rec["production_code"],
