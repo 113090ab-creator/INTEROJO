@@ -96,6 +96,8 @@ EFFECTIVE_PRODUCTION_CATEGORY_ORDER = ("국내", "PIA", "기타해외")
 EFFECTIVE_PRODUCTION_DEFAULT_SITE = "C관"
 EFFECTIVE_PRODUCTION_DEFAULT_DAYS = 60
 EFFECTIVE_PRODUCTION_SOURCE_DIR = BASE_DIR / "effective_production_sources"
+EFFECTIVE_PRODUCTION_DOI_CRITERIA_FILE = "c_site_pcode_power_doi_criteria.csv"
+EFFECTIVE_OVERPRODUCTION_ACTION_ORDER = ("생산자제", "생산조정", "계획초과 확인", "모니터링")
 ITEM_LIST_BULK_ENDPOINT = "/api/item-list-bulk"
 ALL_ITEM_MASTER_SHEET = "생성가능_P코드"
 ALL_ITEM_SNAPSHOT_FILE = "all_item_status_snapshot.csv.gz"
@@ -10825,6 +10827,13 @@ def format_effective_pct(value: object) -> str:
         return "0.0%"
 
 
+def format_effective_decimal(value: object, digits: int = 1) -> str:
+    try:
+        return f"{float(value):,.{digits}f}"
+    except (TypeError, ValueError):
+        return f"{0:.{digits}f}"
+
+
 def classify_effective_major_category(row: pd.Series) -> str:
     customer = clean_text_value(row.get("거래처", ""))
     product_name = clean_text_value(row.get("제품명", ""))
@@ -11448,6 +11457,7 @@ def build_effective_source_signature(source_dir: Path) -> tuple[tuple[str, str, 
         return tuple()
     source_paths = [path for _date, path in effective_report.find_input_files(source_dir)]
     source_paths.append(source_dir / effective_report.CLASSIFICATION_FILE)
+    source_paths.append(source_dir / EFFECTIVE_PRODUCTION_DOI_CRITERIA_FILE)
     signature: list[tuple[str, str, int, int]] = []
     for path in source_paths:
         if not path.exists():
@@ -11823,6 +11833,464 @@ def build_top_production_products_figure(detail: pd.DataFrame, top_n: int = 12) 
     return fig
 
 
+def normalize_effective_doi_reference(source: pd.DataFrame, site_filter: str = EFFECTIVE_PRODUCTION_DEFAULT_SITE) -> pd.DataFrame:
+    output_columns = [
+        "제품코드",
+        "제품명_DOI",
+        "거래처그룹_DOI",
+        "거래처_DOI",
+        "이니셜목록_DOI",
+        "현재DOI",
+        "기준DOI하한",
+        "기준DOI상한",
+        "DOI상태",
+        "기준등급",
+        "DOI판단상태",
+        "DOI판단메모",
+        "신제품여부",
+        "완제품재고",
+        "공정재고합계",
+        "DOI기준오더",
+        "DOI기준오더수량",
+        "DOI기준부족수량",
+        "DOI기준사출부족수량",
+        "DOI우선순위점수",
+    ]
+    if source.empty:
+        return pd.DataFrame(columns=output_columns)
+
+    work = source.copy()
+    work.columns = [str(column).strip() for column in work.columns]
+    if "사이트코드" in work.columns:
+        scoped_site = clean_text_value(site_filter)
+        if scoped_site and scoped_site != "전체":
+            work = work[work["사이트코드"].map(normalize_site_group).eq(scoped_site)].copy()
+    if work.empty:
+        return pd.DataFrame(columns=output_columns)
+
+    columns = work.columns.tolist()
+    code_col = pick_first_existing_column(columns, ["생산코드", "제품코드", "품목코드"])
+    if code_col is None:
+        return pd.DataFrame(columns=output_columns)
+
+    result = pd.DataFrame({"제품코드": work[code_col].map(normalize_item_code_value)})
+    result = result[result["제품코드"].str.startswith("P", na=False)].copy()
+    if result.empty:
+        return pd.DataFrame(columns=output_columns)
+
+    text_candidates = {
+        "제품명_DOI": ["제품명", "제품명_DOI"],
+        "거래처그룹_DOI": ["거래처그룹", "거래처그룹_DOI"],
+        "거래처_DOI": ["거래처", "거래처_DOI"],
+        "이니셜목록_DOI": ["이니셜목록", "이니셜", "이니셜목록_DOI"],
+        "DOI상태": ["DOI상태", "DOI 상태"],
+        "기준등급": ["기준등급", "품목등급"],
+        "DOI판단상태": ["상태", "DOI판단상태", "판단"],
+        "DOI판단메모": ["판단메모", "DOI판단메모", "재고대응판단"],
+        "신제품여부": ["신제품여부"],
+    }
+    numeric_candidates = {
+        "현재DOI": ["현재DOI", "DOI", "DOI_가중", "DOI_중앙값"],
+        "기준DOI하한": ["기준DOI하한"],
+        "기준DOI상한": ["기준DOI상한", "DOI_상한"],
+        "완제품재고": ["완제품재고"],
+        "공정재고합계": ["공정재고합계"],
+        "DOI기준오더": ["DOI기준오더"],
+        "DOI기준오더수량": ["오더수량", "DOI기준오더수량"],
+        "DOI기준부족수량": ["생산부족수량", "부족수량", "DOI기준부족수량"],
+        "DOI기준사출부족수량": ["사출부족수량", "DOI기준사출부족수량"],
+        "DOI우선순위점수": ["우선순위점수"],
+    }
+
+    for output_col, candidates in text_candidates.items():
+        source_col = pick_first_existing_column(columns, candidates)
+        result[output_col] = (
+            work.loc[result.index, source_col].map(clean_text_value)
+            if source_col is not None
+            else ""
+        )
+    for output_col, candidates in numeric_candidates.items():
+        source_col = pick_first_existing_column(columns, candidates)
+        result[output_col] = (
+            parse_mixed_numeric(work.loc[result.index, source_col])
+            if source_col is not None
+            else 0.0
+        )
+
+    grouped = (
+        result[output_columns]
+        .groupby("제품코드", as_index=False)
+        .agg(
+            제품명_DOI=("제품명_DOI", lambda s: summarize_unique(s, head_count=1)),
+            거래처그룹_DOI=("거래처그룹_DOI", lambda s: summarize_unique(s, head_count=1)),
+            거래처_DOI=("거래처_DOI", lambda s: summarize_unique(s, head_count=1)),
+            이니셜목록_DOI=("이니셜목록_DOI", lambda s: summarize_unique(s, head_count=1)),
+            현재DOI=("현재DOI", "max"),
+            기준DOI하한=("기준DOI하한", "max"),
+            기준DOI상한=("기준DOI상한", "max"),
+            DOI상태=("DOI상태", lambda s: summarize_unique(s, head_count=1)),
+            기준등급=("기준등급", lambda s: summarize_unique(s, head_count=1)),
+            DOI판단상태=("DOI판단상태", lambda s: summarize_unique(s, head_count=1)),
+            DOI판단메모=("DOI판단메모", lambda s: summarize_unique(s, head_count=1)),
+            신제품여부=("신제품여부", lambda s: summarize_unique(s, head_count=1)),
+            완제품재고=("완제품재고", "max"),
+            공정재고합계=("공정재고합계", "max"),
+            DOI기준오더=("DOI기준오더", "max"),
+            DOI기준오더수량=("DOI기준오더수량", "sum"),
+            DOI기준부족수량=("DOI기준부족수량", "sum"),
+            DOI기준사출부족수량=("DOI기준사출부족수량", "sum"),
+            DOI우선순위점수=("DOI우선순위점수", "max"),
+        )
+    )
+    return grouped[output_columns]
+
+
+@st.cache_data(show_spinner=False, max_entries=CACHE_MAX_ENTRIES)
+def load_effective_doi_reference(
+    source_dir_str: str,
+    source_signature: tuple[tuple[str, str, int, int], ...],
+) -> tuple[pd.DataFrame, str]:
+    _ = source_signature
+    source_dir = Path(source_dir_str)
+    criteria_path = source_dir / EFFECTIVE_PRODUCTION_DOI_CRITERIA_FILE
+    if criteria_path.exists():
+        try:
+            criteria = pd.read_csv(criteria_path, encoding="utf-8-sig")
+        except Exception:
+            criteria = pd.DataFrame()
+        doi_reference = normalize_effective_doi_reference(criteria, EFFECTIVE_PRODUCTION_DEFAULT_SITE)
+        if not doi_reference.empty:
+            return doi_reference, f"{EFFECTIVE_PRODUCTION_DEFAULT_SITE} DOI 기준: {criteria_path.name}"
+
+    try:
+        all_items, _code_mismatch = load_cloud_all_item_status_snapshot()
+    except Exception:
+        all_items = pd.DataFrame()
+    doi_reference = normalize_effective_doi_reference(all_items, EFFECTIVE_PRODUCTION_DEFAULT_SITE)
+    if not doi_reference.empty:
+        return doi_reference, f"{EFFECTIVE_PRODUCTION_DEFAULT_SITE} 전체 품목 스냅샷 DOI"
+    return doi_reference, "DOI 기준 없음"
+
+
+def classify_effective_overproduction_action(row: pd.Series) -> str:
+    doi_status = clean_text_value(row.get("DOI판단상태", ""))
+    current_doi = numeric_scalar(row.get("현재DOI", 0))
+    doi_upper = numeric_scalar(row.get("기준DOI상한", 0))
+    doi_excess = numeric_scalar(row.get("DOI초과일", 0))
+    ineffective_qty = numeric_scalar(row.get("비유효생산량", 0))
+    remaining_need = numeric_scalar(row.get("잔여필요수량", 0))
+
+    if doi_status == "생산지양":
+        return "생산자제"
+    if doi_status == "생산조정":
+        return "생산조정"
+    if doi_upper > 0 and current_doi >= doi_upper * 1.5:
+        return "생산자제"
+    if doi_excess > 0:
+        return "생산조정"
+    if ineffective_qty > 0 and remaining_need <= 0:
+        return "계획초과 확인"
+    return "모니터링"
+
+
+def build_effective_overproduction_candidates(
+    detail: pd.DataFrame,
+    doi_reference: pd.DataFrame,
+    top_n: int = 50,
+) -> pd.DataFrame:
+    required_columns = [
+        effective_report.OUTPUT_SKU_COL,
+        effective_report.OUTPUT_PRODUCT_NAME_COL,
+        effective_report.OUTPUT_PROCESS_COL,
+        effective_report.NEED_QTY_COL,
+        effective_report.ACTUAL_QTY_COL,
+        effective_report.EFFECTIVE_PRODUCTION_COL,
+        effective_report.INEFFECTIVE_PRODUCTION_COL,
+        effective_report.REMAINING_NEED_COL,
+    ]
+    if detail.empty or any(column not in detail.columns for column in required_columns):
+        return pd.DataFrame()
+
+    scope = detail.copy()
+    for column in [
+        effective_report.NEED_QTY_COL,
+        effective_report.ACTUAL_QTY_COL,
+        effective_report.EFFECTIVE_PRODUCTION_COL,
+        effective_report.INEFFECTIVE_PRODUCTION_COL,
+        effective_report.REMAINING_NEED_COL,
+    ]:
+        scope[column] = parse_mixed_numeric(scope[column])
+    scope = scope[scope[effective_report.ACTUAL_QTY_COL].gt(0)].copy()
+    if scope.empty:
+        return pd.DataFrame()
+
+    group_columns = [effective_report.OUTPUT_SKU_COL, effective_report.OUTPUT_PRODUCT_NAME_COL]
+    optional_dimensions = [
+        effective_report.MAJOR_CATEGORY_COL,
+        effective_report.SHEET_NAME_COL,
+    ]
+    for column in optional_dimensions:
+        if column in scope.columns:
+            group_columns.append(column)
+
+    summary = (
+        scope.groupby(group_columns, as_index=False)
+        .agg(
+            **{
+                "생산공정": (effective_report.OUTPUT_PROCESS_COL, join_unique_text_values),
+                "계획수량": (effective_report.NEED_QTY_COL, "sum"),
+                "생산량": (effective_report.ACTUAL_QTY_COL, "sum"),
+                "유효생산량": (effective_report.EFFECTIVE_PRODUCTION_COL, "sum"),
+                "비유효생산량": (effective_report.INEFFECTIVE_PRODUCTION_COL, "sum"),
+                "잔여필요수량": (effective_report.REMAINING_NEED_COL, "sum"),
+                "거래처": (effective_report.CUSTOMER_COL, lambda s: summarize_unique(s, head_count=2))
+                if effective_report.CUSTOMER_COL in scope.columns
+                else (effective_report.OUTPUT_PRODUCT_NAME_COL, lambda _s: ""),
+                "이니셜": (effective_report.INITIAL_COL, lambda s: summarize_unique(s, head_count=2))
+                if effective_report.INITIAL_COL in scope.columns
+                else (effective_report.OUTPUT_PRODUCT_NAME_COL, lambda _s: ""),
+            }
+        )
+        .copy()
+    )
+    summary["제품코드"] = summary[effective_report.OUTPUT_SKU_COL].map(normalize_item_code_value)
+    summary["비유효비중(%)"] = calculate_effective_rate(summary["비유효생산량"], summary["생산량"])
+
+    if doi_reference.empty:
+        merged = summary.copy()
+        for column in [
+            "현재DOI",
+            "기준DOI하한",
+            "기준DOI상한",
+            "완제품재고",
+            "공정재고합계",
+            "DOI기준오더",
+            "DOI기준오더수량",
+            "DOI기준부족수량",
+            "DOI기준사출부족수량",
+            "DOI우선순위점수",
+        ]:
+            merged[column] = 0.0
+        for column in ["DOI상태", "기준등급", "DOI판단상태", "DOI판단메모", "신제품여부"]:
+            merged[column] = ""
+    else:
+        merged = summary.merge(doi_reference, on="제품코드", how="left")
+        numeric_columns = [
+            "현재DOI",
+            "기준DOI하한",
+            "기준DOI상한",
+            "완제품재고",
+            "공정재고합계",
+            "DOI기준오더",
+            "DOI기준오더수량",
+            "DOI기준부족수량",
+            "DOI기준사출부족수량",
+            "DOI우선순위점수",
+        ]
+        for column in numeric_columns:
+            merged[column] = parse_mixed_numeric(merged.get(column, pd.Series(0, index=merged.index))).fillna(0)
+        for column in ["DOI상태", "기준등급", "DOI판단상태", "DOI판단메모", "신제품여부"]:
+            merged[column] = merged.get(column, pd.Series("", index=merged.index)).map(clean_text_value)
+
+    merged["DOI초과일"] = (merged["현재DOI"] - merged["기준DOI상한"]).where(merged["기준DOI상한"].gt(0), 0).clip(lower=0)
+    merged["조치"] = merged.apply(classify_effective_overproduction_action, axis=1)
+    action_rank = {action: index for index, action in enumerate(EFFECTIVE_OVERPRODUCTION_ACTION_ORDER)}
+    merged["조치순위"] = merged["조치"].map(action_rank).fillna(len(action_rank))
+    merged["생산자제점수"] = (
+        merged["비유효생산량"] * 10
+        + merged["DOI초과일"] * 10
+        + merged["현재DOI"]
+        + merged["완제품재고"] * 0.02
+    )
+    candidate_mask = (
+        merged["비유효생산량"].gt(0)
+        | merged["DOI초과일"].gt(0)
+        | merged["DOI판단상태"].isin(["생산지양", "생산조정"])
+    )
+    candidates = merged[candidate_mask].copy()
+    if candidates.empty:
+        return candidates
+
+    preferred_columns = [
+        "조치",
+        "제품코드",
+        effective_report.OUTPUT_PRODUCT_NAME_COL,
+        "생산공정",
+        "계획수량",
+        "생산량",
+        "유효생산량",
+        "비유효생산량",
+        "비유효비중(%)",
+        "잔여필요수량",
+        "현재DOI",
+        "기준DOI상한",
+        "DOI초과일",
+        "완제품재고",
+        "공정재고합계",
+        "DOI판단상태",
+        "DOI판단메모",
+        "DOI상태",
+        "기준등급",
+        "거래처",
+        "이니셜",
+        *[column for column in optional_dimensions if column in candidates.columns],
+        "생산자제점수",
+        "조치순위",
+    ]
+    return candidates[preferred_columns].sort_values(
+        ["조치순위", "비유효생산량", "DOI초과일", "현재DOI", "생산자제점수"],
+        ascending=[True, False, False, False, False],
+    ).head(top_n).reset_index(drop=True)
+
+
+def build_effective_overproduction_figure(candidates: pd.DataFrame, top_n: int = 12) -> go.Figure:
+    fig = go.Figure()
+    if candidates.empty:
+        fig.add_annotation(text="표시할 생산자제 후보가 없습니다.", showarrow=False, x=0.5, y=0.5)
+        fig.update_layout(height=300, margin={"l": 10, "r": 10, "t": 16, "b": 10})
+        return fig
+
+    chart = candidates.head(top_n).copy()
+    labels: list[str] = []
+    for idx, row in chart.iterrows():
+        code = clean_text_value(row.get("제품코드", ""))
+        name = clean_text_value(row.get(effective_report.OUTPUT_PRODUCT_NAME_COL, ""))
+        short_name = name[:24] + "..." if len(name) > 24 else name
+        labels.append(f"{idx + 1}. {code}" + (f" · {short_name}" if short_name else ""))
+    chart["표시품목"] = labels
+    ordered_labels = labels[::-1]
+    chart["표시품목"] = pd.Categorical(chart["표시품목"], categories=ordered_labels, ordered=True)
+
+    action_colors = {
+        "생산자제": "#dc2626",
+        "생산조정": "#f97316",
+        "계획초과 확인": "#d97706",
+        "모니터링": "#64748b",
+    }
+    for action in EFFECTIVE_OVERPRODUCTION_ACTION_ORDER:
+        rows = chart[chart["조치"].eq(action)].sort_values("표시품목")
+        if rows.empty:
+            continue
+        fig.add_trace(
+            go.Bar(
+                x=rows["비유효생산량"],
+                y=rows["표시품목"],
+                orientation="h",
+                name=action,
+                marker={"color": action_colors.get(action, "#64748b")},
+                customdata=rows[
+                    [
+                        "현재DOI",
+                        "기준DOI상한",
+                        "완제품재고",
+                        "생산량",
+                        "비유효비중(%)",
+                    ]
+                ].to_numpy(),
+                hovertemplate=(
+                    "%{y}<br>%{fullData.name}<br>"
+                    "비유효생산량 %{x:,.0f}<br>"
+                    "생산량 %{customdata[3]:,.0f} / 비유효비중 %{customdata[4]:.1f}%<br>"
+                    "DOI %{customdata[0]:.1f} / 기준상한 %{customdata[1]:.1f}<br>"
+                    "완제품재고 %{customdata[2]:,.0f}<extra></extra>"
+                ),
+            )
+        )
+    fig.update_layout(
+        barmode="stack",
+        height=max(360, 32 * len(ordered_labels) + 110),
+        margin={"l": 12, "r": 24, "t": 18, "b": 36},
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "right", "x": 1},
+        hovermode="closest",
+    )
+    fig.update_xaxes(title_text="비유효생산량", rangemode="tozero", tickformat=",")
+    fig.update_yaxes(title_text="", categoryorder="array", categoryarray=ordered_labels)
+    return fig
+
+
+def render_effective_overproduction_panel(
+    candidates: pd.DataFrame,
+    doi_source_label: str,
+    month_label: str,
+) -> None:
+    st.markdown("#### 생산자제 신호")
+    st.caption(
+        f"{EFFECTIVE_PRODUCTION_DEFAULT_SITE} 기준 DOI와 생산유효도를 함께 봅니다. "
+        "DOI 기준을 초과했거나 계획 대비 비유효생산량이 큰 품목을 먼저 표시합니다."
+    )
+    st.caption(f"DOI 소스: {doi_source_label}")
+
+    if candidates.empty:
+        st.success(f"{month_label} 기준으로 생산자제 후보가 없습니다.")
+        return
+
+    action_scope = candidates[candidates["조치"].isin(["생산자제", "생산조정"])].copy()
+    if action_scope.empty:
+        action_scope = candidates.copy()
+    doi_excess_count = int(candidates["DOI초과일"].gt(0).sum()) if "DOI초과일" in candidates.columns else 0
+    max_doi = float(parse_mixed_numeric(candidates["현재DOI"]).max()) if "현재DOI" in candidates.columns else 0.0
+
+    kpi_cols = st.columns(4, gap="medium")
+    with kpi_cols[0]:
+        render_dashboard_kpi("생산자제/조정 품목", f"{len(action_scope):,}", "risk")
+    with kpi_cols[1]:
+        render_dashboard_kpi("비유효생산량", f"{action_scope['비유효생산량'].sum():,.0f}", "risk")
+    with kpi_cols[2]:
+        render_dashboard_kpi("DOI 기준초과 품목", f"{doi_excess_count:,}", "risk")
+    with kpi_cols[3]:
+        render_dashboard_kpi("최대 DOI", format_effective_decimal(max_doi), "stock")
+
+    top = candidates.iloc[0]
+    top_code = clean_text_value(top.get("제품코드", ""))
+    top_name = clean_text_value(top.get(effective_report.OUTPUT_PRODUCT_NAME_COL, ""))
+    st.warning(
+        f"우선 확인: {top_code} {top_name} · {top['조치']} · "
+        f"비유효 {format_effective_int(top['비유효생산량'])} / "
+        f"DOI {format_effective_decimal(top['현재DOI'])}"
+    )
+
+    st.plotly_chart(build_effective_overproduction_figure(candidates, top_n=12), width="stretch")
+
+    table_columns = [
+        "조치",
+        "제품코드",
+        effective_report.OUTPUT_PRODUCT_NAME_COL,
+        "생산공정",
+        "생산량",
+        "비유효생산량",
+        "비유효비중(%)",
+        "잔여필요수량",
+        "현재DOI",
+        "기준DOI상한",
+        "DOI초과일",
+        "완제품재고",
+        "DOI판단상태",
+        "DOI판단메모",
+    ]
+    table_columns = [column for column in table_columns if column in candidates.columns]
+    with st.expander("생산자제 후보 상세", expanded=True):
+        st.dataframe(
+            candidates[table_columns],
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "생산량": st.column_config.NumberColumn("생산량", format="%d"),
+                "비유효생산량": st.column_config.NumberColumn("비유효생산량", format="%d"),
+                "비유효비중(%)": st.column_config.ProgressColumn(
+                    "비유효비중(%)",
+                    format="%.1f%%",
+                    min_value=0,
+                    max_value=100,
+                ),
+                "잔여필요수량": st.column_config.NumberColumn("잔여필요수량", format="%d"),
+                "현재DOI": st.column_config.NumberColumn("현재DOI", format="%.1f"),
+                "기준DOI상한": st.column_config.NumberColumn("기준DOI상한", format="%.1f"),
+                "DOI초과일": st.column_config.NumberColumn("DOI초과일", format="%.1f"),
+                "완제품재고": st.column_config.NumberColumn("완제품재고", format="%d"),
+            },
+        )
+
+
 def render_effective_production_dashboard() -> None:
     st.subheader("생산유효도 분석")
     st.caption("기존 생산유효도 앱의 계산 정의를 그대로 사용합니다.")
@@ -11874,6 +12342,8 @@ def render_effective_production_dashboard() -> None:
     month_major = filter_effective_report_month(major_category_df, effective_report.DATE_COL, selected_month)
     month_detail = prepare_original_effective_detail_table(detail_df, selected_month)
     month_label = format_effective_month_short_label(selected_month)
+    doi_reference, doi_source_label = load_effective_doi_reference(str(EFFECTIVE_PRODUCTION_SOURCE_DIR), source_signature)
+    overproduction_candidates = build_effective_overproduction_candidates(month_detail, doi_reference, top_n=50)
 
     st.caption(
         f"데이터 소스: {metadata['source']} · 수요기간: "
@@ -11887,6 +12357,8 @@ def render_effective_production_dashboard() -> None:
         f"매칭 기준: {metadata['match_key']}"
     )
     st.info("같은 일자의 계획수량과 샘플제외 양품수량을 제품코드 전체 문자열 기준으로 매칭합니다. 공정별 KPI만 표시하며 두 공정 합산 KPI는 표시하지 않습니다.")
+
+    render_effective_overproduction_panel(overproduction_candidates, doi_source_label, month_label)
 
     process_kpi_cols = st.columns(2)
     for column, process in zip(process_kpi_cols, effective_report.TARGET_PROCESSES):
@@ -12107,7 +12579,7 @@ def main() -> None:
         else:
             sync_plan_api_data_mode()
             if selected_top_view == "전체 품목 현황":
-                default_all_item_site_filter = "A관" if is_plan_api_enabled() else "전체"
+                default_all_item_site_filter = EFFECTIVE_PRODUCTION_DEFAULT_SITE if is_plan_api_enabled() else "전체"
                 all_item_site_filter = st.pills(
                     "전체품목 관",
                     options=[*SITE_GROUP_ORDER, "전체"],
