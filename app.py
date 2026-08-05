@@ -12021,7 +12021,7 @@ def load_effective_sample_available_reference(
                     .reset_index(drop=True)
                 )
                 api_reference = api_reference[api_reference[EFFECTIVE_SAMPLE_AVAILABLE_COL].gt(0)].copy()
-                api_reference["샘플수량출처"] = "APS 계획 API"
+                api_reference["샘플수량출처"] = "APS 샘플신청가능수량"
                 references.append(api_reference)
 
     master_path = find_all_item_master_file(Path(base_dir_str))
@@ -12043,14 +12043,14 @@ def load_effective_sample_available_reference(
                     .reset_index(drop=True)
                 )
                 master_reference = master_reference[master_reference[EFFECTIVE_SAMPLE_AVAILABLE_COL].gt(0)].copy()
-                master_reference["샘플수량출처"] = "전체품목 샘플가능수량"
+                master_reference["샘플수량출처"] = "전체품목 샘플신청가능수량"
                 references.append(master_reference)
 
     if not references:
         return pd.DataFrame(columns=output_columns)
 
     combined = pd.concat(references, ignore_index=True, sort=False)
-    combined["출처우선순위"] = combined["샘플수량출처"].eq("APS 계획 API").map({True: 0, False: 1})
+    combined["출처우선순위"] = combined["샘플수량출처"].eq("APS 샘플신청가능수량").map({True: 0, False: 1})
     combined = combined.sort_values(["제품코드", "출처우선순위", EFFECTIVE_SAMPLE_AVAILABLE_COL], ascending=[True, True, False])
     combined = combined.drop_duplicates(subset=["제품코드"], keep="first")
     return combined[output_columns].reset_index(drop=True)
