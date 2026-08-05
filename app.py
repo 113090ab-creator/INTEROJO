@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 import openpyxl
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
@@ -25,6 +26,9 @@ except ImportError:  # pragma: no cover - handled as a runtime configuration iss
 st.set_page_config(page_title="생산현황", layout="wide")
 
 BASE_DIR = Path(__file__).resolve().parent
+EFFECTIVE_PRODUCTION_DASHBOARD_URL = os.getenv(
+    "EFFECTIVE_PRODUCTION_DASHBOARD_URL", "http://localhost:8501/"
+)
 UPLOAD_WORKSPACE_ROOT = BASE_DIR / ".uploaded_workspaces"
 LATEST_UPLOAD_SESSION_FILE = UPLOAD_WORKSPACE_ROOT / "latest_session.txt"
 UPLOAD_SIGNATURE_FILE = "upload_signature.txt"
@@ -10735,6 +10739,17 @@ def render_leadji_pcode5_dashboard(
     )
 
 
+def render_effective_production_dashboard() -> None:
+    st.subheader("생산유효도 분석")
+    st.caption("로컬 생산유효도 대시보드를 메인 메뉴 안에서 표시합니다.")
+    st.link_button("새 창에서 열기", EFFECTIVE_PRODUCTION_DASHBOARD_URL)
+    components.iframe(
+        EFFECTIVE_PRODUCTION_DASHBOARD_URL,
+        height=1200,
+        scrolling=True,
+    )
+
+
 
 def main() -> None:
     inject_dashboard_theme()
@@ -10747,7 +10762,7 @@ def main() -> None:
         """,
         unsafe_allow_html=True,
     )
-    top_views = ["생산 부족 현황", "리드지 현황", "생산코드별 리드지", "전체 품목 현황"]
+    top_views = ["생산 부족 현황", "리드지 현황", "생산코드별 리드지", "전체 품목 현황", "생산유효도 분석"]
     all_item_site_filter = "전체"
     with st.sidebar:
         st.markdown(
@@ -10777,48 +10792,56 @@ def main() -> None:
             key="top_view_radio_v2",
             label_visibility="collapsed",
         )
-        sync_plan_api_data_mode()
-        if selected_top_view == "전체 품목 현황":
-            default_all_item_site_filter = "A관" if is_plan_api_enabled() else "전체"
-            all_item_site_filter = st.pills(
-                "전체품목 관",
-                options=[*SITE_GROUP_ORDER, "전체"],
-                default=default_all_item_site_filter,
-                key="all_item_flow_site_prefilter_v1",
-                help="선택한 관만 APS API로 조회합니다. 전체를 선택하면 모든 관을 한 번에 조회합니다.",
-            ) or default_all_item_site_filter
-        reference_dates_slot = st.empty()
-        data_base_dir, source_label, updated_at = resolve_data_source_from_state(BASE_DIR)
-        cloud_snapshots_available = should_use_cloud_snapshots(data_base_dir)
-        data_live_updated_at = get_data_updated_at(data_base_dir)
-        if selected_top_view == "전체 품목 현황":
-            sidebar_meta_key = "all_item_updated_at"
-            sidebar_live_updated_at = get_aps_or_file_updated_at(get_all_item_updated_at(data_base_dir))
-        elif selected_top_view in {"리드지 현황", "생산코드별 리드지"}:
-            sidebar_meta_key = "leadji_updated_at"
-            sidebar_live_updated_at = get_leadji_status_updated_at(data_base_dir)
+        if selected_top_view == "생산유효도 분석":
+            data_base_dir = BASE_DIR
+            source_label = "로컬 생산유효도 대시보드"
+            updated_at = ""
+            cloud_snapshots_available = False
+            data_live_updated_at = ""
+            sidebar_status_caption = f"연결 대상: {EFFECTIVE_PRODUCTION_DASHBOARD_URL}"
         else:
-            sidebar_meta_key = "data_updated_at"
-            sidebar_live_updated_at = get_plan_api_updated_at() if is_plan_api_enabled() else data_live_updated_at
+            sync_plan_api_data_mode()
+            if selected_top_view == "전체 품목 현황":
+                default_all_item_site_filter = "A관" if is_plan_api_enabled() else "전체"
+                all_item_site_filter = st.pills(
+                    "전체품목 관",
+                    options=[*SITE_GROUP_ORDER, "전체"],
+                    default=default_all_item_site_filter,
+                    key="all_item_flow_site_prefilter_v1",
+                    help="선택한 관만 APS API로 조회합니다. 전체를 선택하면 모든 관을 한 번에 조회합니다.",
+                ) or default_all_item_site_filter
+            reference_dates_slot = st.empty()
+            data_base_dir, source_label, updated_at = resolve_data_source_from_state(BASE_DIR)
+            cloud_snapshots_available = should_use_cloud_snapshots(data_base_dir)
+            data_live_updated_at = get_data_updated_at(data_base_dir)
+            if selected_top_view == "전체 품목 현황":
+                sidebar_meta_key = "all_item_updated_at"
+                sidebar_live_updated_at = get_aps_or_file_updated_at(get_all_item_updated_at(data_base_dir))
+            elif selected_top_view in {"리드지 현황", "생산코드별 리드지"}:
+                sidebar_meta_key = "leadji_updated_at"
+                sidebar_live_updated_at = get_leadji_status_updated_at(data_base_dir)
+            else:
+                sidebar_meta_key = "data_updated_at"
+                sidebar_live_updated_at = get_plan_api_updated_at() if is_plan_api_enabled() else data_live_updated_at
 
-        if cloud_snapshots_available and is_cloud_snapshot_fresh(sidebar_meta_key, sidebar_live_updated_at):
-            updated_at = get_cloud_snapshot_meta_value(sidebar_meta_key, sidebar_live_updated_at)
-            sidebar_status_caption = "Cloud 모드: 사전 계산 스냅샷 사용"
-        elif cloud_snapshots_available:
-            updated_at = sidebar_live_updated_at
-            sidebar_status_caption = "Cloud 모드: 원본 엑셀 자동 반영"
-        elif is_plan_api_enabled() and selected_top_view in {"전체 품목 현황", "생산 부족 현황"}:
-            updated_at = sidebar_live_updated_at
-            sidebar_status_caption = "API 모드: APS 수요 + WIP 기준"
-        elif is_plan_api_enabled():
-            updated_at = sidebar_live_updated_at
-            sidebar_status_caption = "파일 계산 모드: WIP/로컬 수요 파일 기준"
-        else:
-            sidebar_status_caption = "업로드 모드: 업로드 파일 직접 계산"
-        with reference_dates_slot.container():
-            if selected_top_view != "생산 부족 현황":
-                st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
-                render_sidebar_reference_dates(data_base_dir, source_label)
+            if cloud_snapshots_available and is_cloud_snapshot_fresh(sidebar_meta_key, sidebar_live_updated_at):
+                updated_at = get_cloud_snapshot_meta_value(sidebar_meta_key, sidebar_live_updated_at)
+                sidebar_status_caption = "Cloud 모드: 사전 계산 스냅샷 사용"
+            elif cloud_snapshots_available:
+                updated_at = sidebar_live_updated_at
+                sidebar_status_caption = "Cloud 모드: 원본 엑셀 자동 반영"
+            elif is_plan_api_enabled() and selected_top_view in {"전체 품목 현황", "생산 부족 현황"}:
+                updated_at = sidebar_live_updated_at
+                sidebar_status_caption = "API 모드: APS 수요 + WIP 기준"
+            elif is_plan_api_enabled():
+                updated_at = sidebar_live_updated_at
+                sidebar_status_caption = "파일 계산 모드: WIP/로컬 수요 파일 기준"
+            else:
+                sidebar_status_caption = "업로드 모드: 업로드 파일 직접 계산"
+            with reference_dates_slot.container():
+                if selected_top_view != "생산 부족 현황":
+                    st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
+                    render_sidebar_reference_dates(data_base_dir, source_label)
 
     try:
         df = pd.DataFrame()
@@ -10947,14 +10970,17 @@ def main() -> None:
         render_leadji_dashboard(updated_at, df, leadji_info, leadji_stock, leadji_order_df)
     elif selected_top_view == "생산코드별 리드지":
         render_leadji_pcode5_dashboard(updated_at, df, leadji_info, leadji_stock)
+    elif selected_top_view == "생산유효도 분석":
+        render_effective_production_dashboard()
 
     with st.sidebar:
         st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
-        rendered_data_base_dir, rendered_source_label, _ = select_data_source(BASE_DIR)
         st.caption(sidebar_status_caption)
-        st.caption(f"적용 데이터: {rendered_source_label}")
-        if rendered_data_base_dir.resolve() != BASE_DIR.resolve():
-            st.caption(f"업로드 작업폴더: {rendered_data_base_dir.name}")
+        if selected_top_view != "생산유효도 분석":
+            rendered_data_base_dir, rendered_source_label, _ = select_data_source(BASE_DIR)
+            st.caption(f"적용 데이터: {rendered_source_label}")
+            if rendered_data_base_dir.resolve() != BASE_DIR.resolve():
+                st.caption(f"업로드 작업폴더: {rendered_data_base_dir.name}")
 
 
 if __name__ == "__main__":
