@@ -1,6 +1,7 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
 .dashboard_cache/
+.codex_tmp/
 *.py[codz]
 *$py.class
 

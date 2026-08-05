@@ -29,6 +29,9 @@ BASE_DIR = Path(__file__).resolve().parent
 EFFECTIVE_PRODUCTION_DASHBOARD_URL = os.getenv(
     "EFFECTIVE_PRODUCTION_DASHBOARD_URL", "http://localhost:8501/"
 )
+EFFECTIVE_PRODUCTION_DASHBOARD_EMBED = os.getenv(
+    "EFFECTIVE_PRODUCTION_DASHBOARD_EMBED", "0"
+).strip().lower() in {"1", "true", "yes", "on"}
 UPLOAD_WORKSPACE_ROOT = BASE_DIR / ".uploaded_workspaces"
 LATEST_UPLOAD_SESSION_FILE = UPLOAD_WORKSPACE_ROOT / "latest_session.txt"
 UPLOAD_SIGNATURE_FILE = "upload_signature.txt"
@@ -10741,13 +10744,14 @@ def render_leadji_pcode5_dashboard(
 
 def render_effective_production_dashboard() -> None:
     st.subheader("생산유효도 분석")
-    st.caption("로컬 생산유효도 대시보드를 메인 메뉴 안에서 표시합니다.")
-    st.link_button("새 창에서 열기", EFFECTIVE_PRODUCTION_DASHBOARD_URL)
-    components.iframe(
-        EFFECTIVE_PRODUCTION_DASHBOARD_URL,
-        height=1200,
-        scrolling=True,
-    )
+    st.caption("생산유효도 대시보드로 이동합니다.")
+    st.link_button("생산유효도 대시보드 열기", EFFECTIVE_PRODUCTION_DASHBOARD_URL)
+    if EFFECTIVE_PRODUCTION_DASHBOARD_EMBED:
+        components.iframe(
+            EFFECTIVE_PRODUCTION_DASHBOARD_URL,
+            height=1200,
+            scrolling=True,
+        )
 
 
 
