@@ -11696,6 +11696,133 @@ def prepare_original_effective_detail_table(detail: pd.DataFrame, month_key: str
     return table
 
 
+def build_top_production_products_table(detail: pd.DataFrame, top_n: int = 15) -> pd.DataFrame:
+    required_columns = [
+        effective_report.OUTPUT_SKU_COL,
+        effective_report.OUTPUT_PRODUCT_NAME_COL,
+        effective_report.OUTPUT_PROCESS_COL,
+        effective_report.ACTUAL_QTY_COL,
+        effective_report.EFFECTIVE_PRODUCTION_COL,
+        effective_report.INEFFECTIVE_PRODUCTION_COL,
+    ]
+    if detail.empty or any(column not in detail.columns for column in required_columns):
+        return pd.DataFrame()
+
+    scope = detail.copy()
+    for column in [
+        effective_report.ACTUAL_QTY_COL,
+        effective_report.EFFECTIVE_PRODUCTION_COL,
+        effective_report.INEFFECTIVE_PRODUCTION_COL,
+    ]:
+        scope[column] = parse_mixed_numeric(scope[column])
+    scope = scope[scope[effective_report.ACTUAL_QTY_COL].gt(0)].copy()
+    if scope.empty:
+        return pd.DataFrame()
+
+    group_columns = [effective_report.OUTPUT_SKU_COL, effective_report.OUTPUT_PRODUCT_NAME_COL]
+    optional_columns = [
+        effective_report.MAJOR_CATEGORY_COL,
+        effective_report.SHEET_NAME_COL,
+    ]
+    for column in optional_columns:
+        if column in scope.columns:
+            group_columns.append(column)
+
+    summary = (
+        scope.groupby(group_columns, as_index=False)
+        .agg(
+            **{
+                "생산량": (effective_report.ACTUAL_QTY_COL, "sum"),
+                "유효생산량": (effective_report.EFFECTIVE_PRODUCTION_COL, "sum"),
+                "비유효생산량": (effective_report.INEFFECTIVE_PRODUCTION_COL, "sum"),
+                "생산공정": (effective_report.OUTPUT_PROCESS_COL, join_unique_text_values),
+            }
+        )
+        .sort_values("생산량", ascending=False)
+        .head(top_n)
+        .reset_index(drop=True)
+    )
+    summary["순위"] = range(1, len(summary) + 1)
+    summary["유효비중(%)"] = calculate_effective_rate(summary["유효생산량"], summary["생산량"])
+    return summary[
+        [
+            "순위",
+            effective_report.OUTPUT_SKU_COL,
+            effective_report.OUTPUT_PRODUCT_NAME_COL,
+            *[column for column in optional_columns if column in summary.columns],
+            "생산공정",
+            "생산량",
+            "유효생산량",
+            "비유효생산량",
+            "유효비중(%)",
+        ]
+    ]
+
+
+def build_top_production_products_figure(detail: pd.DataFrame, top_n: int = 12) -> go.Figure:
+    top_table = build_top_production_products_table(detail, top_n)
+    fig = go.Figure()
+    if top_table.empty:
+        fig.add_annotation(text="표시할 생산량 데이터가 없습니다.", showarrow=False, x=0.5, y=0.5)
+        fig.update_layout(height=420, margin={"l": 10, "r": 10, "t": 20, "b": 10})
+        return fig
+
+    scope = detail.copy()
+    scope[effective_report.ACTUAL_QTY_COL] = parse_mixed_numeric(scope[effective_report.ACTUAL_QTY_COL])
+    top_codes = top_table[effective_report.OUTPUT_SKU_COL].astype(str).tolist()
+    scope = scope[
+        scope[effective_report.OUTPUT_SKU_COL].astype(str).isin(top_codes)
+        & scope[effective_report.ACTUAL_QTY_COL].gt(0)
+    ].copy()
+
+    label_by_code: dict[str, str] = {}
+    for _, row in top_table.iterrows():
+        code = str(row[effective_report.OUTPUT_SKU_COL])
+        name = clean_text_value(row.get(effective_report.OUTPUT_PRODUCT_NAME_COL, ""))
+        short_name = name[:22] + "..." if len(name) > 22 else name
+        label_by_code[code] = f"{int(row['순위'])}. {code}" + (f" · {short_name}" if short_name else "")
+    ordered_labels = [label_by_code[code] for code in top_codes][::-1]
+
+    process_colors = {
+        "[10]사출조립": "#2563eb",
+        "[80]누수/규격검사": "#f97316",
+    }
+    for process in effective_report.TARGET_PROCESSES:
+        process_rows = scope[scope[effective_report.OUTPUT_PROCESS_COL].eq(process)].copy()
+        if process_rows.empty:
+            continue
+        grouped = (
+            process_rows.groupby(effective_report.OUTPUT_SKU_COL, as_index=False)[effective_report.ACTUAL_QTY_COL]
+            .sum()
+        )
+        grouped["표시품목"] = grouped[effective_report.OUTPUT_SKU_COL].astype(str).map(label_by_code)
+        grouped = grouped[grouped["표시품목"].isin(ordered_labels)].copy()
+        grouped["표시품목"] = pd.Categorical(grouped["표시품목"], categories=ordered_labels, ordered=True)
+        grouped = grouped.sort_values("표시품목")
+        fig.add_trace(
+            go.Bar(
+                x=grouped[effective_report.ACTUAL_QTY_COL],
+                y=grouped["표시품목"],
+                orientation="h",
+                name=process,
+                marker={"color": process_colors.get(process, "#64748b")},
+                customdata=grouped[[effective_report.OUTPUT_SKU_COL]].to_numpy(),
+                hovertemplate="%{y}<br>%{fullData.name}<br>생산량 %{x:,.0f}<extra></extra>",
+            )
+        )
+
+    fig.update_layout(
+        barmode="stack",
+        height=max(420, 32 * len(ordered_labels) + 120),
+        margin={"l": 12, "r": 24, "t": 20, "b": 36},
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "right", "x": 1},
+        hovermode="closest",
+    )
+    fig.update_xaxes(title_text="실적수량", rangemode="tozero", tickformat=",")
+    fig.update_yaxes(title_text="", categoryorder="array", categoryarray=ordered_labels)
+    return fig
+
+
 def render_effective_production_dashboard() -> None:
     st.subheader("생산유효도 분석")
     st.caption("기존 생산유효도 앱의 계산 정의를 그대로 사용합니다.")
@@ -11785,6 +11912,37 @@ def render_effective_production_dashboard() -> None:
                 st.metric(f"{month_label} {category} 생산유효도", format_effective_pct(rate))
                 st.caption(f"실적 {format_effective_int(actual)} / 유효 {format_effective_int(effective)}")
 
+    top_products = build_top_production_products_table(month_detail, top_n=15)
+    if not top_products.empty:
+        st.markdown("#### 생산량 Top 품목")
+        st.caption("실적수량 기준으로 많이 생산한 제품을 공정별 색상으로 나눠 표시합니다.")
+        highlight_cols = st.columns(min(3, len(top_products)))
+        for column, (_, row) in zip(highlight_cols, top_products.head(3).iterrows()):
+            code = clean_text_value(row.get(effective_report.OUTPUT_SKU_COL, ""))
+            name = clean_text_value(row.get(effective_report.OUTPUT_PRODUCT_NAME_COL, ""))
+            with column:
+                st.metric(f"{int(row['순위'])}. {code}", format_effective_int(row["생산량"]))
+                st.caption(name if name else "제품명 미지정")
+        st.plotly_chart(build_top_production_products_figure(month_detail, top_n=12), width="stretch")
+        with st.expander("생산량 Top 품목 상세"):
+            st.dataframe(
+                top_products,
+                width="stretch",
+                hide_index=True,
+                column_config={
+                    "순위": st.column_config.NumberColumn("순위", format="%d"),
+                    "생산량": st.column_config.NumberColumn("생산량", format="%d"),
+                    "유효생산량": st.column_config.NumberColumn("유효생산량", format="%d"),
+                    "비유효생산량": st.column_config.NumberColumn("비유효생산량", format="%d"),
+                    "유효비중(%)": st.column_config.ProgressColumn(
+                        "유효비중(%)",
+                        format="%.1f%%",
+                        min_value=0,
+                        max_value=100,
+                    ),
+                },
+            )
+
     st.markdown("#### 일자별 생산유효도 추이")
     st.plotly_chart(build_original_effective_trend_figure(month_summary, month_major), width="stretch")
 
@@ -11811,15 +11969,27 @@ def render_effective_production_dashboard() -> None:
     )
 
     st.markdown("#### 상세표")
-    table_filter_cols = st.columns([1.4, 1.4, 2.2])
+    table_filter_cols = st.columns([1.2, 1.4, 1.4, 2.2])
     with table_filter_cols[0]:
+        date_options = (
+            sorted(month_detail[effective_report.DATE_COL].dropna().astype(str).unique(), reverse=True)
+            if not month_detail.empty and effective_report.DATE_COL in month_detail.columns
+            else []
+        )
+        date_filter = st.multiselect(
+            "일자",
+            options=date_options,
+            default=date_options,
+            key="effective_detail_date_filter",
+        )
+    with table_filter_cols[1]:
         process_filter = st.multiselect(
             "공정",
             options=list(effective_report.TARGET_PROCESSES),
             default=list(effective_report.TARGET_PROCESSES),
             key="effective_detail_process_filter",
         )
-    with table_filter_cols[1]:
+    with table_filter_cols[2]:
         status_options = sorted(month_detail[effective_report.MATCH_STATUS_COL].dropna().astype(str).unique()) if not month_detail.empty else []
         status_filter = st.multiselect(
             "매칭상태",
@@ -11827,15 +11997,17 @@ def render_effective_production_dashboard() -> None:
             default=status_options,
             key="effective_detail_status_filter",
         )
-    with table_filter_cols[2]:
+    with table_filter_cols[3]:
         query = st.text_input(
             "검색",
             value="",
             key="effective_detail_search",
-            placeholder="제품코드, 제품명, 거래처, 이니셜",
+            placeholder="일자, 제품코드, 제품명, 거래처, 이니셜",
         )
 
     detail_table = month_detail.copy()
+    if date_filter and effective_report.DATE_COL in detail_table.columns:
+        detail_table = detail_table[detail_table[effective_report.DATE_COL].isin(date_filter)]
     if process_filter and effective_report.OUTPUT_PROCESS_COL in detail_table.columns:
         detail_table = detail_table[detail_table[effective_report.OUTPUT_PROCESS_COL].isin(process_filter)]
     if status_filter and effective_report.MATCH_STATUS_COL in detail_table.columns:
@@ -11844,6 +12016,7 @@ def render_effective_production_dashboard() -> None:
         search_columns = [
             column
             for column in [
+                effective_report.DATE_COL,
                 effective_report.OUTPUT_SKU_COL,
                 effective_report.OUTPUT_PRODUCT_NAME_COL,
                 effective_report.CUSTOMER_COL,
