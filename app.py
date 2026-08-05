@@ -98,6 +98,7 @@ EFFECTIVE_PRODUCTION_DEFAULT_DAYS = 60
 EFFECTIVE_PRODUCTION_SOURCE_DIR = BASE_DIR / "effective_production_sources"
 EFFECTIVE_PRODUCTION_DOI_CRITERIA_FILE = "c_site_pcode_power_doi_criteria.csv"
 EFFECTIVE_OVERPRODUCTION_ACTION_ORDER = ("생산자제", "생산조정", "계획초과 확인", "모니터링")
+EFFECTIVE_SAMPLE_AVAILABLE_COL = "샘플 신청가능수량"
 ITEM_LIST_BULK_ENDPOINT = "/api/item-list-bulk"
 ALL_ITEM_MASTER_SHEET = "생성가능_P코드"
 ALL_ITEM_SNAPSHOT_FILE = "all_item_status_snapshot.csv.gz"
@@ -6123,6 +6124,7 @@ def load_api_demand_like_df(site_filter: str = "전체") -> pd.DataFrame:
         "사출생산필요수량",
         "R코드",
         "Q코드",
+        EFFECTIVE_SAMPLE_AVAILABLE_COL,
     ]
     if error or raw.empty:
         return pd.DataFrame(columns=output_columns)
@@ -6194,6 +6196,23 @@ def load_api_demand_like_df(site_filter: str = "전체") -> pd.DataFrame:
         columns,
         ["사출생산필요수량", "사출부족수량", "사출필요수량", "[10]사출조립 생산수량", "INJECTION_REQUIRED_QTY"],
     )
+    sample_available_col = pick_api_column(
+        columns,
+        [
+            EFFECTIVE_SAMPLE_AVAILABLE_COL,
+            "샘플신청가능수량",
+            "샘플 가능 수량",
+            "샘플가능수량",
+            "SAMPLE_AVAILABLE_QTY",
+            "SAMPLE_REQ_AVAILABLE_QTY",
+            "SAMPLE_REQUEST_AVAILABLE_QTY",
+            "AVAILABLE_SAMPLE_QTY",
+            "SAMPLE_QTY_AVAILABLE",
+            "sample_available_qty",
+            "sample_req_available_qty",
+            "sample_request_available_qty",
+        ],
+    )
     r_col = pick_api_column(columns, ["R코드", "사출코드", "R_CODE", "INJECTION_CODE"])
     q_col = pick_api_column(columns, ["Q코드", "분리코드", "Q_CODE", "SEPARATION_CODE"])
 
@@ -6218,6 +6237,7 @@ def load_api_demand_like_df(site_filter: str = "전체") -> pd.DataFrame:
     )
     injection_qty = api_numeric_series(raw, inj_col) if inj_col is not None else plan_qty.where(injection_mask, 0)
     order_qty = api_numeric_series(raw, qty_col).where(first_order_mask, 0)
+    sample_available_qty = api_numeric_series(raw, sample_available_col) if sample_available_col is not None else 0
     initial_text = combine_api_initial_and_type(api_text_series(raw, initial_col), api_text_series(raw, demand_type_col))
     r_codes = api_text_series(raw, r_col).map(normalize_item_code_value) if r_col else item_codes.where(
         item_codes.str.startswith("R", na=False), ""
@@ -6241,6 +6261,7 @@ def load_api_demand_like_df(site_filter: str = "전체") -> pd.DataFrame:
             "사출생산필요수량": injection_qty,
             "R코드": r_codes,
             "Q코드": q_codes,
+            EFFECTIVE_SAMPLE_AVAILABLE_COL: sample_available_qty,
         }
     )
     is_summary = demand[["사이트코드", "거래처", "이니셜", "품목코드"]].eq("총합계").any(axis=1)
@@ -11972,6 +11993,100 @@ def load_effective_doi_reference(
     return doi_reference, "DOI 기준 없음"
 
 
+@st.cache_data(show_spinner=False, max_entries=CACHE_MAX_ENTRIES)
+def load_effective_sample_available_reference(
+    api_base_url: str,
+    api_key_hash: str,
+    api_updated_at: str,
+    refresh_nonce: int,
+    base_dir_str: str,
+    all_item_refresh_key: str,
+) -> pd.DataFrame:
+    _ = api_base_url, api_key_hash, api_updated_at, refresh_nonce, all_item_refresh_key
+    output_columns = ["제품코드", EFFECTIVE_SAMPLE_AVAILABLE_COL, "샘플수량출처"]
+    references: list[pd.DataFrame] = []
+
+    if is_plan_api_enabled():
+        demand = load_api_demand_like_df(EFFECTIVE_PRODUCTION_DEFAULT_SITE)
+        if not demand.empty and EFFECTIVE_SAMPLE_AVAILABLE_COL in demand.columns:
+            work = demand.copy()
+            work["제품코드"] = work.apply(resolve_light_production_code, axis=1)
+            work[EFFECTIVE_SAMPLE_AVAILABLE_COL] = parse_mixed_numeric(work[EFFECTIVE_SAMPLE_AVAILABLE_COL]).fillna(0)
+            work = work[work["제품코드"].str.startswith("P", na=False)].copy()
+            if not work.empty and work[EFFECTIVE_SAMPLE_AVAILABLE_COL].gt(0).any():
+                api_reference = (
+                    work.groupby("제품코드", as_index=False)[EFFECTIVE_SAMPLE_AVAILABLE_COL]
+                    .max()
+                    .sort_values("제품코드")
+                    .reset_index(drop=True)
+                )
+                api_reference = api_reference[api_reference[EFFECTIVE_SAMPLE_AVAILABLE_COL].gt(0)].copy()
+                api_reference["샘플수량출처"] = "APS 계획 API"
+                references.append(api_reference)
+
+    master_path = find_all_item_master_file(Path(base_dir_str))
+    if master_path is not None:
+        master = read_all_item_master(str(master_path), all_item_refresh_key)
+        if not master.empty:
+            master_reference = pd.DataFrame(
+                {
+                    "제품코드": master["품목코드"].map(normalize_item_code_value),
+                    EFFECTIVE_SAMPLE_AVAILABLE_COL: parse_mixed_numeric(master["샘플가능수량"]).fillna(0),
+                }
+            )
+            master_reference = master_reference[master_reference["제품코드"].str.startswith("P", na=False)].copy()
+            if not master_reference.empty:
+                master_reference = (
+                    master_reference.groupby("제품코드", as_index=False)[EFFECTIVE_SAMPLE_AVAILABLE_COL]
+                    .max()
+                    .sort_values("제품코드")
+                    .reset_index(drop=True)
+                )
+                master_reference = master_reference[master_reference[EFFECTIVE_SAMPLE_AVAILABLE_COL].gt(0)].copy()
+                master_reference["샘플수량출처"] = "전체품목 샘플가능수량"
+                references.append(master_reference)
+
+    if not references:
+        return pd.DataFrame(columns=output_columns)
+
+    combined = pd.concat(references, ignore_index=True, sort=False)
+    combined["출처우선순위"] = combined["샘플수량출처"].eq("APS 계획 API").map({True: 0, False: 1})
+    combined = combined.sort_values(["제품코드", "출처우선순위", EFFECTIVE_SAMPLE_AVAILABLE_COL], ascending=[True, True, False])
+    combined = combined.drop_duplicates(subset=["제품코드"], keep="first")
+    return combined[output_columns].reset_index(drop=True)
+
+
+def apply_effective_sample_available_stock_basis(
+    doi_reference: pd.DataFrame,
+    sample_reference: pd.DataFrame,
+    doi_source_label: str,
+) -> tuple[pd.DataFrame, str]:
+    if doi_reference.empty:
+        return doi_reference, doi_source_label
+    if sample_reference.empty or EFFECTIVE_SAMPLE_AVAILABLE_COL not in sample_reference.columns:
+        return doi_reference, f"{doi_source_label} · APS 샘플신청가능수량 없음"
+
+    updated = doi_reference.copy()
+    sample_lookup = sample_reference.set_index("제품코드")[EFFECTIVE_SAMPLE_AVAILABLE_COL]
+    sample_stock = updated["제품코드"].map(sample_lookup).fillna(0)
+    updated["완제품재고"] = parse_mixed_numeric(sample_stock).fillna(0)
+
+    if "DOI기준오더" in updated.columns:
+        doi_order = parse_mixed_numeric(updated["DOI기준오더"]).fillna(0)
+        valid_order = doi_order.gt(0)
+        updated.loc[valid_order, "현재DOI"] = updated.loc[valid_order, "완제품재고"] / doi_order.loc[valid_order] * 181
+        updated.loc[~valid_order, "현재DOI"] = 0
+
+    if "샘플수량출처" in sample_reference.columns:
+        source_lookup = sample_reference.set_index("제품코드")["샘플수량출처"]
+        source_label = summarize_unique(sample_reference["샘플수량출처"], head_count=2) or "샘플신청가능수량"
+        updated["재고기준"] = updated["제품코드"].map(source_lookup).fillna(source_label)
+    else:
+        updated["재고기준"] = "샘플신청가능수량"
+        source_label = "샘플신청가능수량"
+    return updated, f"{doi_source_label} · 완제품재고={source_label}"
+
+
 def classify_effective_overproduction_action(row: pd.Series) -> str:
     doi_status = clean_text_value(row.get("DOI판단상태", ""))
     current_doi = numeric_scalar(row.get("현재DOI", 0))
@@ -12071,7 +12186,7 @@ def build_effective_overproduction_candidates(
             "DOI우선순위점수",
         ]:
             merged[column] = 0.0
-        for column in ["DOI상태", "기준등급", "DOI판단상태", "DOI판단메모", "신제품여부"]:
+        for column in ["DOI상태", "기준등급", "DOI판단상태", "DOI판단메모", "신제품여부", "재고기준"]:
             merged[column] = ""
     else:
         merged = summary.merge(doi_reference, on="제품코드", how="left")
@@ -12089,7 +12204,7 @@ def build_effective_overproduction_candidates(
         ]
         for column in numeric_columns:
             merged[column] = parse_mixed_numeric(merged.get(column, pd.Series(0, index=merged.index))).fillna(0)
-        for column in ["DOI상태", "기준등급", "DOI판단상태", "DOI판단메모", "신제품여부"]:
+        for column in ["DOI상태", "기준등급", "DOI판단상태", "DOI판단메모", "신제품여부", "재고기준"]:
             merged[column] = merged.get(column, pd.Series("", index=merged.index)).map(clean_text_value)
 
     merged["DOI초과일"] = (merged["현재DOI"] - merged["기준DOI상한"]).where(merged["기준DOI상한"].gt(0), 0).clip(lower=0)
@@ -12126,6 +12241,7 @@ def build_effective_overproduction_candidates(
         "기준DOI상한",
         "DOI초과일",
         "완제품재고",
+        "재고기준",
         "공정재고합계",
         "DOI판단상태",
         "DOI판단메모",
@@ -12192,7 +12308,7 @@ def build_effective_overproduction_figure(candidates: pd.DataFrame, top_n: int =
                     "비유효생산량 %{x:,.0f}<br>"
                     "생산량 %{customdata[3]:,.0f} / 비유효비중 %{customdata[4]:.1f}%<br>"
                     "DOI %{customdata[0]:.1f} / 기준상한 %{customdata[1]:.1f}<br>"
-                    "완제품재고 %{customdata[2]:,.0f}<extra></extra>"
+                    "샘플신청가능수량 %{customdata[2]:,.0f}<extra></extra>"
                 ),
             )
         )
@@ -12264,6 +12380,7 @@ def render_effective_overproduction_panel(
         "기준DOI상한",
         "DOI초과일",
         "완제품재고",
+        "재고기준",
         "DOI판단상태",
         "DOI판단메모",
     ]
@@ -12286,7 +12403,7 @@ def render_effective_overproduction_panel(
                 "현재DOI": st.column_config.NumberColumn("현재DOI", format="%.1f"),
                 "기준DOI상한": st.column_config.NumberColumn("기준DOI상한", format="%.1f"),
                 "DOI초과일": st.column_config.NumberColumn("DOI초과일", format="%.1f"),
-                "완제품재고": st.column_config.NumberColumn("완제품재고", format="%d"),
+                "완제품재고": st.column_config.NumberColumn("샘플신청가능수량", format="%d"),
             },
         )
 
@@ -12343,6 +12460,20 @@ def render_effective_production_dashboard() -> None:
     month_detail = prepare_original_effective_detail_table(detail_df, selected_month)
     month_label = format_effective_month_short_label(selected_month)
     doi_reference, doi_source_label = load_effective_doi_reference(str(EFFECTIVE_PRODUCTION_SOURCE_DIR), source_signature)
+    all_item_refresh_key = build_all_item_refresh_key(BASE_DIR)
+    sample_reference = load_effective_sample_available_reference(
+        get_plan_api_base_url(),
+        api_key_hash,
+        get_plan_api_updated_at(),
+        get_plan_api_refresh_nonce(),
+        str(BASE_DIR),
+        all_item_refresh_key,
+    )
+    doi_reference, doi_source_label = apply_effective_sample_available_stock_basis(
+        doi_reference,
+        sample_reference,
+        doi_source_label,
+    )
     overproduction_candidates = build_effective_overproduction_candidates(month_detail, doi_reference, top_n=50)
 
     st.caption(
