@@ -23,6 +23,11 @@ try:
 except ImportError:  # pragma: no cover - handled as a runtime configuration issue
     requests = None
 
+try:
+    import effective_production_report as effective_report
+except ImportError:  # pragma: no cover - deployed without optional production-effectiveness module
+    effective_report = None
+
 st.set_page_config(page_title="생산현황", layout="wide")
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -90,6 +95,7 @@ EFFECTIVE_PRODUCTION_PROCESS_ORDER = ("[10]사출조립", "[80]누수/규격검�
 EFFECTIVE_PRODUCTION_CATEGORY_ORDER = ("국내", "PIA", "기타해외")
 EFFECTIVE_PRODUCTION_DEFAULT_SITE = "C관"
 EFFECTIVE_PRODUCTION_DEFAULT_DAYS = 60
+EFFECTIVE_PRODUCTION_SOURCE_DIR = BASE_DIR / "effective_production_sources"
 ITEM_LIST_BULK_ENDPOINT = "/api/item-list-bulk"
 ALL_ITEM_MASTER_SHEET = "생성가능_P코드"
 ALL_ITEM_SNAPSHOT_FILE = "all_item_status_snapshot.csv.gz"
@@ -11437,104 +11443,366 @@ def filter_effective_detail_table(
     return filtered
 
 
+def build_effective_source_signature(source_dir: Path) -> tuple[tuple[str, str, int, int], ...]:
+    if effective_report is None or not source_dir.exists():
+        return tuple()
+    source_paths = [path for _date, path in effective_report.find_input_files(source_dir)]
+    source_paths.append(source_dir / effective_report.CLASSIFICATION_FILE)
+    signature: list[tuple[str, str, int, int]] = []
+    for path in source_paths:
+        if not path.exists():
+            continue
+        stat = path.stat()
+        signature.append((path.name, str(path), stat.st_size, stat.st_mtime_ns))
+    return tuple(sorted(signature))
+
+
+def restore_environment_values(previous_values: dict[str, str | None]) -> None:
+    for name, value in previous_values.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
+
+
+def load_effective_report_with_main_api_settings(
+    source_dir: Path,
+    valid_dates: set[str],
+    base_url: str,
+) -> pd.DataFrame:
+    if effective_report is None:
+        raise ValueError("생산유효도 계산 모듈을 찾지 못했습니다.")
+
+    env_updates = {
+        effective_report.PRODUCTION_API_KEY_ENV: get_plan_api_key(),
+        effective_report.PRODUCTION_API_URL_ENV: f"{base_url.rstrip('/')}/{PRODUCTION_PERFORMANCE_ENDPOINT.lstrip('/')}",
+        effective_report.PRODUCTION_API_SAVE_RAW_ENV: "0",
+    }
+    previous_values = {name: os.environ.get(name) for name in env_updates}
+    try:
+        for name, value in env_updates.items():
+            if value:
+                os.environ[name] = value
+        return effective_report.load_production_api_data(valid_dates, None)
+    finally:
+        restore_environment_values(previous_values)
+
+
+@st.cache_data(show_spinner=False, ttl=PLAN_API_CACHE_TTL_SECONDS, max_entries=CACHE_MAX_ENTRIES)
+def load_original_effective_dashboard_data(
+    source_dir_text: str,
+    display_cutoff_date: str,
+    source_signature: tuple[tuple[str, str, int, int], ...],
+    base_url: str,
+    api_key_hash: str,
+    refresh_nonce: int,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, object]]:
+    _ = source_signature, api_key_hash, refresh_nonce
+    if effective_report is None:
+        raise ValueError("생산유효도 계산 모듈을 찾지 못했습니다.")
+
+    source_dir = Path(source_dir_text)
+    input_files = [
+        (date, path)
+        for date, path in effective_report.find_input_files(source_dir)
+        if str(date) <= str(display_cutoff_date)
+    ]
+    if not input_files:
+        raise ValueError(f"{format_effective_date_option(display_cutoff_date)}까지 표시할 수요정보 파일이 없습니다.")
+
+    input_dates = {date for date, _path in input_files}
+    production_df = load_effective_report_with_main_api_settings(source_dir, input_dates, base_url)
+    if production_df.empty:
+        raise ValueError("생산실적 API에서 조회된 데이터가 없습니다.")
+
+    match_on_product_name = effective_report.production_uses_product_name_key_from_df("production API", production_df)
+    demand = effective_report.build_demand(input_files, match_on_product_name)
+    valid_dates = set(demand[effective_report.DATE_COL].astype(str).unique())
+    production = effective_report.prepare_production_data(production_df, "production API", valid_dates)
+    detail = effective_report.build_detail(demand, production)
+    detail = effective_report.apply_classification(detail, source_dir)
+    summary = effective_report.summarize_by_process(detail)
+    change_analysis = effective_report.build_change_analysis(summary, detail)
+    sheet_name_analysis = effective_report.attach_major_category(
+        effective_report.summarize_by_classification(detail, effective_report.SHEET_NAME_COL),
+        detail,
+    )
+    major_category_analysis = effective_report.summarize_by_classification(detail, effective_report.MAJOR_CATEGORY_COL)
+    metadata = {
+        "source": "기존 생산유효도 계산 모듈",
+        "demand_start": min(input_dates),
+        "demand_end": max(input_dates),
+        "demand_file_count": len(input_files),
+        "display_cutoff_date": display_cutoff_date,
+        "raw_rows": len(production_df),
+        "production_rows": len(production),
+        "detail_rows": len(detail),
+        "match_key": "제품명" if match_on_product_name else "제품코드 전체 문자열",
+        "loaded_at": datetime.now(DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    return summary, change_analysis, sheet_name_analysis, major_category_analysis, detail, metadata
+
+
+def format_effective_date_option(value: object) -> str:
+    text = str(value)
+    parsed = pd.to_datetime(text, format="%Y%m%d", errors="coerce")
+    return text if pd.isna(parsed) else parsed.strftime("%Y-%m-%d")
+
+
+def format_effective_month_label(month_key: str) -> str:
+    if len(month_key) == 6 and month_key.isdigit():
+        return f"{int(month_key[:4])}년 {int(month_key[4:])}월"
+    return month_key
+
+
+def format_effective_month_short_label(month_key: str) -> str:
+    if len(month_key) == 6 and month_key.isdigit():
+        return f"{int(month_key[4:])}월 종합"
+    return f"{month_key} 종합"
+
+
+def build_effective_display_cutoff_date() -> str:
+    return (pd.Timestamp.now(tz=DISPLAY_TZ).normalize() - pd.Timedelta(days=1)).strftime("%Y%m%d")
+
+
+def effective_report_rate(frame: pd.DataFrame, numerator_col: str, denominator_col: str) -> float:
+    if frame.empty:
+        return 0.0
+    numerator = float(parse_mixed_numeric(frame[numerator_col]).sum())
+    denominator = float(parse_mixed_numeric(frame[denominator_col]).sum())
+    return 0.0 if denominator == 0 else numerator / denominator * 100
+
+
+def filter_effective_report_month(frame: pd.DataFrame, date_col: str, month_key: str) -> pd.DataFrame:
+    if frame.empty or date_col not in frame.columns:
+        return pd.DataFrame()
+    return frame[frame[date_col].astype(str).str.startswith(month_key)].copy()
+
+
+def build_original_effective_daily_trend(summary: pd.DataFrame, major_category: pd.DataFrame) -> pd.DataFrame:
+    pieces: list[pd.DataFrame] = []
+    actual_col = effective_report.SUMMARY_ACTUAL_COL
+    effective_col = effective_report.SUMMARY_EFFECTIVE_COL
+    if not summary.empty:
+        overall = summary.groupby(effective_report.DATE_COL, as_index=False).agg(
+            **{
+                actual_col: (actual_col, "sum"),
+                effective_col: (effective_col, "sum"),
+            }
+        )
+        overall["비교분류"] = "전체"
+        pieces.append(overall)
+    if not major_category.empty and effective_report.MAJOR_CATEGORY_COL in major_category.columns:
+        categories = major_category[major_category[effective_report.MAJOR_CATEGORY_COL].isin(EFFECTIVE_PRODUCTION_CATEGORY_ORDER)]
+        if not categories.empty:
+            categories = categories.groupby(
+                [effective_report.DATE_COL, effective_report.MAJOR_CATEGORY_COL],
+                as_index=False,
+            ).agg(
+                **{
+                    actual_col: (actual_col, "sum"),
+                    effective_col: (effective_col, "sum"),
+                }
+            )
+            categories = categories.rename(columns={effective_report.MAJOR_CATEGORY_COL: "비교분류"})
+            pieces.append(categories)
+    if not pieces:
+        return pd.DataFrame()
+    trend = pd.concat(pieces, ignore_index=True, sort=False)
+    trend = trend[trend[actual_col].gt(0)].copy()
+    trend[effective_report.PRODUCTION_EFFECTIVENESS_COL] = calculate_effective_rate(trend[effective_col], trend[actual_col])
+    trend["표시일자"] = trend[effective_report.DATE_COL].map(format_effective_date_option)
+    return trend.sort_values([effective_report.DATE_COL, "비교분류"])
+
+
+def build_original_effective_trend_figure(summary: pd.DataFrame, major_category: pd.DataFrame) -> go.Figure:
+    trend = build_original_effective_daily_trend(summary, major_category)
+    fig = go.Figure()
+    colors = {
+        "전체": "#111827",
+        "국내": "#2563eb",
+        "PIA": "#f97316",
+        "기타해외": "#0f766e",
+    }
+    if trend.empty:
+        fig.add_annotation(text="표시할 데이터가 없습니다.", showarrow=False, x=0.5, y=0.5)
+    else:
+        for label in ("전체", *EFFECTIVE_PRODUCTION_CATEGORY_ORDER):
+            rows = trend[trend["비교분류"].eq(label)]
+            if rows.empty:
+                continue
+            fig.add_trace(
+                go.Scatter(
+                    x=rows["표시일자"],
+                    y=rows[effective_report.PRODUCTION_EFFECTIVENESS_COL],
+                    mode="lines+markers",
+                    name=label,
+                    line={"color": colors.get(label, "#64748b"), "width": 4 if label == "전체" else 2.5},
+                    marker={"size": 8},
+                    customdata=rows[
+                        [
+                            effective_report.DATE_COL,
+                            effective_report.SUMMARY_ACTUAL_COL,
+                            effective_report.SUMMARY_EFFECTIVE_COL,
+                        ]
+                    ].to_numpy(),
+                    hovertemplate=(
+                        "%{fullData.name}<br>"
+                        "일자 %{customdata[0]}<br>"
+                        "생산유효도 %{y:.1f}%<br>"
+                        "실적 %{customdata[1]:,.0f}<br>"
+                        "유효 %{customdata[2]:,.0f}<extra></extra>"
+                    ),
+                )
+            )
+    fig.update_layout(
+        height=390,
+        margin={"l": 10, "r": 90, "t": 24, "b": 10},
+        legend_title_text="",
+        hovermode="x unified",
+    )
+    fig.update_xaxes(title_text="일자", type="category")
+    fig.update_yaxes(title_text=effective_report.PRODUCTION_EFFECTIVENESS_COL, ticksuffix="%", range=[0, 100])
+    return fig
+
+
+def prepare_original_effective_detail_table(detail: pd.DataFrame, month_key: str) -> pd.DataFrame:
+    table = filter_effective_report_month(detail, effective_report.DATE_COL, month_key)
+    if table.empty:
+        return table
+    table = table.copy()
+    table[effective_report.DATE_COL] = table[effective_report.DATE_COL].map(format_effective_date_option)
+    preferred_columns = [
+        effective_report.DATE_COL,
+        effective_report.OUTPUT_PROCESS_COL,
+        effective_report.MAJOR_CATEGORY_COL,
+        effective_report.SHEET_NAME_COL,
+        effective_report.OUTPUT_SKU_COL,
+        effective_report.OUTPUT_PRODUCT_NAME_COL,
+        effective_report.CUSTOMER_COL,
+        effective_report.INITIAL_COL,
+        effective_report.NEED_QTY_COL,
+        effective_report.ACTUAL_QTY_COL,
+        effective_report.EFFECTIVE_PRODUCTION_COL,
+        effective_report.INEFFECTIVE_PRODUCTION_COL,
+        effective_report.REMAINING_NEED_COL,
+        effective_report.PRODUCTION_EFFECTIVENESS_COL,
+        effective_report.MATCH_STATUS_COL,
+    ]
+    table = table[[column for column in preferred_columns if column in table.columns]].copy()
+    sort_columns = [column for column in [effective_report.DATE_COL, effective_report.INEFFECTIVE_PRODUCTION_COL] if column in table.columns]
+    if sort_columns:
+        table = table.sort_values(sort_columns, ascending=[False] * len(sort_columns))
+    return table
+
+
 def render_effective_production_dashboard() -> None:
     st.subheader("생산유효도 분석")
-    st.caption("APS 계획수량과 생산실적 API를 일자/공정/제품코드 기준으로 매칭해 생산유효도를 계산합니다.")
+    st.caption("기존 생산유효도 앱의 계산 정의를 그대로 사용합니다.")
 
+    if effective_report is None:
+        st.error("생산유효도 계산 모듈을 찾지 못했습니다.")
+        return
+    if not EFFECTIVE_PRODUCTION_SOURCE_DIR.exists():
+        st.error(f"생산유효도 기준 데이터 폴더가 없습니다: {EFFECTIVE_PRODUCTION_SOURCE_DIR.name}")
+        return
     if not sync_plan_api_data_mode():
         st.warning(f"{PLAN_API_KEY_ENV}가 설정되어 있지 않아 생산유효도 API 데이터를 조회할 수 없습니다.")
         return
 
-    default_end = pd.Timestamp.now(tz=DISPLAY_TZ).normalize().date()
-    default_start = (pd.Timestamp(default_end) - pd.Timedelta(days=EFFECTIVE_PRODUCTION_DEFAULT_DAYS)).date()
-    filter_cols = st.columns([2.2, 1.2, 1.0])
-    with filter_cols[0]:
-        selected_range = st.date_input(
-            "조회 기간",
-            value=(default_start, default_end),
-            key="effective_production_date_range",
-        )
+    source_signature = build_effective_source_signature(EFFECTIVE_PRODUCTION_SOURCE_DIR)
+    api_key_hash = hashlib.sha256(get_plan_api_key().encode("utf-8")).hexdigest()[:12]
+    display_cutoff_date = build_effective_display_cutoff_date()
+    filter_cols = st.columns([2.0, 1.0])
     with filter_cols[1]:
-        site_filter = st.pills(
-            "관",
-            options=["C관", "A관", "S관", "전체"],
-            default=EFFECTIVE_PRODUCTION_DEFAULT_SITE,
-            key="effective_production_site_filter",
-        ) or EFFECTIVE_PRODUCTION_DEFAULT_SITE
-    with filter_cols[2]:
         if st.button("새로고침", key="refresh_effective_production_api", use_container_width=True):
             set_session_value("plan_api_refresh_nonce", get_plan_api_refresh_nonce() + 1)
             st.cache_data.clear()
             st.cache_resource.clear()
             st.rerun()
 
-    if not isinstance(selected_range, tuple) or len(selected_range) != 2:
-        st.info("조회 시작일과 종료일을 모두 선택하세요.")
-        return
-    start_date, end_date = selected_range
-    if start_date > end_date:
-        st.error("조회 시작일이 종료일보다 늦습니다.")
-        return
-
-    start_date_text = pd.Timestamp(start_date).strftime("%Y-%m-%d")
-    end_date_text = pd.Timestamp(end_date).strftime("%Y-%m-%d")
-    api_key_hash = hashlib.sha256(get_plan_api_key().encode("utf-8")).hexdigest()[:12]
-    source_updated_at = get_plan_api_updated_at()
-
     with st.spinner("생산유효도 데이터를 계산하는 중입니다..."):
-        detail, metadata, load_error = load_effective_production_dashboard_data(
-            start_date_text,
-            end_date_text,
-            str(site_filter),
+        summary_df, change_df, sheet_name_df, major_category_df, detail_df, metadata = load_original_effective_dashboard_data(
+            str(EFFECTIVE_PRODUCTION_SOURCE_DIR),
+            display_cutoff_date,
+            source_signature,
+            get_plan_api_base_url(),
             api_key_hash,
-            source_updated_at,
             get_plan_api_refresh_nonce(),
         )
 
-    st.caption(
-        f"API 기준: {get_plan_api_base_url()} / APS 갱신: {format_reference_timestamp(source_updated_at)} / "
-        f"계획 {metadata.get('plan_rows', 0):,}건, 실적 {metadata.get('production_rows', 0):,}건"
-    )
-    st.caption("비교 기준: 선택 기간 내 APS 계획일이 존재하는 날짜의 생산실적만 생산유효도 계산에 포함합니다.")
-    if load_error:
-        st.warning(f"일부 데이터 조회 또는 정규화 경고: {load_error}")
-    if detail.empty:
+    if summary_df.empty:
         st.warning("선택한 기간과 관에 표시할 생산유효도 데이터가 없습니다.")
         return
 
-    kpi_cols = st.columns(3)
-    with kpi_cols[0]:
-        render_effective_metric("전체 생산유효도", detail)
-    with kpi_cols[1]:
-        render_effective_metric("사출조립 생산유효도", detail[detail["공정"].eq("[10]사출조립")])
-    with kpi_cols[2]:
-        render_effective_metric("누수규격검사 생산유효도", detail[detail["공정"].eq("[80]누수/규격검사")])
+    month_options = sorted(summary_df[effective_report.DATE_COL].astype(str).str[:6].unique(), reverse=True)
+    with filter_cols[0]:
+        selected_month = st.selectbox(
+            "월",
+            month_options,
+            format_func=format_effective_month_label,
+            key="effective_original_month_filter",
+        )
+    month_summary = filter_effective_report_month(summary_df, effective_report.DATE_COL, selected_month)
+    month_major = filter_effective_report_month(major_category_df, effective_report.DATE_COL, selected_month)
+    month_detail = prepare_original_effective_detail_table(detail_df, selected_month)
+    month_label = format_effective_month_short_label(selected_month)
 
-    category_cols = st.columns(3)
-    for column, category in zip(category_cols, EFFECTIVE_PRODUCTION_CATEGORY_ORDER):
+    st.caption(
+        f"데이터 소스: {metadata['source']} · 수요기간: "
+        f"{format_effective_date_option(metadata['demand_start'])} ~ {format_effective_date_option(metadata['demand_end'])} · "
+        f"표시 기준: {format_effective_date_option(metadata['display_cutoff_date'])}까지 · "
+        f"수요파일 {metadata['demand_file_count']:,}개 · API 조회시각: {metadata['loaded_at']}"
+    )
+    st.caption(
+        f"API 원천 {format_effective_int(metadata['raw_rows'])}행 / "
+        f"집계 대상 {format_effective_int(metadata['production_rows'])}행 / "
+        f"매칭 기준: {metadata['match_key']}"
+    )
+    st.info("같은 일자의 계획수량과 샘플제외 양품수량을 제품코드 전체 문자열 기준으로 매칭합니다. 공정별 KPI만 표시하며 두 공정 합산 KPI는 표시하지 않습니다.")
+
+    process_kpi_cols = st.columns(2)
+    for column, process in zip(process_kpi_cols, effective_report.TARGET_PROCESSES):
+        rows = month_summary[month_summary[effective_report.OUTPUT_PROCESS_COL].eq(process)]
         with column:
-            render_effective_metric(f"{category} 생산유효도", detail[detail["분류"].eq(category)])
+            rate = effective_report_rate(
+                rows,
+                effective_report.SUMMARY_EFFECTIVE_COL,
+                effective_report.SUMMARY_ACTUAL_COL,
+            )
+            label = process.replace("[10]", "").replace("[80]", "").replace("/", "")
+            st.metric(f"{month_label} {label} 생산유효도", format_effective_pct(rate))
+            st.caption(process)
+
+    if not month_major.empty:
+        category_cols = st.columns(3)
+        for column, category in zip(category_cols, EFFECTIVE_PRODUCTION_CATEGORY_ORDER):
+            rows = month_major[month_major[effective_report.MAJOR_CATEGORY_COL].eq(category)]
+            actual = float(parse_mixed_numeric(rows[effective_report.SUMMARY_ACTUAL_COL]).sum()) if not rows.empty else 0.0
+            effective = float(parse_mixed_numeric(rows[effective_report.SUMMARY_EFFECTIVE_COL]).sum()) if not rows.empty else 0.0
+            rate = 0.0 if actual == 0 else effective / actual * 100
+            with column:
+                st.metric(f"{month_label} {category} 생산유효도", format_effective_pct(rate))
+                st.caption(f"실적 {format_effective_int(actual)} / 유효 {format_effective_int(effective)}")
 
     st.markdown("#### 일자별 생산유효도 추이")
-    trend = build_effective_daily_trend(detail)
-    st.plotly_chart(build_effective_trend_figure(trend), width="stretch")
+    st.plotly_chart(build_original_effective_trend_figure(month_summary, month_major), width="stretch")
 
     st.markdown("#### 공정별 요약")
-    process_summary = aggregate_effective_quantities(detail, ["공정"])
+    process_summary = month_summary.copy()
+    process_summary[effective_report.DATE_COL] = process_summary[effective_report.DATE_COL].map(format_effective_date_option)
     st.dataframe(
         process_summary,
         width="stretch",
         hide_index=True,
         column_config={
-            "필요수량 합계": st.column_config.NumberColumn("필요수량 합계", format="%d"),
-            "실적수량 합계": st.column_config.NumberColumn("실적수량 합계", format="%d"),
-            "유효생산량 합계": st.column_config.NumberColumn("유효생산량 합계", format="%d"),
-            "비유효생산량 합계": st.column_config.NumberColumn("비유효생산량 합계", format="%d"),
-            "잔여필요수량 합계": st.column_config.NumberColumn("잔여필요수량 합계", format="%d"),
-            "생산 SKU수": st.column_config.NumberColumn("생산 SKU수", format="%d"),
-            "유효 SKU수": st.column_config.NumberColumn("유효 SKU수", format="%d"),
-            "생산유효도(%)": st.column_config.ProgressColumn(
-                "생산유효도(%)",
+            effective_report.SUMMARY_NEED_COL: st.column_config.NumberColumn(effective_report.SUMMARY_NEED_COL, format="%d"),
+            effective_report.SUMMARY_ACTUAL_COL: st.column_config.NumberColumn(effective_report.SUMMARY_ACTUAL_COL, format="%d"),
+            effective_report.SUMMARY_EFFECTIVE_COL: st.column_config.NumberColumn(effective_report.SUMMARY_EFFECTIVE_COL, format="%d"),
+            effective_report.SUMMARY_INEFFECTIVE_COL: st.column_config.NumberColumn(effective_report.SUMMARY_INEFFECTIVE_COL, format="%d"),
+            effective_report.SUMMARY_REMAINING_COL: st.column_config.NumberColumn(effective_report.SUMMARY_REMAINING_COL, format="%d"),
+            effective_report.PRODUCTION_EFFECTIVENESS_COL: st.column_config.ProgressColumn(
+                effective_report.PRODUCTION_EFFECTIVENESS_COL,
                 format="%.1f%%",
                 min_value=0,
                 max_value=100,
@@ -11547,12 +11815,12 @@ def render_effective_production_dashboard() -> None:
     with table_filter_cols[0]:
         process_filter = st.multiselect(
             "공정",
-            options=list(EFFECTIVE_PRODUCTION_PROCESS_ORDER),
-            default=list(EFFECTIVE_PRODUCTION_PROCESS_ORDER),
+            options=list(effective_report.TARGET_PROCESSES),
+            default=list(effective_report.TARGET_PROCESSES),
             key="effective_detail_process_filter",
         )
     with table_filter_cols[1]:
-        status_options = ["정상매칭", "계획없음", "실적없음"]
+        status_options = sorted(month_detail[effective_report.MATCH_STATUS_COL].dropna().astype(str).unique()) if not month_detail.empty else []
         status_filter = st.multiselect(
             "매칭상태",
             options=status_options,
@@ -11567,8 +11835,28 @@ def render_effective_production_dashboard() -> None:
             placeholder="제품코드, 제품명, 거래처, 이니셜",
         )
 
-    filtered_detail = filter_effective_detail_table(detail, process_filter, status_filter, query)
-    detail_table = prepare_effective_detail_table(filtered_detail)
+    detail_table = month_detail.copy()
+    if process_filter and effective_report.OUTPUT_PROCESS_COL in detail_table.columns:
+        detail_table = detail_table[detail_table[effective_report.OUTPUT_PROCESS_COL].isin(process_filter)]
+    if status_filter and effective_report.MATCH_STATUS_COL in detail_table.columns:
+        detail_table = detail_table[detail_table[effective_report.MATCH_STATUS_COL].isin(status_filter)]
+    if query.strip():
+        search_columns = [
+            column
+            for column in [
+                effective_report.OUTPUT_SKU_COL,
+                effective_report.OUTPUT_PRODUCT_NAME_COL,
+                effective_report.CUSTOMER_COL,
+                effective_report.INITIAL_COL,
+                effective_report.MAJOR_CATEGORY_COL,
+                effective_report.SHEET_NAME_COL,
+            ]
+            if column in detail_table.columns
+        ]
+        for term in query.split():
+            haystack = detail_table[search_columns].fillna("").astype(str).agg(" ".join, axis=1)
+            detail_table = detail_table[haystack.str.contains(re.escape(term), case=False, na=False)]
+
     display_limit = 1000
     if len(detail_table) > display_limit:
         st.caption(f"상세표는 화면 성능을 위해 {display_limit:,}행까지만 표시합니다. 현재 필터 결과 {len(detail_table):,}행")
@@ -11578,14 +11866,13 @@ def render_effective_production_dashboard() -> None:
         height=640,
         hide_index=True,
         column_config={
-            "수요수량": st.column_config.NumberColumn("수요수량", format="%d"),
-            "필요수량": st.column_config.NumberColumn("필요수량", format="%d"),
-            "실적수량": st.column_config.NumberColumn("실적수량", format="%d"),
-            "유효생산량": st.column_config.NumberColumn("유효생산량", format="%d"),
-            "비유효생산량": st.column_config.NumberColumn("비유효생산량", format="%d"),
-            "잔여필요수량": st.column_config.NumberColumn("잔여필요수량", format="%d"),
-            "생산유효도(%)": st.column_config.ProgressColumn(
-                "생산유효도(%)",
+            effective_report.NEED_QTY_COL: st.column_config.NumberColumn(effective_report.NEED_QTY_COL, format="%d"),
+            effective_report.ACTUAL_QTY_COL: st.column_config.NumberColumn(effective_report.ACTUAL_QTY_COL, format="%d"),
+            effective_report.EFFECTIVE_PRODUCTION_COL: st.column_config.NumberColumn(effective_report.EFFECTIVE_PRODUCTION_COL, format="%d"),
+            effective_report.INEFFECTIVE_PRODUCTION_COL: st.column_config.NumberColumn(effective_report.INEFFECTIVE_PRODUCTION_COL, format="%d"),
+            effective_report.REMAINING_NEED_COL: st.column_config.NumberColumn(effective_report.REMAINING_NEED_COL, format="%d"),
+            effective_report.PRODUCTION_EFFECTIVENESS_COL: st.column_config.ProgressColumn(
+                effective_report.PRODUCTION_EFFECTIVENESS_COL,
                 format="%.1f%%",
                 min_value=0,
                 max_value=100,
@@ -11639,11 +11926,11 @@ def main() -> None:
         if selected_top_view == "생산유효도 분석":
             sync_plan_api_data_mode()
             data_base_dir = BASE_DIR
-            source_label = "APS API + 생산실적 API"
+            source_label = "생산유효도 수요 스냅샷 + 생산실적 API"
             updated_at = get_plan_api_updated_at() if is_plan_api_configured() else ""
             cloud_snapshots_available = False
             data_live_updated_at = ""
-            sidebar_status_caption = "API 모드: APS 계획 + 생산실적 기준"
+            sidebar_status_caption = "API 모드: 기존 생산유효도 계산 기준"
         else:
             sync_plan_api_data_mode()
             if selected_top_view == "전체 품목 현황":
