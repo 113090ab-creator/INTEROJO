@@ -5041,6 +5041,9 @@ def build_summary_group_totals_with_safe_split(df: pd.DataFrame) -> pd.DataFrame
         base["분류별요약"] = "(미분류)"
     if "이니셜" not in base.columns:
         base["이니셜"] = ""
+    if "사출 부족수량" in base.columns:
+        base["사출생산필요수량"] = parse_mixed_numeric(base["사출 부족수량"])
+
     for qty_col in ["부족수량", "사출생산필요수량"]:
         if qty_col not in base.columns:
             base[qty_col] = 0
@@ -9473,28 +9476,7 @@ def render_shortage_dashboard(
         )
 
     if selected_shortage_view == "생산 현황":
-        full_demand_summary = build_summary_group_totals_with_safe_split(filtered)
-        with st.expander("분류별요약 기준 부족수량 요약", expanded=False):
-            st.caption(
-                "오더 기준 = 이니셜에 안전 미포함, 안전재고 기준 = 이니셜에 안전 포함, "
-                "사출부족수량 = 사출생산필요수량 합계"
-            )
-            if full_demand_summary.empty:
-                st.info("분류별요약 기준 부족수량 요약을 계산할 데이터가 없습니다.")
-            else:
-                full_demand_summary_display = format_numeric_columns_for_display(full_demand_summary)
-                full_demand_summary_column_config = build_auto_column_config(
-                    full_demand_summary_display,
-                    full_demand_summary_display.columns.tolist(),
-                    source_df=full_demand_summary,
-                )
-                st.dataframe(
-                    full_demand_summary_display,
-                    width="stretch",
-                    height=320,
-                    column_config=full_demand_summary_column_config,
-                    hide_index=True,
-                )
+        full_demand_summary_slot = st.empty()
 
         c1, c2, c3 = st.columns(3, gap="medium")
         with c1:
@@ -9823,6 +9805,29 @@ def render_shortage_dashboard(
             ascending=[False, False, False, True, True],
         )[p_detail_columns]
         p_table_ui = p_table.drop(columns=["상태"], errors="ignore")
+        with full_demand_summary_slot.container():
+            full_demand_summary = build_summary_group_totals_with_safe_split(p_view)
+            with st.expander("분류별요약 기준 부족수량 요약", expanded=False):
+                st.caption(
+                    "표시 표 기준 = P코드 중심으로 R/Q 공정수량 연결 후 집계, "
+                    "오더 기준 = 이니셜에 안전 미포함, 안전재고 기준 = 이니셜에 안전 포함"
+                )
+                if full_demand_summary.empty:
+                    st.info("분류별요약 기준 부족수량 요약을 계산할 데이터가 없습니다.")
+                else:
+                    full_demand_summary_display = format_numeric_columns_for_display(full_demand_summary)
+                    full_demand_summary_column_config = build_auto_column_config(
+                        full_demand_summary_display,
+                        full_demand_summary_display.columns.tolist(),
+                        source_df=full_demand_summary,
+                    )
+                    st.dataframe(
+                        full_demand_summary_display,
+                        width="stretch",
+                        height=320,
+                        column_config=full_demand_summary_column_config,
+                        hide_index=True,
+                    )
         kpi_source = p_table_ui.copy()
         kpi_totals = {
             "부족수량": parse_mixed_numeric(kpi_source["부족수량"]).sum() if "부족수량" in kpi_source.columns else 0,
