@@ -9592,10 +9592,20 @@ def render_shortage_dashboard(
                     if "제품명" not in p_universe.columns:
                         p_universe["제품명"] = "-"
 
+                    p_lookup_columns = [*key_cols, "품목코드", "제품명", "부족수량_num"]
+                    if "납기일" in p_universe.columns:
+                        p_lookup_columns.append("납기일")
                     p_key_map = (
                         p_universe.sort_values(["부족수량_num", "품목코드"], ascending=[False, True])
-                        .drop_duplicates(subset=key_cols, keep="first")[key_cols + ["품목코드", "제품명"]]
-                        .rename(columns={"품목코드": "매핑P코드", "제품명": "매핑제품명"})
+                        .drop_duplicates(subset=key_cols, keep="first")[p_lookup_columns]
+                        .rename(
+                            columns={
+                                "품목코드": "매핑P코드",
+                                "제품명": "매핑제품명",
+                                "부족수량_num": "매핑P부족수량",
+                                "납기일": "매핑P납기일",
+                            }
+                        )
                     )
                     p_view = p_view.merge(p_key_map, on=key_cols, how="left")
                     mapped_mask = p_view["매핑P코드"].astype(str).str.strip().str.lower().ne("nan")
@@ -9603,7 +9613,22 @@ def render_shortage_dashboard(
                     p_view.loc[mapped_mask, "품목코드"] = p_view.loc[mapped_mask, "매핑P코드"]
                     if "제품명" in p_view.columns:
                         p_view.loc[mapped_mask, "제품명"] = p_view.loc[mapped_mask, "매핑제품명"]
-                    p_view = p_view.drop(columns=["매핑P코드", "매핑제품명"], errors="ignore")
+                    if "부족수량" in p_view.columns and "매핑P부족수량" in p_view.columns:
+                        current_shortage = parse_mixed_numeric(p_view["부족수량"])
+                        mapped_shortage = parse_mixed_numeric(p_view["매핑P부족수량"])
+                        p_view["부족수량"] = current_shortage.where(current_shortage > 0, mapped_shortage).fillna(0)
+                    if "납기일" in p_view.columns and "매핑P납기일" in p_view.columns:
+                        due_text = p_view["납기일"].astype(str).str.strip()
+                        mapped_due_text = p_view["매핑P납기일"].astype(str).str.strip()
+                        due_missing = due_text.str.lower().isin({"", "-", "nan", "nat", "none"})
+                        mapped_due_valid = ~mapped_due_text.str.lower().isin({"", "-", "nan", "nat", "none"})
+                        p_view.loc[due_missing & mapped_due_valid, "납기일"] = mapped_due_text[
+                            due_missing & mapped_due_valid
+                        ]
+                    p_view = p_view.drop(
+                        columns=["매핑P코드", "매핑제품명", "매핑P부족수량", "매핑P납기일"],
+                        errors="ignore",
+                    )
         else:
             if SEPARATION_REQUIRED_QTY_COL not in p_rows.columns:
                 p_rows[SEPARATION_REQUIRED_QTY_COL] = 0
