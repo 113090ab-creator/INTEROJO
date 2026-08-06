@@ -97,6 +97,7 @@ EFFECTIVE_PRODUCTION_DEFAULT_SITE = "C관"
 EFFECTIVE_PRODUCTION_DEFAULT_DAYS = 60
 EFFECTIVE_PRODUCTION_SOURCE_DIR = BASE_DIR / "effective_production_sources"
 EFFECTIVE_PRODUCTION_DOI_CRITERIA_FILE = "c_site_pcode_power_doi_criteria.csv"
+EFFECTIVE_SAMPLE_AVAILABLE_REFERENCE_FILE = "effective_sample_available_reference.csv"
 EFFECTIVE_OVERPRODUCTION_ACTION_ORDER = ("생산자제", "생산조정", "계획초과 확인", "모니터링")
 EFFECTIVE_SAMPLE_AVAILABLE_COL = "샘플 신청가능수량"
 ITEM_LIST_BULK_ENDPOINT = "/api/item-list-bulk"
@@ -11993,20 +11994,101 @@ def load_effective_doi_reference(
     return doi_reference, "DOI 기준 없음"
 
 
+def build_effective_sample_available_signature(source_dir: Path) -> tuple[tuple[str, str, int, int], ...]:
+    sample_path = source_dir / EFFECTIVE_SAMPLE_AVAILABLE_REFERENCE_FILE
+    if not sample_path.exists():
+        return (("effective-sample", str(sample_path), -1, 0),)
+    stat = sample_path.stat()
+    return (("effective-sample", str(sample_path), stat.st_size, stat.st_mtime_ns),)
+
+
+def normalize_effective_sample_available_reference(source: pd.DataFrame, source_label: str) -> pd.DataFrame:
+    output_columns = ["제품코드", EFFECTIVE_SAMPLE_AVAILABLE_COL, "샘플수량출처"]
+    if source.empty:
+        return pd.DataFrame(columns=output_columns)
+
+    work = source.copy()
+    work.columns = [str(column).strip() for column in work.columns]
+    code_col = pick_first_existing_column(work.columns.tolist(), ["제품코드", "생산코드", "품목코드"])
+    sample_col = pick_first_existing_column(
+        work.columns.tolist(),
+        [EFFECTIVE_SAMPLE_AVAILABLE_COL, "샘플신청가능수량", "샘플가능수량"],
+    )
+    if code_col is None or sample_col is None:
+        return pd.DataFrame(columns=output_columns)
+
+    result = pd.DataFrame(
+        {
+            "제품코드": work[code_col].map(normalize_item_code_value),
+            EFFECTIVE_SAMPLE_AVAILABLE_COL: parse_mixed_numeric(work[sample_col]).fillna(0),
+        }
+    )
+    result = result[
+        result["제품코드"].str.startswith("P", na=False)
+        & result[EFFECTIVE_SAMPLE_AVAILABLE_COL].gt(0)
+    ].copy()
+    if result.empty:
+        return pd.DataFrame(columns=output_columns)
+
+    result = (
+        result.groupby("제품코드", as_index=False)[EFFECTIVE_SAMPLE_AVAILABLE_COL]
+        .max()
+        .sort_values("제품코드")
+        .reset_index(drop=True)
+    )
+    result["샘플수량출처"] = source_label
+    return result[output_columns]
+
+
+@st.cache_data(show_spinner=False, max_entries=CACHE_MAX_ENTRIES)
+def load_effective_sample_available_reference_file(
+    source_dir_str: str,
+    sample_signature: tuple[tuple[str, str, int, int], ...],
+) -> pd.DataFrame:
+    _ = sample_signature
+    sample_path = Path(source_dir_str) / EFFECTIVE_SAMPLE_AVAILABLE_REFERENCE_FILE
+    if not sample_path.exists():
+        return pd.DataFrame(columns=["제품코드", EFFECTIVE_SAMPLE_AVAILABLE_COL, "샘플수량출처"])
+    try:
+        source = pd.read_csv(sample_path, encoding="utf-8-sig")
+    except Exception:
+        return pd.DataFrame(columns=["제품코드", EFFECTIVE_SAMPLE_AVAILABLE_COL, "샘플수량출처"])
+    return normalize_effective_sample_available_reference(source, "전체품목 샘플신청가능수량")
+
+
+@st.cache_data(show_spinner=False, max_entries=CACHE_MAX_ENTRIES)
+def load_effective_sample_available_master_reference(master_path_str: str, master_signature: tuple[str, int, int]) -> pd.DataFrame:
+    _ = master_signature
+    master_path = Path(master_path_str)
+    if not master_path.exists():
+        return pd.DataFrame(columns=["제품코드", EFFECTIVE_SAMPLE_AVAILABLE_COL, "샘플수량출처"])
+    try:
+        source = pd.read_excel(
+            master_path,
+            sheet_name=ALL_ITEM_MASTER_SHEET,
+            usecols=lambda column: str(column).strip() in {"품목코드", "샘플가능수량"},
+        )
+    except Exception:
+        return pd.DataFrame(columns=["제품코드", EFFECTIVE_SAMPLE_AVAILABLE_COL, "샘플수량출처"])
+    return normalize_effective_sample_available_reference(source, "전체품목 샘플신청가능수량")
+
+
 @st.cache_data(show_spinner=False, max_entries=CACHE_MAX_ENTRIES)
 def load_effective_sample_available_reference(
-    api_base_url: str,
-    api_key_hash: str,
-    api_updated_at: str,
-    refresh_nonce: int,
+    source_dir_str: str,
+    sample_signature: tuple[tuple[str, str, int, int], ...],
     base_dir_str: str,
-    all_item_refresh_key: str,
+    plan_sample_refresh_key: str,
 ) -> pd.DataFrame:
-    _ = api_base_url, api_key_hash, api_updated_at, refresh_nonce, all_item_refresh_key
+    _ = sample_signature, plan_sample_refresh_key
     output_columns = ["제품코드", EFFECTIVE_SAMPLE_AVAILABLE_COL, "샘플수량출처"]
     references: list[pd.DataFrame] = []
 
-    if is_plan_api_enabled():
+    file_reference = load_effective_sample_available_reference_file(source_dir_str, sample_signature)
+    if not file_reference.empty:
+        references.append(file_reference)
+
+    if not references and is_plan_api_enabled():
         demand = load_api_demand_like_df(EFFECTIVE_PRODUCTION_DEFAULT_SITE)
         if not demand.empty and EFFECTIVE_SAMPLE_AVAILABLE_COL in demand.columns:
             work = demand.copy()
@@ -12024,26 +12106,15 @@ def load_effective_sample_available_reference(
                 api_reference["샘플수량출처"] = "APS 샘플신청가능수량"
                 references.append(api_reference)
 
-    master_path = find_all_item_master_file(Path(base_dir_str))
-    if master_path is not None:
-        master = read_all_item_master(str(master_path), all_item_refresh_key)
-        if not master.empty:
-            master_reference = pd.DataFrame(
-                {
-                    "제품코드": master["품목코드"].map(normalize_item_code_value),
-                    EFFECTIVE_SAMPLE_AVAILABLE_COL: parse_mixed_numeric(master["샘플가능수량"]).fillna(0),
-                }
+    if not references:
+        master_path = find_all_item_master_file(Path(base_dir_str))
+        if master_path is not None:
+            stat = master_path.stat()
+            master_reference = load_effective_sample_available_master_reference(
+                str(master_path),
+                (master_path.name, stat.st_size, stat.st_mtime_ns),
             )
-            master_reference = master_reference[master_reference["제품코드"].str.startswith("P", na=False)].copy()
             if not master_reference.empty:
-                master_reference = (
-                    master_reference.groupby("제품코드", as_index=False)[EFFECTIVE_SAMPLE_AVAILABLE_COL]
-                    .max()
-                    .sort_values("제품코드")
-                    .reset_index(drop=True)
-                )
-                master_reference = master_reference[master_reference[EFFECTIVE_SAMPLE_AVAILABLE_COL].gt(0)].copy()
-                master_reference["샘플수량출처"] = "전체품목 샘플신청가능수량"
                 references.append(master_reference)
 
     if not references:
@@ -12460,14 +12531,13 @@ def render_effective_production_dashboard() -> None:
     month_detail = prepare_original_effective_detail_table(detail_df, selected_month)
     month_label = format_effective_month_short_label(selected_month)
     doi_reference, doi_source_label = load_effective_doi_reference(str(EFFECTIVE_PRODUCTION_SOURCE_DIR), source_signature)
-    all_item_refresh_key = build_all_item_refresh_key(BASE_DIR)
+    sample_signature = build_effective_sample_available_signature(EFFECTIVE_PRODUCTION_SOURCE_DIR)
+    plan_sample_refresh_key = "" if sample_signature[0][2] >= 0 else build_plan_api_refresh_key()
     sample_reference = load_effective_sample_available_reference(
-        get_plan_api_base_url(),
-        api_key_hash,
-        get_plan_api_updated_at(),
-        get_plan_api_refresh_nonce(),
+        str(EFFECTIVE_PRODUCTION_SOURCE_DIR),
+        sample_signature,
         str(BASE_DIR),
-        all_item_refresh_key,
+        plan_sample_refresh_key,
     )
     doi_reference, doi_source_label = apply_effective_sample_available_stock_basis(
         doi_reference,
