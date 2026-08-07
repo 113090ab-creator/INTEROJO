@@ -3055,6 +3055,16 @@ def build_plan_api_site_param(site_filter: object) -> str:
     return SITE_GROUP_API_PARAMS.get(site_group, text)
 
 
+def pick_site_filter_default(site_options: list[object], preferred_site: str = "C관") -> object:
+    for option in site_options:
+        if clean_text_value(option) == preferred_site:
+            return option
+    for option in site_options:
+        if normalize_site_group(option) == preferred_site:
+            return option
+    return site_options[0] if site_options else "전체"
+
+
 def clean_sheet_category(value: object) -> str:
     text = clean_text_value(value)
     if text == UNCLASSIFIED_SHEET_CATEGORY:
@@ -7997,16 +8007,30 @@ def apply_filters(
         st.markdown('<div class="sidebar-section-title">필터</div>', unsafe_allow_html=True)
         st.caption(f"업데이트: {updated_at}")
         st.caption(f"앱 버전: {APP_CACHE_VERSION}")
-        st.caption("기본 적용: 전체 수요")
+        default_scope_caption = st.empty()
 
         site_sum_map, _, _ = build_filter_option_maps(df, "전체")
         site_options = ["전체"] + list(site_sum_map.keys())
         site_count_map = {"전체": float(sum(site_sum_map.values())), **site_sum_map}
+        default_site_option = pick_site_filter_default(site_options, "C관")
+        default_site_label = "전체" if clean_text_value(default_site_option) == "전체" else normalize_site_group(default_site_option)
+        default_scope_caption.caption(f"기본 적용: {default_site_label} 수요")
+        site_pills_key = "flt_site_pills"
+        site_default_marker_key = "flt_site_pills_c_site_default_applied_v1"
+        current_site_selection = st.session_state.get(site_pills_key)
+        if current_site_selection not in site_options:
+            st.session_state[site_pills_key] = default_site_option
+            st.session_state[site_default_marker_key] = True
+        elif current_site_selection == "전체" and not st.session_state.get(site_default_marker_key):
+            st.session_state[site_pills_key] = default_site_option
+            st.session_state[site_default_marker_key] = True
+        else:
+            st.session_state[site_default_marker_key] = True
         selected_site_option = st.pills(
             "사이트코드",
             options=site_options,
-            default="전체",
-            key="flt_site_pills",
+            default=default_site_option,
+            key=site_pills_key,
             format_func=lambda x: format_pill_label(x, site_count_map),
         )
 
@@ -12921,8 +12945,33 @@ def main() -> None:
                     df, file_info_df, _ = load_api_shortage_data(refresh_key, str(data_base_dir))
                     updated_at = get_plan_api_updated_at()
                 except Exception as live_exc:
-                    st.error(f"APS API 수요 기준 생산 부족 현황 계산 실패: {live_exc}")
-                    st.stop()
+                    fallback_loaded = False
+                    try:
+                        snapshot_df, snapshot_file_info_df, _ = load_cloud_shortage_snapshot()
+                        if not snapshot_df.empty:
+                            df = snapshot_df
+                            file_info_df = snapshot_file_info_df
+                            updated_at = get_cloud_snapshot_meta_value("data_updated_at", data_live_updated_at)
+                            source_label = "Cloud 스냅샷 (APS API 실패 fallback)"
+                            sidebar_status_caption = "API 오류: 기존 스냅샷 표시"
+                            st.warning(f"APS API 수요 조회 실패로 기존 스냅샷을 표시합니다: {live_exc}")
+                            fallback_loaded = True
+                    except Exception:
+                        fallback_loaded = False
+
+                    if not fallback_loaded:
+                        try:
+                            refresh_key = build_data_refresh_key(data_base_dir)
+                            df, file_info_df, _ = load_data(refresh_key, str(data_base_dir))
+                            updated_at = data_live_updated_at
+                            source_label = "로컬 파일 (APS API 실패 fallback)"
+                            sidebar_status_caption = "API 오류: 로컬 파일 기준"
+                            st.warning(f"APS API 수요 조회 실패로 로컬 파일 기준을 표시합니다: {live_exc}")
+                            fallback_loaded = True
+                        except Exception as fallback_exc:
+                            st.error(f"APS API 수요 기준 생산 부족 현황 계산 실패: {live_exc}")
+                            st.error(f"대체 데이터 로드도 실패했습니다: {fallback_exc}")
+                            st.stop()
             else:
                 use_data_cloud_snapshot = cloud_snapshots_available and is_cloud_snapshot_fresh(
                     "data_updated_at", data_live_updated_at
