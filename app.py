@@ -69,7 +69,8 @@ WAREHOUSE_MAP = {
     "누수규격검사": "누수규격검사 창고",
 }
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
-TABLE_STYLE_CELL_LIMIT = 12000
+TABLE_STYLE_CELL_LIMIT = 4000
+DISPLAY_ROW_LIMIT = 500
 CACHE_MAX_ENTRIES = 64
 APP_CACHE_VERSION = "20260804-performance-v3"
 PLAN_API_BASE_URL_DEFAULT = "https://plan.interojo.net"
@@ -4230,12 +4231,18 @@ def format_numeric_columns_for_display(df: pd.DataFrame) -> pd.DataFrame:
 def limit_dataframe_for_display(
     df: pd.DataFrame, limit: int | None = None
 ) -> tuple[pd.DataFrame, bool]:
-    _ = limit
-    return df, False
+    row_limit = DISPLAY_ROW_LIMIT if limit is None else limit
+    if row_limit is None or row_limit <= 0 or len(df) <= row_limit:
+        return df, False
+    return df.head(row_limit).copy(), True
 
 
 def caption_limited_rows(total_rows: int, displayed_rows: int) -> None:
-    _ = total_rows, displayed_rows
+    if displayed_rows < total_rows:
+        st.caption(
+            f"화면 표시: 상위 {displayed_rows:,}건 / 전체 {total_rows:,}건 "
+            "· 엑셀 다운로드는 전체 기준입니다."
+        )
 
 
 def move_columns_to_end(columns: list[str], trailing_columns: list[str]) -> list[str]:
