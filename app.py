@@ -12769,7 +12769,7 @@ def main() -> None:
         """,
         unsafe_allow_html=True,
     )
-    top_views = ["생산 부족 현황", "리드지 현황", "생산코드별 리드지", "전체 품목 현황", "생산유효도 분석"]
+    top_views = ["생산 부족 현황", "리드지 현황", "생산코드별 리드지", "생산유효도 분석"]
     all_item_site_filter = "전체"
     with st.sidebar:
         st.markdown(
