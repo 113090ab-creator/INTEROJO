@@ -3583,8 +3583,8 @@ def build_data_refresh_key(base_dir: Path) -> str:
     return "|".join(parts)
 
 
-def build_api_shortage_refresh_key(base_dir: Path) -> str:
-    parts = [f"api-shortage:{APP_CACHE_VERSION}", build_plan_api_refresh_key()]
+def build_api_shortage_refresh_key(base_dir: Path, site_filter: str = "전체") -> str:
+    parts = [f"api-shortage:{APP_CACHE_VERSION}", f"site:{clean_text_value(site_filter) or '전체'}", build_plan_api_refresh_key()]
     try:
         inv_path, _ = find_excel_files(base_dir)
         stat = inv_path.stat()
@@ -5716,10 +5716,11 @@ def load_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[pd.Dat
 def load_api_shortage_data(
     refresh_key: str,
     base_dir_str: str | None = None,
+    site_filter: str = "전체",
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     _ = refresh_key
     data_base_dir = Path(base_dir_str) if base_dir_str else BASE_DIR
-    raw, error = read_aps_plan_operations_dataframe(APS_PLAN_SHORTAGE_OPERATIONS)
+    raw, error = read_aps_plan_operations_dataframe(APS_PLAN_SHORTAGE_OPERATIONS, site_filter)
     if error:
         raise ValueError(f"APS API 수요 조회 실패: {error}")
     if raw.empty:
@@ -8002,6 +8003,7 @@ def apply_filters(
     updated_at: str,
     data_base_dir: Path | None = None,
     source_label: str = "",
+    locked_site_filter: str | None = None,
 ) -> pd.DataFrame:
     with st.sidebar:
         st.markdown('<div class="sidebar-section-title">필터</div>', unsafe_allow_html=True)
@@ -8012,27 +8014,34 @@ def apply_filters(
         site_sum_map, _, _ = build_filter_option_maps(df, "전체")
         site_options = ["전체"] + list(site_sum_map.keys())
         site_count_map = {"전체": float(sum(site_sum_map.values())), **site_sum_map}
-        default_site_option = pick_site_filter_default(site_options, "C관")
-        default_site_label = "전체" if clean_text_value(default_site_option) == "전체" else normalize_site_group(default_site_option)
-        default_scope_caption.caption(f"기본 적용: {default_site_label} 수요")
-        site_pills_key = "flt_site_pills"
-        site_default_marker_key = "flt_site_pills_c_site_default_applied_v1"
-        current_site_selection = st.session_state.get(site_pills_key)
-        if current_site_selection not in site_options:
-            st.session_state[site_pills_key] = default_site_option
-            st.session_state[site_default_marker_key] = True
-        elif current_site_selection == "전체" and not st.session_state.get(site_default_marker_key):
-            st.session_state[site_pills_key] = default_site_option
-            st.session_state[site_default_marker_key] = True
+        locked_site_text = clean_text_value(locked_site_filter)
+        if locked_site_text:
+            selected_site_option = "전체" if locked_site_text == "전체" else normalize_site_group(locked_site_text)
+            default_scope_caption.caption(f"API 조회 범위: {selected_site_option} 수요")
         else:
-            st.session_state[site_default_marker_key] = True
-        selected_site_option = st.pills(
-            "사이트코드",
-            options=site_options,
-            default=default_site_option,
-            key=site_pills_key,
-            format_func=lambda x: format_pill_label(x, site_count_map),
-        )
+            default_site_option = pick_site_filter_default(site_options, "C관")
+            default_site_label = (
+                "전체" if clean_text_value(default_site_option) == "전체" else normalize_site_group(default_site_option)
+            )
+            default_scope_caption.caption(f"기본 적용: {default_site_label} 수요")
+            site_pills_key = "flt_site_pills"
+            site_default_marker_key = "flt_site_pills_c_site_default_applied_v1"
+            current_site_selection = st.session_state.get(site_pills_key)
+            if current_site_selection not in site_options:
+                st.session_state[site_pills_key] = default_site_option
+                st.session_state[site_default_marker_key] = True
+            elif current_site_selection == "전체" and not st.session_state.get(site_default_marker_key):
+                st.session_state[site_pills_key] = default_site_option
+                st.session_state[site_default_marker_key] = True
+            else:
+                st.session_state[site_default_marker_key] = True
+            selected_site_option = st.pills(
+                "사이트코드",
+                options=site_options,
+                default=default_site_option,
+                key=site_pills_key,
+                format_func=lambda x: format_pill_label(x, site_count_map),
+            )
 
         st.divider()
         unified_query = st.text_input(
@@ -9443,9 +9452,10 @@ def render_shortage_dashboard(
     file_info_df: pd.DataFrame | None = None,
     data_base_dir: Path | None = None,
     source_label: str = "",
+    locked_site_filter: str | None = None,
 ) -> None:
     enriched_df = add_rq_group_columns(df)
-    filtered = apply_filters(enriched_df, updated_at, data_base_dir, source_label)
+    filtered = apply_filters(enriched_df, updated_at, data_base_dir, source_label, locked_site_filter)
     download_stamp = datetime.now(DISPLAY_TZ).strftime("%Y%m%d_%H%M%S")
 
     detail_columns = [
@@ -12795,6 +12805,7 @@ def main() -> None:
     )
     top_views = ["생산 부족 현황", "리드지 현황", "생산코드별 리드지", "생산유효도 분석"]
     all_item_site_filter = "전체"
+    shortage_api_site_filter = "전체"
     with st.sidebar:
         st.markdown(
             """
@@ -12833,6 +12844,21 @@ def main() -> None:
             sidebar_status_caption = "API 모드: 기존 생산유효도 계산 기준"
         else:
             sync_plan_api_data_mode()
+            if selected_top_view == "생산 부족 현황" and is_plan_api_enabled():
+                shortage_api_site_options = [*SITE_GROUP_ORDER, "전체"]
+                shortage_api_site_key = "shortage_api_site_prefilter_v1"
+                if st.session_state.get(shortage_api_site_key) not in shortage_api_site_options:
+                    st.session_state[shortage_api_site_key] = EFFECTIVE_PRODUCTION_DEFAULT_SITE
+                shortage_api_site_filter = (
+                    st.pills(
+                        "사이트코드",
+                        options=shortage_api_site_options,
+                        default=EFFECTIVE_PRODUCTION_DEFAULT_SITE,
+                        key=shortage_api_site_key,
+                        help="선택한 관만 APS API로 먼저 조회합니다. 속도가 느릴 때는 C관/A관/S관 중 하나를 선택하세요.",
+                    )
+                    or EFFECTIVE_PRODUCTION_DEFAULT_SITE
+                )
             if selected_top_view == "전체 품목 현황":
                 default_all_item_site_filter = EFFECTIVE_PRODUCTION_DEFAULT_SITE if is_plan_api_enabled() else "전체"
                 all_item_site_filter = st.pills(
@@ -12941,8 +12967,12 @@ def main() -> None:
         if selected_top_view == "생산 부족 현황":
             if is_plan_api_enabled():
                 try:
-                    refresh_key = build_api_shortage_refresh_key(data_base_dir)
-                    df, file_info_df, _ = load_api_shortage_data(refresh_key, str(data_base_dir))
+                    refresh_key = build_api_shortage_refresh_key(data_base_dir, shortage_api_site_filter)
+                    df, file_info_df, _ = load_api_shortage_data(
+                        refresh_key,
+                        str(data_base_dir),
+                        shortage_api_site_filter,
+                    )
                     updated_at = get_plan_api_updated_at()
                 except Exception as live_exc:
                     fallback_loaded = False
@@ -13022,7 +13052,8 @@ def main() -> None:
     if selected_top_view == "전체 품목 현황":
         render_all_items_dashboard(all_items_df, updated_at, all_items_full_builder, all_item_site_filter)
     elif selected_top_view == "생산 부족 현황":
-        render_shortage_dashboard(df, updated_at, file_info_df, data_base_dir, source_label)
+        locked_site_filter = shortage_api_site_filter if is_plan_api_enabled() else None
+        render_shortage_dashboard(df, updated_at, file_info_df, data_base_dir, source_label, locked_site_filter)
     elif selected_top_view == "리드지 현황":
         render_leadji_dashboard(updated_at, df, leadji_info, leadji_stock, leadji_order_df)
     elif selected_top_view == "생산코드별 리드지":
