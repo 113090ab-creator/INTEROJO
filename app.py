@@ -72,7 +72,7 @@ TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 4000
 DISPLAY_ROW_LIMIT = 500
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260807-classification-v1"
+APP_CACHE_VERSION = "20260807-classification-v2"
 PLAN_API_BASE_URL_DEFAULT = "https://plan.interojo.net"
 PLAN_API_KEY_ENV = "PLAN_API_KEY"
 PLAN_API_BASE_URL_ENV = "PLAN_API_BASE_URL"
@@ -3092,15 +3092,35 @@ def infer_product_group_summary(*values: object) -> str:
     if not normalized:
         return ""
 
+    code_group_overrides = {
+        "P1097": "1-Day_Color_Sph_Fix",
+        "P1098": "1-Day_Color_Sph_Fix",
+        "P1099": "1-Day_Color_Sph_Fix",
+        "P1144": "1-Day_Color_Sph_Fix2",
+        "P1146": "1-Day_Color_Sph_Fix2",
+        "P1147": "1-Day_Color_Sph_Fix2",
+        "P1148": "1-Day_Color_Sph_Fix2",
+        "P1149": "1-Day_Color_Sph_Fix2",
+        "P1174": "1-Day_Color_Sph_Fix",
+        "P1175": "1-Day_Color_Sph_Fix",
+    }
+    for code_prefix, group in code_group_overrides.items():
+        if code_prefix in normalized:
+            return group
+
     if "BAGUMORE" in normalized:
         return "1-Day_Color_Sph_Fix2"
     if "BURNSUGAR" in normalized or "VIVABOOM" in normalized:
         return "1-Day_Color_Sph_Fix"
+    if any(token in normalized for token in ["BUKCHON", "HONGDAE"]):
+        return "1-Day_Color_Sph_Fix"
 
+    upper_text = text.upper()
+    daily_marker = bool(re.search(r"(^|[^A-Z0-9])D[\s_\-]", upper_text))
     is_one_day = any(
         token in normalized
-        for token in ["1DAY", "1D", "DAILY", "PIAD", "MGD", "HAPAPIAD", "SINCERED"]
-    )
+        for token in ["1DAY", "1D", "DAILY", "PIAD", "MGD", "HAPAPIAD", "SINCERED", "CLALEND"]
+    ) or daily_marker
     is_frp = any(token in normalized for token in ["FRP", "2WEEK", "2WKS", "MONTHLY", "MONTH"])
     if not is_one_day and not is_frp:
         return ""
@@ -3110,7 +3130,8 @@ def infer_product_group_summary(*values: object) -> str:
     period = "1-Day" if is_one_day and not is_frp else "FRP"
 
     is_toric = any(token in normalized for token in ["TORIC", "乱視", "NANCHU", "CYL"])
-    upper_text = text.upper()
+    is_fix2 = any(token in normalized for token in ["FIX2", "SPHERICALFIX2"])
+    is_fix = is_fix2 or any(token in normalized for token in ["FIX", "SPHERICALFIX", "축고정"])
     is_multifocal = "MULTIFOCAL" in normalized or "M/F" in upper_text or bool(re.search(r"\bMF\b", upper_text))
     is_color = any(
         token in normalized
@@ -3143,6 +3164,10 @@ def infer_product_group_summary(*values: object) -> str:
         return f"{prefix}{period}_Color_Toric" if is_color else f"{prefix}{period}_Toric"
     if is_multifocal:
         return f"{prefix}{period}_M/F"
+    if is_color and is_fix2:
+        return f"{prefix}{period}_Color_Sph_Fix2"
+    if is_color and is_fix:
+        return f"{prefix}{period}_Color_Sph_Fix"
     if is_color:
         return f"{prefix}{period}_Color_Sph"
     return f"{prefix}{period}_Sph"
