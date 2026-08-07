@@ -72,7 +72,7 @@ TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 4000
 DISPLAY_ROW_LIMIT = 500
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260804-performance-v3"
+APP_CACHE_VERSION = "20260807-classification-v1"
 PLAN_API_BASE_URL_DEFAULT = "https://plan.interojo.net"
 PLAN_API_KEY_ENV = "PLAN_API_KEY"
 PLAN_API_BASE_URL_ENV = "PLAN_API_BASE_URL"
@@ -3083,6 +3083,101 @@ def normalize_keyword_key(value: object) -> str:
     return re.sub(r"[\s_\-./()]+", "", text)
 
 
+def infer_product_group_summary(*values: object) -> str:
+    text = " ".join(clean_text_value(value) for value in values)
+    if not text:
+        return ""
+
+    normalized = normalize_keyword_key(text).upper()
+    if not normalized:
+        return ""
+
+    if "BAGUMORE" in normalized:
+        return "1-Day_Color_Sph_Fix2"
+    if "BURNSUGAR" in normalized or "VIVABOOM" in normalized:
+        return "1-Day_Color_Sph_Fix"
+
+    is_one_day = any(
+        token in normalized
+        for token in ["1DAY", "1D", "DAILY", "PIAD", "MGD", "HAPAPIAD", "SINCERED"]
+    )
+    is_frp = any(token in normalized for token in ["FRP", "2WEEK", "2WKS", "MONTHLY", "MONTH"])
+    if not is_one_day and not is_frp:
+        return ""
+
+    is_si = any(token in normalized for token in ["SILICONE", "SILICONEHYDROGEL", "SI1DAY", "SIFRP"])
+    prefix = "Si_" if is_si else ""
+    period = "1-Day" if is_one_day and not is_frp else "FRP"
+
+    is_toric = any(token in normalized for token in ["TORIC", "乱視", "NANCHU", "CYL"])
+    upper_text = text.upper()
+    is_multifocal = "MULTIFOCAL" in normalized or "M/F" in upper_text or bool(re.search(r"\bMF\b", upper_text))
+    is_color = any(
+        token in normalized
+        for token in [
+            "COLOR",
+            "BROWN",
+            "BRW",
+            "GRAY",
+            "GREY",
+            "CHOCO",
+            "CHOC",
+            "LATTE",
+            "GARNET",
+            "HONEY",
+            "PINK",
+            "OLIVE",
+            "BLUE",
+            "BLACK",
+            "BEIGE",
+            "ASH",
+            "HAZEL",
+            "SUGAR",
+            "RIBBON",
+            "DONUT",
+            "CHERISH",
+        ]
+    )
+
+    if is_toric:
+        return f"{prefix}{period}_Color_Toric" if is_color else f"{prefix}{period}_Toric"
+    if is_multifocal:
+        return f"{prefix}{period}_M/F"
+    if is_color:
+        return f"{prefix}{period}_Color_Sph"
+    return f"{prefix}{period}_Sph"
+
+
+def apply_inferred_product_group_summary(
+    df: pd.DataFrame,
+    group_col: str = "분류별요약",
+    product_col: str = "제품명",
+    item_col: str = "품목코드",
+    r_col: str = "R코드",
+) -> pd.DataFrame:
+    if df.empty or group_col not in df.columns:
+        return df
+
+    missing_mask = df[group_col].map(clean_text_value).eq("")
+    missing_mask |= df[group_col].astype(str).str.strip().str.lower().isin(INVALID_CATEGORY_VALUES)
+    missing_mask |= df[group_col].astype(str).str.strip().eq("기타")
+    if not missing_mask.any():
+        return df
+
+    available_cols = [col for col in [product_col, item_col, r_col] if col in df.columns]
+    if not available_cols:
+        return df
+
+    inferred = df.loc[missing_mask, available_cols].apply(
+        lambda row: infer_product_group_summary(*row.tolist()),
+        axis=1,
+    )
+    valid = inferred.map(clean_text_value).ne("")
+    target_index = inferred.index[valid]
+    df.loc[target_index, group_col] = inferred.loc[target_index]
+    return df
+
+
 def normalize_flow_link_key_value(value: object) -> str:
     try:
         if pd.isna(value):
@@ -3812,7 +3907,7 @@ def load_reference_maps_bundle(
     empty_bundle = ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
     if ref_path is None:
         return empty_bundle
-    cache_key = hashlib.sha256(f"reference-bundle-v3|{reference_refresh_key}".encode("utf-8")).hexdigest()[:24]
+    cache_key = hashlib.sha256(f"reference-bundle-v4|{reference_refresh_key}".encode("utf-8")).hexdigest()[:24]
     cache_path = ref_path.resolve().parent / ".dashboard_cache" / f"reference_bundle_{cache_key}.pkl"
     cached = read_pickle_cache(cache_path)
     if isinstance(cached, tuple) and len(cached) == 13 and all(isinstance(part, dict) for part in cached):
@@ -5500,7 +5595,9 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
         ],
         index=grouped_demand.index,
     )
-    grouped_demand["분류별요약"] = grouped_demand["코드5"].map(product_group_map).fillna("기타")
+    grouped_demand["분류별요약"] = grouped_demand["코드5"].map(product_group_map)
+    grouped_demand = apply_inferred_product_group_summary(grouped_demand)
+    grouped_demand["분류별요약"] = grouped_demand["분류별요약"].fillna("기타")
     grouped_demand["시트분류"] = grouped_demand["코드5"].map(sheet2_group_map)
     grouped_demand = grouped_demand.drop(columns=["코드5", "R코드5"])
 
@@ -5587,6 +5684,7 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
     # R/Q/U 등 비-P코드는 같은 R코드5를 공유하는 P코드의 분류를 이어받는다.
     result["코드5"] = result["품목코드"].astype(str).str[:5]
     result["분류별요약"] = result["코드5"].map(product_group_map)
+    result = apply_inferred_product_group_summary(result)
     result["시트분류"] = result["코드5"].map(sheet2_group_map)
     result["R코드5"] = result["R코드"].astype(str).str[:5]
 
@@ -5956,6 +6054,7 @@ def load_api_shortage_data(
     )
 
     result["분류별요약"] = code5.map(product_group_map)
+    result = apply_inferred_product_group_summary(result)
     result["시트분류"] = code5.map(sheet2_group_map)
     result["수동시트분류"] = result["시트분류"].map(clean_sheet_category)
     if result.empty:
