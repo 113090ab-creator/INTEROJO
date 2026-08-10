@@ -74,7 +74,7 @@ TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 4000
 DISPLAY_ROW_LIMIT = 500
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260810-effective-api-start-v1"
+APP_CACHE_VERSION = "20260810-effective-source-toggle-v1"
 PLAN_API_BASE_URL_DEFAULT = "https://plan.interojo.net"
 PLAN_API_KEY_ENV = "PLAN_API_KEY"
 PLAN_API_BASE_URL_ENV = "PLAN_API_BASE_URL"
@@ -12845,7 +12845,7 @@ def render_effective_overproduction_panel(
 
 def render_effective_production_dashboard() -> None:
     st.subheader("생산유효도 분석")
-    st.caption("2026-08-06부터 APS API 수요와 생산실적 API를 제품코드 기준으로 매칭합니다.")
+    st.caption("기본은 2026-08-06 이후 APS API 기준이며, 기존 엑셀 기준을 선택하면 저장된 과거 수요파일을 조회합니다.")
 
     if effective_report is None:
         st.error("생산유효도 계산 모듈을 불러오지 못했습니다. 다른 생산현황 메뉴는 계속 사용할 수 있습니다.")
@@ -12862,11 +12862,20 @@ def render_effective_production_dashboard() -> None:
 
     source_signature = build_effective_source_signature(EFFECTIVE_PRODUCTION_SOURCE_DIR)
     api_key_hash = hashlib.sha256(get_plan_api_key().encode("utf-8")).hexdigest()[:12]
-    display_cutoff_date = build_effective_api_snapshot_date(
+    api_snapshot_date = build_effective_api_snapshot_date(
         get_plan_api_updated_at(),
         build_effective_display_cutoff_date(),
     )
+    file_cutoff_date = build_effective_display_cutoff_date()
     filter_cols = st.columns([2.0, 1.0])
+    with filter_cols[0]:
+        source_mode = st.segmented_control(
+            "조회 기준",
+            options=["APS API 기준", "기존 엑셀 기준"],
+            default="APS API 기준",
+            key="effective_source_mode_v1",
+            width="stretch",
+        )
     with filter_cols[1]:
         if st.button("새로고침", key="refresh_effective_production_api", use_container_width=True):
             set_session_value("plan_api_refresh_nonce", get_plan_api_refresh_nonce() + 1)
@@ -12874,28 +12883,39 @@ def render_effective_production_dashboard() -> None:
             st.cache_resource.clear()
             st.rerun()
 
+    use_api_source = source_mode != "기존 엑셀 기준"
+    display_cutoff_date = api_snapshot_date if use_api_source else file_cutoff_date
     with st.spinner("생산유효도 데이터를 계산하는 중입니다..."):
-        summary_df, change_df, sheet_name_df, major_category_df, detail_df, metadata = load_api_effective_dashboard_data(
-            str(EFFECTIVE_PRODUCTION_SOURCE_DIR),
-            EFFECTIVE_PRODUCTION_API_START_DATE,
-            display_cutoff_date,
-            source_signature,
-            api_key_hash,
-            get_plan_api_refresh_nonce(),
-        )
+        if use_api_source:
+            summary_df, change_df, sheet_name_df, major_category_df, detail_df, metadata = load_api_effective_dashboard_data(
+                str(EFFECTIVE_PRODUCTION_SOURCE_DIR),
+                EFFECTIVE_PRODUCTION_API_START_DATE,
+                display_cutoff_date,
+                source_signature,
+                api_key_hash,
+                get_plan_api_refresh_nonce(),
+            )
+        else:
+            summary_df, change_df, sheet_name_df, major_category_df, detail_df, metadata = load_original_effective_dashboard_data(
+                str(EFFECTIVE_PRODUCTION_SOURCE_DIR),
+                display_cutoff_date,
+                source_signature,
+                get_plan_api_base_url(),
+                api_key_hash,
+                get_plan_api_refresh_nonce(),
+            )
 
     if summary_df.empty:
         st.warning("선택한 기간과 관에 표시할 생산유효도 데이터가 없습니다.")
         return
 
     month_options = sorted(summary_df[effective_report.DATE_COL].astype(str).str[:6].unique(), reverse=True)
-    with filter_cols[0]:
-        selected_month = st.selectbox(
-            "월",
-            month_options,
-            format_func=format_effective_month_label,
-            key="effective_original_month_filter",
-        )
+    selected_month = st.selectbox(
+        "월",
+        month_options,
+        format_func=format_effective_month_label,
+        key="effective_original_month_filter",
+    )
     month_summary = filter_effective_report_month(summary_df, effective_report.DATE_COL, selected_month)
     month_major = filter_effective_report_month(major_category_df, effective_report.DATE_COL, selected_month)
     month_detail = prepare_original_effective_detail_table(detail_df, selected_month)
