@@ -74,7 +74,7 @@ TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 4000
 DISPLAY_ROW_LIMIT = 500
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260810-effective-source-toggle-v1"
+APP_CACHE_VERSION = "20260810-effective-combined-source-v1"
 PLAN_API_BASE_URL_DEFAULT = "https://plan.interojo.net"
 PLAN_API_KEY_ENV = "PLAN_API_KEY"
 PLAN_API_BASE_URL_ENV = "PLAN_API_BASE_URL"
@@ -11862,6 +11862,30 @@ def prepare_api_effective_detail_for_original_report(detail: pd.DataFrame, sourc
     )
 
 
+def build_effective_report_outputs_from_detail(
+    detail: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    if effective_report is None or detail.empty:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+    summary = effective_report.summarize_by_process(detail)
+    change_analysis = effective_report.build_change_analysis(summary, detail) if not summary.empty else pd.DataFrame()
+    sheet_name_analysis = (
+        effective_report.attach_major_category(
+            effective_report.summarize_by_classification(detail, effective_report.SHEET_NAME_COL),
+            detail,
+        )
+        if effective_report.SHEET_NAME_COL in detail.columns
+        else pd.DataFrame()
+    )
+    major_category_analysis = (
+        effective_report.summarize_by_classification(detail, effective_report.MAJOR_CATEGORY_COL)
+        if effective_report.MAJOR_CATEGORY_COL in detail.columns
+        else pd.DataFrame()
+    )
+    return summary, change_analysis, sheet_name_analysis, major_category_analysis
+
+
 @st.cache_data(show_spinner=False, ttl=PLAN_API_CACHE_TTL_SECONDS, max_entries=CACHE_MAX_ENTRIES)
 def load_api_effective_dashboard_data(
     source_dir_text: str,
@@ -11935,6 +11959,117 @@ def load_api_effective_dashboard_data(
         "loaded_at": datetime.now(DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S"),
         "stale_missing_reason": "APS API 수요 데이터가 없어",
         "errors": api_errors,
+    }
+    return summary, change_analysis, sheet_name_analysis, major_category_analysis, detail, metadata
+
+
+@st.cache_data(show_spinner=False, ttl=PLAN_API_CACHE_TTL_SECONDS, max_entries=CACHE_MAX_ENTRIES)
+def load_combined_effective_dashboard_data(
+    source_dir_text: str,
+    api_start_date: str,
+    api_snapshot_date: str,
+    file_display_cutoff_date: str,
+    source_signature: tuple[tuple[str, str, int, int], ...],
+    base_url: str,
+    api_key_hash: str,
+    refresh_nonce: int,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, object]]:
+    if effective_report is None:
+        raise ValueError("생산유효도 계산 모듈을 찾지 못했습니다.")
+
+    api_start_dt = pd.to_datetime(api_start_date, format="%Y%m%d", errors="coerce")
+    api_snapshot_dt = pd.to_datetime(api_snapshot_date, format="%Y%m%d", errors="coerce")
+    if pd.isna(api_start_dt) or pd.isna(api_snapshot_dt):
+        raise ValueError("통합 생산자체 신호 조회 기준일이 올바르지 않습니다.")
+
+    excel_cutoff_date = (api_start_dt - pd.Timedelta(days=1)).strftime("%Y%m%d")
+    if file_display_cutoff_date and str(file_display_cutoff_date) < excel_cutoff_date:
+        excel_cutoff_date = str(file_display_cutoff_date)
+
+    detail_parts: list[pd.DataFrame] = []
+    errors: list[str] = []
+    original_metadata: dict[str, object] = {}
+    api_metadata: dict[str, object] = {}
+
+    try:
+        original_summary, original_change, original_sheet, original_major, original_detail, original_metadata = (
+            load_original_effective_dashboard_data(
+                source_dir_text,
+                excel_cutoff_date,
+                source_signature,
+                base_url,
+                api_key_hash,
+                refresh_nonce,
+            )
+        )
+        _ = original_summary, original_change, original_sheet, original_major
+        if not original_detail.empty and effective_report.DATE_COL in original_detail.columns:
+            original_detail = original_detail[
+                original_detail[effective_report.DATE_COL].astype(str) < str(api_start_date)
+            ].copy()
+        if not original_detail.empty:
+            detail_parts.append(original_detail)
+    except Exception as exc:
+        errors.append(f"기존 엑셀 기준 로드 실패: {exc}")
+
+    if api_snapshot_dt >= api_start_dt:
+        try:
+            api_summary, api_change, api_sheet, api_major, api_detail, api_metadata = load_api_effective_dashboard_data(
+                source_dir_text,
+                api_start_date,
+                api_snapshot_date,
+                source_signature,
+                api_key_hash,
+                refresh_nonce,
+            )
+            _ = api_summary, api_change, api_sheet, api_major
+            if not api_detail.empty and effective_report.DATE_COL in api_detail.columns:
+                api_detail = api_detail[api_detail[effective_report.DATE_COL].astype(str) >= str(api_start_date)].copy()
+            if not api_detail.empty:
+                detail_parts.append(api_detail)
+        except Exception as exc:
+            errors.append(f"APS API 기준 로드 실패: {exc}")
+
+    if detail_parts:
+        detail = pd.concat(detail_parts, ignore_index=True, sort=False)
+        detail = detail.sort_values(
+            [effective_report.DATE_COL, effective_report.OUTPUT_PROCESS_COL, effective_report.OUTPUT_SKU_COL]
+        ).reset_index(drop=True)
+    else:
+        detail = pd.DataFrame()
+
+    summary, change_analysis, sheet_name_analysis, major_category_analysis = build_effective_report_outputs_from_detail(detail)
+    detail_dates = (
+        sorted(detail[effective_report.DATE_COL].dropna().astype(str).unique().tolist())
+        if not detail.empty and effective_report.DATE_COL in detail.columns
+        else []
+    )
+    original_start = clean_text_value(original_metadata.get("demand_start", ""))
+    original_end = clean_text_value(original_metadata.get("demand_end", ""))
+    api_snapshot_text = clean_text_value(api_metadata.get("demand_start", api_snapshot_date))
+    metadata = {
+        "source": f"통합 기준: 기존 엑셀 + APS API 수요 ({EFFECTIVE_PRODUCTION_DEFAULT_SITE})",
+        "source_mode": "combined",
+        "demand_start": detail_dates[0] if detail_dates else (original_start or api_start_date),
+        "demand_end": detail_dates[-1] if detail_dates else api_snapshot_date,
+        "excel_start_date": original_start,
+        "excel_end_date": original_end or excel_cutoff_date,
+        "api_start_date": api_start_date,
+        "api_snapshot_date": api_snapshot_text,
+        "demand_file_count": int(original_metadata.get("demand_file_count", 0) or 0),
+        "demand_source_label": (
+            f"엑셀 수요파일 {format_effective_int(original_metadata.get('demand_file_count', 0))}개"
+            f" + APS API 수요 {format_effective_int(api_metadata.get('detail_rows', 0))}행"
+        ),
+        "display_cutoff_date": api_snapshot_date,
+        "raw_rows": int(original_metadata.get("raw_rows", 0) or 0) + int(api_metadata.get("raw_rows", 0) or 0),
+        "production_raw_rows": int(api_metadata.get("production_raw_rows", 0) or 0),
+        "production_rows": int(original_metadata.get("production_rows", 0) or 0) + int(api_metadata.get("production_rows", 0) or 0),
+        "detail_rows": len(detail),
+        "match_key": "제품코드 전체 문자열",
+        "loaded_at": datetime.now(DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+        "stale_missing_reason": "APS API 수요 데이터가 없어",
+        "errors": "; ".join(error for error in errors if error),
     }
     return summary, change_analysis, sheet_name_analysis, major_category_analysis, detail, metadata
 
@@ -12845,7 +12980,7 @@ def render_effective_overproduction_panel(
 
 def render_effective_production_dashboard() -> None:
     st.subheader("생산유효도 분석")
-    st.caption("기본은 2026-08-06 이후 APS API 기준이며, 기존 엑셀 기준을 선택하면 저장된 과거 수요파일을 조회합니다.")
+    st.caption("통합 기준은 2026-08-05까지 기존 엑셀 수요, 2026-08-06부터 APS API 수요를 이어서 봅니다.")
 
     if effective_report is None:
         st.error("생산유효도 계산 모듈을 불러오지 못했습니다. 다른 생산현황 메뉴는 계속 사용할 수 있습니다.")
@@ -12871,9 +13006,9 @@ def render_effective_production_dashboard() -> None:
     with filter_cols[0]:
         source_mode = st.segmented_control(
             "조회 기준",
-            options=["APS API 기준", "기존 엑셀 기준"],
-            default="APS API 기준",
-            key="effective_source_mode_v1",
+            options=["통합 기준", "APS API 기준", "기존 엑셀 기준"],
+            default="통합 기준",
+            key="effective_source_mode_v2",
             width="stretch",
         )
     with filter_cols[1]:
@@ -12883,10 +13018,21 @@ def render_effective_production_dashboard() -> None:
             st.cache_resource.clear()
             st.rerun()
 
-    use_api_source = source_mode != "기존 엑셀 기준"
-    display_cutoff_date = api_snapshot_date if use_api_source else file_cutoff_date
+    source_mode = source_mode or "통합 기준"
+    display_cutoff_date = api_snapshot_date if source_mode != "기존 엑셀 기준" else file_cutoff_date
     with st.spinner("생산유효도 데이터를 계산하는 중입니다..."):
-        if use_api_source:
+        if source_mode == "통합 기준":
+            summary_df, change_df, sheet_name_df, major_category_df, detail_df, metadata = load_combined_effective_dashboard_data(
+                str(EFFECTIVE_PRODUCTION_SOURCE_DIR),
+                EFFECTIVE_PRODUCTION_API_START_DATE,
+                api_snapshot_date,
+                file_cutoff_date,
+                source_signature,
+                get_plan_api_base_url(),
+                api_key_hash,
+                get_plan_api_refresh_nonce(),
+            )
+        elif source_mode == "APS API 기준":
             summary_df, change_df, sheet_name_df, major_category_df, detail_df, metadata = load_api_effective_dashboard_data(
                 str(EFFECTIVE_PRODUCTION_SOURCE_DIR),
                 EFFECTIVE_PRODUCTION_API_START_DATE,
@@ -12937,7 +13083,13 @@ def render_effective_production_dashboard() -> None:
     overproduction_candidates = build_effective_overproduction_candidates(month_detail, doi_reference, top_n=50)
 
     demand_source_label = metadata.get("demand_source_label") or f"수요파일 {metadata['demand_file_count']:,}개"
-    if metadata.get("api_start_date"):
+    if metadata.get("source_mode") == "combined":
+        excel_start = format_effective_date_option(metadata.get("excel_start_date", ""))
+        excel_end = format_effective_date_option(metadata.get("excel_end_date", ""))
+        api_start = format_effective_date_option(metadata.get("api_start_date", ""))
+        api_snapshot = format_effective_date_option(metadata.get("api_snapshot_date", metadata.get("demand_end", "")))
+        demand_period_label = f"엑셀: {excel_start} ~ {excel_end} · APS API: {api_start}부터 · 적용 스냅샷: {api_snapshot}"
+    elif metadata.get("api_start_date"):
         demand_period_label = (
             f"조회 기준: {format_effective_date_option(metadata['api_start_date'])}부터 · "
             f"적용 스냅샷: {format_effective_date_option(metadata['demand_start'])}"
