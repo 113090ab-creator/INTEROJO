@@ -72,7 +72,7 @@ TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 4000
 DISPLAY_ROW_LIMIT = 500
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260807-classification-v2"
+APP_CACHE_VERSION = "20260810-api-process-flow-v1"
 PLAN_API_BASE_URL_DEFAULT = "https://plan.interojo.net"
 PLAN_API_KEY_ENV = "PLAN_API_KEY"
 PLAN_API_BASE_URL_ENV = "PLAN_API_BASE_URL"
@@ -9598,7 +9598,14 @@ def render_shortage_dashboard(
         "제품명",
         "파워",
         "납기일",
+        "사출납기일",
+        SEPARATION_REQUIRED_DUE_COL,
+        LEADJI_REQUIRED_DUE_COL,
+        ADHESION_REQUIRED_DUE_COL,
         "부족수량",
+        SEPARATION_REQUIRED_QTY_COL,
+        LEADJI_REQUIRED_QTY_COL,
+        ADHESION_REQUIRED_QTY_COL,
         "사출창고",
         "분리창고",
         "검사접착창고",
@@ -9630,6 +9637,14 @@ def render_shortage_dashboard(
     if direct_query:
         filtered = filter_display_table_with_query(filtered, direct_query).copy()
     link_mapping_scope = enriched_df.copy()
+
+    locked_site_text = clean_text_value(locked_site_filter)
+    if locked_site_text:
+        selected_site_text = "전체" if locked_site_text == "전체" else normalize_site_group(locked_site_text)
+        st.caption(
+            f"현재 APS API 조회 범위: {selected_site_text} 수요. "
+            "다른 관 수요는 좌측 상단 사이트코드에서 해당 관 또는 전체를 선택해야 표시됩니다."
+        )
 
     render_rework_match_debug(file_info_df)
     if "재작업" in filtered.columns and "품목코드" in filtered.columns:
