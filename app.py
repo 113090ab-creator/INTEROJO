@@ -12761,6 +12761,21 @@ def render_effective_production_dashboard() -> None:
         f"표시 기준: {format_effective_date_option(metadata['display_cutoff_date'])}까지 · "
         f"수요파일 {metadata['demand_file_count']:,}개 · API 조회시각: {metadata['loaded_at']}"
     )
+    demand_end_text = str(metadata.get("demand_end", ""))
+    display_cutoff_text = str(metadata.get("display_cutoff_date", ""))
+    if demand_end_text and display_cutoff_text and demand_end_text < display_cutoff_text:
+        missing_start = pd.to_datetime(demand_end_text, format="%Y%m%d", errors="coerce")
+        missing_end = pd.to_datetime(display_cutoff_text, format="%Y%m%d", errors="coerce")
+        if pd.notna(missing_start) and pd.notna(missing_end):
+            missing_start_text = (missing_start + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+            missing_end_text = missing_end.strftime("%Y-%m-%d")
+        else:
+            missing_start_text = format_effective_date_option(demand_end_text)
+            missing_end_text = format_effective_date_option(display_cutoff_text)
+        st.warning(
+            f"현재 생산자체 신호 수요정보는 {format_effective_date_option(demand_end_text)}까지만 반영되어 있습니다. "
+            f"{missing_start_text} ~ {missing_end_text} 수요 파일이 없어 해당 기간은 미반영입니다."
+        )
     st.caption(
         f"API 원천 {format_effective_int(metadata['raw_rows'])}행 / "
         f"집계 대상 {format_effective_int(metadata['production_rows'])}행 / "
