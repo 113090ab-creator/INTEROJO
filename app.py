@@ -23,10 +23,12 @@ try:
 except ImportError:  # pragma: no cover - handled as a runtime configuration issue
     requests = None
 
+effective_report_import_error = ""
 try:
     import effective_production_report as effective_report
-except ImportError:  # pragma: no cover - deployed without optional production-effectiveness module
+except Exception as exc:  # pragma: no cover - deployed without optional production-effectiveness module
     effective_report = None
+    effective_report_import_error = f"{type(exc).__name__}: {exc}"
 
 st.set_page_config(page_title="생산현황", layout="wide")
 
@@ -12694,7 +12696,10 @@ def render_effective_production_dashboard() -> None:
     st.caption("기존 생산유효도 앱의 계산 정의를 그대로 사용합니다.")
 
     if effective_report is None:
-        st.error("생산유효도 계산 모듈을 찾지 못했습니다.")
+        st.error("생산유효도 계산 모듈을 불러오지 못했습니다. 다른 생산현황 메뉴는 계속 사용할 수 있습니다.")
+        if effective_report_import_error:
+            error_type = effective_report_import_error.split(":", 1)[0]
+            st.caption(f"모듈 로드 오류 유형: {error_type}. 자세한 내용은 Streamlit Cloud 로그를 확인하세요.")
         return
     if not EFFECTIVE_PRODUCTION_SOURCE_DIR.exists():
         st.error(f"생산유효도 기준 데이터 폴더가 없습니다: {EFFECTIVE_PRODUCTION_SOURCE_DIR.name}")
