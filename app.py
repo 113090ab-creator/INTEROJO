@@ -74,7 +74,7 @@ TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 4000
 DISPLAY_ROW_LIMIT = 500
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260810-api-process-flow-v1"
+APP_CACHE_VERSION = "20260810-effective-api-start-v1"
 PLAN_API_BASE_URL_DEFAULT = "https://plan.interojo.net"
 PLAN_API_KEY_ENV = "PLAN_API_KEY"
 PLAN_API_BASE_URL_ENV = "PLAN_API_BASE_URL"
@@ -97,6 +97,7 @@ EFFECTIVE_PRODUCTION_OPERATIONS = ("10", "80")
 EFFECTIVE_PRODUCTION_PROCESS_ORDER = ("[10]사출조립", "[80]누수/규격검사")
 EFFECTIVE_PRODUCTION_CATEGORY_ORDER = ("국내", "PIA", "기타해외")
 EFFECTIVE_PRODUCTION_DEFAULT_SITE = "C관"
+EFFECTIVE_PRODUCTION_API_START_DATE = "20260806"
 EFFECTIVE_PRODUCTION_DEFAULT_DAYS = 60
 EFFECTIVE_PRODUCTION_SOURCE_DIR = BASE_DIR / "effective_production_sources"
 EFFECTIVE_PRODUCTION_DOI_CRITERIA_FILE = "c_site_pcode_power_doi_criteria.csv"
@@ -11082,6 +11083,13 @@ def classify_effective_major_category(row: pd.Series) -> str:
     return "기타해외"
 
 
+def build_effective_api_snapshot_date(source_updated_at: str, fallback_date: str) -> str:
+    parsed = pd.to_datetime(source_updated_at, errors="coerce")
+    if pd.notna(parsed):
+        return parsed.strftime("%Y%m%d")
+    return fallback_date
+
+
 def fetch_effective_plan_operations_dataframe(
     site_filter: str,
     start_date_text: str,
@@ -11094,13 +11102,12 @@ def fetch_effective_plan_operations_dataframe(
     site_param = build_plan_api_site_param(site_filter)
     frames: list[pd.DataFrame] = []
     errors: list[str] = []
+    _ = start_date_text, end_date_text
 
     def fetch_operation(operation: str) -> tuple[str, pd.DataFrame, str]:
         params: dict[str, object] = {
             "limit": PLAN_API_DEFAULT_ROW_LIMIT,
             "oper": operation,
-            "plan_from": start_date_text,
-            "plan_to": end_date_text,
         }
         if site_param:
             params["site"] = site_param
@@ -11211,6 +11218,7 @@ def normalize_effective_plan_frame(
     start_date_text: str,
     end_date_text: str,
     site_filter: str,
+    snapshot_date_text: str | None = None,
 ) -> tuple[pd.DataFrame, str]:
     output_columns = [
         "일자",
@@ -11283,7 +11291,7 @@ def normalize_effective_plan_frame(
     plan_qty_col = pick_api_column(columns, ["plan_qty", "PLAN_QTY", "생산수량", "계획수량", "필요수량"])
 
     missing = []
-    if date_col is None:
+    if date_col is None and not snapshot_date_text:
         missing.append("날짜")
     if item_col is None:
         missing.append("제품코드")
@@ -11300,9 +11308,14 @@ def normalize_effective_plan_frame(
     initial = initial.where(~missing_initial, demand_type).map(clean_initial_value)
     initial = initial.where(initial.ne(""), "미지정")
 
+    plan_date_values = (
+        pd.Series(snapshot_date_text, index=raw.index, dtype="object")
+        if snapshot_date_text
+        else effective_date_text_series(raw, date_col)
+    )
     work = pd.DataFrame(
         {
-            "일자": effective_date_text_series(raw, date_col),
+            "일자": plan_date_values,
             "사이트": effective_column_series(raw, site_col).map(normalize_effective_site),
             "공정": effective_column_series(raw, operation_col).map(normalize_effective_process),
             "제품코드": effective_column_series(raw, item_col).map(normalize_item_code_value),
@@ -11475,6 +11488,7 @@ def load_effective_production_dashboard_data(
     refresh_nonce: int,
 ) -> tuple[pd.DataFrame, dict[str, object], str]:
     _ = refresh_nonce
+    snapshot_date_text = build_effective_api_snapshot_date(source_updated_at, end_date_text)
     raw_plan, plan_fetch_error = fetch_effective_plan_operations_dataframe(
         site_filter,
         start_date_text,
@@ -11487,6 +11501,7 @@ def load_effective_production_dashboard_data(
         start_date_text,
         end_date_text,
         site_filter,
+        snapshot_date_text,
     )
     valid_plan_dates = sorted(demand["일자"].dropna().astype(str).unique()) if not demand.empty else []
     production_start_date = valid_plan_dates[0] if valid_plan_dates else start_date_text
@@ -11514,6 +11529,7 @@ def load_effective_production_dashboard_data(
         "production_raw_rows": len(raw_production),
         "plan_rows": len(demand),
         "production_rows": len(production),
+        "snapshot_date": snapshot_date_text,
     }
     errors = "; ".join(
         error
@@ -11777,6 +11793,148 @@ def load_original_effective_dashboard_data(
         "detail_rows": len(detail),
         "match_key": "제품명" if match_on_product_name else "제품코드 전체 문자열",
         "loaded_at": datetime.now(DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    return summary, change_analysis, sheet_name_analysis, major_category_analysis, detail, metadata
+
+
+def prepare_api_effective_detail_for_original_report(detail: pd.DataFrame, source_dir: Path) -> pd.DataFrame:
+    if effective_report is None or detail.empty:
+        return pd.DataFrame()
+
+    result = detail.copy()
+    if effective_report.SHORTAGE_QTY_COL not in result.columns:
+        result[effective_report.SHORTAGE_QTY_COL] = parse_mixed_numeric(
+            result.get(effective_report.REMAINING_NEED_COL, pd.Series(0, index=result.index))
+        ).fillna(0)
+    for column in [
+        effective_report.NEED_QTY_COL,
+        effective_report.ACTUAL_QTY_COL,
+        effective_report.EFFECTIVE_PRODUCTION_COL,
+        effective_report.INEFFECTIVE_PRODUCTION_COL,
+        effective_report.REMAINING_NEED_COL,
+        effective_report.SHORTAGE_QTY_COL,
+    ]:
+        if column not in result.columns:
+            result[column] = 0
+        result[column] = parse_mixed_numeric(result[column]).fillna(0)
+
+    for column in [
+        effective_report.DATE_COL,
+        effective_report.OUTPUT_PROCESS_COL,
+        effective_report.OUTPUT_SKU_COL,
+        effective_report.OUTPUT_PRODUCT_NAME_COL,
+        effective_report.CUSTOMER_COL,
+        effective_report.INITIAL_COL,
+        effective_report.MATCH_STATUS_COL,
+    ]:
+        if column not in result.columns:
+            result[column] = ""
+        result[column] = result[column].map(clean_text_value)
+    parsed_dates = pd.to_datetime(result[effective_report.DATE_COL], errors="coerce")
+    result[effective_report.DATE_COL] = parsed_dates.dt.strftime("%Y%m%d").fillna(result[effective_report.DATE_COL])
+
+    result = effective_report.apply_classification(result, source_dir)
+    output_columns = [
+        effective_report.DATE_COL,
+        effective_report.OUTPUT_PROCESS_COL,
+        effective_report.OUTPUT_SKU_COL,
+        effective_report.OUTPUT_PRODUCT_NAME_COL,
+        effective_report.CUSTOMER_COL,
+        effective_report.INITIAL_COL,
+        effective_report.SHORTAGE_QTY_COL,
+        effective_report.NEED_QTY_COL,
+        effective_report.ACTUAL_QTY_COL,
+        effective_report.EFFECTIVE_PRODUCTION_COL,
+        effective_report.INEFFECTIVE_PRODUCTION_COL,
+        effective_report.REMAINING_NEED_COL,
+        effective_report.PRODUCTION_EFFECTIVENESS_COL,
+        effective_report.MATCH_STATUS_COL,
+        effective_report.SHEET_NAME_COL,
+        effective_report.MAJOR_CATEGORY_COL,
+    ]
+    if effective_report.PRODUCTION_EFFECTIVENESS_COL not in result.columns:
+        result[effective_report.PRODUCTION_EFFECTIVENESS_COL] = calculate_effective_rate(
+            result[effective_report.EFFECTIVE_PRODUCTION_COL],
+            result[effective_report.ACTUAL_QTY_COL],
+        )
+    return result[[column for column in output_columns if column in result.columns]].sort_values(
+        [effective_report.DATE_COL, effective_report.OUTPUT_PROCESS_COL, effective_report.OUTPUT_SKU_COL]
+    )
+
+
+@st.cache_data(show_spinner=False, ttl=PLAN_API_CACHE_TTL_SECONDS, max_entries=CACHE_MAX_ENTRIES)
+def load_api_effective_dashboard_data(
+    source_dir_text: str,
+    api_start_date: str,
+    display_cutoff_date: str,
+    source_signature: tuple[tuple[str, str, int, int], ...],
+    api_key_hash: str,
+    refresh_nonce: int,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, object]]:
+    _ = source_signature
+    if effective_report is None:
+        raise ValueError("생산유효도 계산 모듈을 찾지 못했습니다.")
+
+    start_dt = pd.to_datetime(api_start_date, format="%Y%m%d", errors="coerce")
+    cutoff_dt = pd.to_datetime(display_cutoff_date, format="%Y%m%d", errors="coerce")
+    if pd.isna(start_dt) or pd.isna(cutoff_dt):
+        raise ValueError("생산자체 신호 API 조회 기준일이 올바르지 않습니다.")
+    if start_dt > cutoff_dt:
+        raise ValueError(
+            f"API 조회 시작일({format_effective_date_option(api_start_date)})이 "
+            f"표시 기준일({format_effective_date_option(display_cutoff_date)})보다 늦습니다."
+        )
+
+    source_dir = Path(source_dir_text)
+    source_updated_at = get_plan_api_updated_at()
+    api_detail, api_metadata, api_errors = load_effective_production_dashboard_data(
+        api_start_date,
+        display_cutoff_date,
+        EFFECTIVE_PRODUCTION_DEFAULT_SITE,
+        api_key_hash,
+        source_updated_at,
+        refresh_nonce,
+    )
+    detail = prepare_api_effective_detail_for_original_report(api_detail, source_dir)
+    if detail.empty:
+        detail_dates: set[str] = set()
+    else:
+        detail_dates = set(detail[effective_report.DATE_COL].astype(str).dropna())
+
+    summary = effective_report.summarize_by_process(detail) if not detail.empty else pd.DataFrame()
+    change_analysis = effective_report.build_change_analysis(summary, detail) if not summary.empty else pd.DataFrame()
+    sheet_name_analysis = (
+        effective_report.attach_major_category(
+            effective_report.summarize_by_classification(detail, effective_report.SHEET_NAME_COL),
+            detail,
+        )
+        if not detail.empty and effective_report.SHEET_NAME_COL in detail.columns
+        else pd.DataFrame()
+    )
+    major_category_analysis = (
+        effective_report.summarize_by_classification(detail, effective_report.MAJOR_CATEGORY_COL)
+        if not detail.empty and effective_report.MAJOR_CATEGORY_COL in detail.columns
+        else pd.DataFrame()
+    )
+
+    demand_start = min(detail_dates) if detail_dates else api_start_date
+    demand_end = max(detail_dates) if detail_dates else display_cutoff_date
+    metadata = {
+        "source": f"APS API 수요 + 생산실적 API ({EFFECTIVE_PRODUCTION_DEFAULT_SITE})",
+        "demand_start": demand_start,
+        "demand_end": demand_end,
+        "demand_file_count": 0,
+        "demand_source_label": f"APS API 수요 {format_effective_int(api_metadata.get('plan_rows', 0))}행",
+        "display_cutoff_date": display_cutoff_date,
+        "api_start_date": api_start_date,
+        "raw_rows": api_metadata.get("plan_raw_rows", 0),
+        "production_raw_rows": api_metadata.get("production_raw_rows", 0),
+        "production_rows": api_metadata.get("production_rows", 0),
+        "detail_rows": len(detail),
+        "match_key": "제품코드 전체 문자열",
+        "loaded_at": datetime.now(DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+        "stale_missing_reason": "APS API 수요 데이터가 없어",
+        "errors": api_errors,
     }
     return summary, change_analysis, sheet_name_analysis, major_category_analysis, detail, metadata
 
@@ -12687,7 +12845,7 @@ def render_effective_overproduction_panel(
 
 def render_effective_production_dashboard() -> None:
     st.subheader("생산유효도 분석")
-    st.caption("기존 생산유효도 앱의 계산 정의를 그대로 사용합니다.")
+    st.caption("2026-08-06부터 APS API 수요와 생산실적 API를 제품코드 기준으로 매칭합니다.")
 
     if effective_report is None:
         st.error("생산유효도 계산 모듈을 불러오지 못했습니다. 다른 생산현황 메뉴는 계속 사용할 수 있습니다.")
@@ -12704,7 +12862,10 @@ def render_effective_production_dashboard() -> None:
 
     source_signature = build_effective_source_signature(EFFECTIVE_PRODUCTION_SOURCE_DIR)
     api_key_hash = hashlib.sha256(get_plan_api_key().encode("utf-8")).hexdigest()[:12]
-    display_cutoff_date = build_effective_display_cutoff_date()
+    display_cutoff_date = build_effective_api_snapshot_date(
+        get_plan_api_updated_at(),
+        build_effective_display_cutoff_date(),
+    )
     filter_cols = st.columns([2.0, 1.0])
     with filter_cols[1]:
         if st.button("새로고침", key="refresh_effective_production_api", use_container_width=True):
@@ -12714,11 +12875,11 @@ def render_effective_production_dashboard() -> None:
             st.rerun()
 
     with st.spinner("생산유효도 데이터를 계산하는 중입니다..."):
-        summary_df, change_df, sheet_name_df, major_category_df, detail_df, metadata = load_original_effective_dashboard_data(
+        summary_df, change_df, sheet_name_df, major_category_df, detail_df, metadata = load_api_effective_dashboard_data(
             str(EFFECTIVE_PRODUCTION_SOURCE_DIR),
+            EFFECTIVE_PRODUCTION_API_START_DATE,
             display_cutoff_date,
             source_signature,
-            get_plan_api_base_url(),
             api_key_hash,
             get_plan_api_refresh_nonce(),
         )
@@ -12755,11 +12916,21 @@ def render_effective_production_dashboard() -> None:
     )
     overproduction_candidates = build_effective_overproduction_candidates(month_detail, doi_reference, top_n=50)
 
+    demand_source_label = metadata.get("demand_source_label") or f"수요파일 {metadata['demand_file_count']:,}개"
+    if metadata.get("api_start_date"):
+        demand_period_label = (
+            f"조회 기준: {format_effective_date_option(metadata['api_start_date'])}부터 · "
+            f"적용 스냅샷: {format_effective_date_option(metadata['demand_start'])}"
+        )
+    else:
+        demand_period_label = (
+            f"수요기간: {format_effective_date_option(metadata['demand_start'])} ~ "
+            f"{format_effective_date_option(metadata['demand_end'])}"
+        )
     st.caption(
-        f"데이터 소스: {metadata['source']} · 수요기간: "
-        f"{format_effective_date_option(metadata['demand_start'])} ~ {format_effective_date_option(metadata['demand_end'])} · "
+        f"데이터 소스: {metadata['source']} · {demand_period_label} · "
         f"표시 기준: {format_effective_date_option(metadata['display_cutoff_date'])}까지 · "
-        f"수요파일 {metadata['demand_file_count']:,}개 · API 조회시각: {metadata['loaded_at']}"
+        f"{demand_source_label} · API 조회시각: {metadata['loaded_at']}"
     )
     demand_end_text = str(metadata.get("demand_end", ""))
     display_cutoff_text = str(metadata.get("display_cutoff_date", ""))
@@ -12772,10 +12943,13 @@ def render_effective_production_dashboard() -> None:
         else:
             missing_start_text = format_effective_date_option(demand_end_text)
             missing_end_text = format_effective_date_option(display_cutoff_text)
+        stale_missing_reason = metadata.get("stale_missing_reason", "수요 데이터가 없어")
         st.warning(
             f"현재 생산자체 신호 수요정보는 {format_effective_date_option(demand_end_text)}까지만 반영되어 있습니다. "
-            f"{missing_start_text} ~ {missing_end_text} 수요 파일이 없어 해당 기간은 미반영입니다."
+            f"{missing_start_text} ~ {missing_end_text} {stale_missing_reason} 해당 기간은 미반영입니다."
         )
+    if metadata.get("errors"):
+        st.warning(f"APS API 일부 조회 경고: {metadata['errors']}")
     st.caption(
         f"API 원천 {format_effective_int(metadata['raw_rows'])}행 / "
         f"집계 대상 {format_effective_int(metadata['production_rows'])}행 / "
@@ -12997,11 +13171,11 @@ def main() -> None:
         if selected_top_view == "생산유효도 분석":
             sync_plan_api_data_mode()
             data_base_dir = BASE_DIR
-            source_label = "생산유효도 수요 스냅샷 + 생산실적 API"
+            source_label = "APS API 수요(2026-08-06부터) + 생산실적 API"
             updated_at = get_plan_api_updated_at() if is_plan_api_configured() else ""
             cloud_snapshots_available = False
             data_live_updated_at = ""
-            sidebar_status_caption = "API 모드: 기존 생산유효도 계산 기준"
+            sidebar_status_caption = "API 모드: APS 수요 2026-08-06부터"
         else:
             sync_plan_api_data_mode()
             if selected_top_view == "생산 부족 현황" and is_plan_api_enabled():
