@@ -11086,7 +11086,8 @@ def classify_effective_major_category(row: pd.Series) -> str:
 def build_effective_api_snapshot_date(source_updated_at: str, fallback_date: str) -> str:
     parsed = pd.to_datetime(source_updated_at, errors="coerce")
     if pd.notna(parsed):
-        return parsed.strftime("%Y%m%d")
+        source_date = parsed.strftime("%Y%m%d")
+        return min(source_date, str(fallback_date))
     return fallback_date
 
 
@@ -11102,12 +11103,13 @@ def fetch_effective_plan_operations_dataframe(
     site_param = build_plan_api_site_param(site_filter)
     frames: list[pd.DataFrame] = []
     errors: list[str] = []
-    _ = start_date_text, end_date_text
 
     def fetch_operation(operation: str) -> tuple[str, pd.DataFrame, str]:
         params: dict[str, object] = {
             "limit": PLAN_API_DEFAULT_ROW_LIMIT,
             "oper": operation,
+            "plan_from": start_date_text,
+            "plan_to": end_date_text,
         }
         if site_param:
             params["site"] = site_param
@@ -11309,9 +11311,9 @@ def normalize_effective_plan_frame(
     initial = initial.where(initial.ne(""), "미지정")
 
     plan_date_values = (
-        pd.Series(snapshot_date_text, index=raw.index, dtype="object")
-        if snapshot_date_text
-        else effective_date_text_series(raw, date_col)
+        effective_date_text_series(raw, date_col)
+        if date_col is not None
+        else pd.Series(snapshot_date_text, index=raw.index, dtype="object")
     )
     work = pd.DataFrame(
         {
@@ -11902,7 +11904,7 @@ def load_api_effective_dashboard_data(
     start_dt = pd.to_datetime(api_start_date, format="%Y%m%d", errors="coerce")
     cutoff_dt = pd.to_datetime(display_cutoff_date, format="%Y%m%d", errors="coerce")
     if pd.isna(start_dt) or pd.isna(cutoff_dt):
-        raise ValueError("생산자체 신호 API 조회 기준일이 올바르지 않습니다.")
+        raise ValueError("생산유효도 API 조회 기준일이 올바르지 않습니다.")
     if start_dt > cutoff_dt:
         raise ValueError(
             f"API 조회 시작일({format_effective_date_option(api_start_date)})이 "
@@ -11980,7 +11982,7 @@ def load_combined_effective_dashboard_data(
     api_start_dt = pd.to_datetime(api_start_date, format="%Y%m%d", errors="coerce")
     api_snapshot_dt = pd.to_datetime(api_snapshot_date, format="%Y%m%d", errors="coerce")
     if pd.isna(api_start_dt) or pd.isna(api_snapshot_dt):
-        raise ValueError("통합 생산자체 신호 조회 기준일이 올바르지 않습니다.")
+        raise ValueError("통합 생산유효도 조회 기준일이 올바르지 않습니다.")
 
     excel_cutoff_date = (api_start_dt - pd.Timedelta(days=1)).strftime("%Y%m%d")
     if file_display_cutoff_date and str(file_display_cutoff_date) < excel_cutoff_date:
@@ -12046,7 +12048,7 @@ def load_combined_effective_dashboard_data(
     )
     original_start = clean_text_value(original_metadata.get("demand_start", ""))
     original_end = clean_text_value(original_metadata.get("demand_end", ""))
-    api_snapshot_text = clean_text_value(api_metadata.get("demand_start", api_snapshot_date))
+    api_snapshot_text = clean_text_value(api_metadata.get("demand_end", api_snapshot_date))
     metadata = {
         "source": f"통합 기준: 기존 엑셀 + APS API 수요 ({EFFECTIVE_PRODUCTION_DEFAULT_SITE})",
         "source_mode": "combined",
@@ -13117,7 +13119,7 @@ def render_effective_production_dashboard() -> None:
             missing_end_text = format_effective_date_option(display_cutoff_text)
         stale_missing_reason = metadata.get("stale_missing_reason", "수요 데이터가 없어")
         st.warning(
-            f"현재 생산자체 신호 수요정보는 {format_effective_date_option(demand_end_text)}까지만 반영되어 있습니다. "
+            f"현재 생산유효도 수요정보는 {format_effective_date_option(demand_end_text)}까지만 반영되어 있습니다. "
             f"{missing_start_text} ~ {missing_end_text} {stale_missing_reason} 해당 기간은 미반영입니다."
         )
     if metadata.get("errors"):
