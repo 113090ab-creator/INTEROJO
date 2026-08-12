@@ -4,6 +4,7 @@ import os
 import pickle
 import re
 import shutil
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -82,6 +83,8 @@ PLAN_API_BASE_URL_ENV = "PLAN_API_BASE_URL"
 PLAN_API_TIMEOUT_SECONDS = 120
 PLAN_API_DEFAULT_ROW_LIMIT = 0
 PLAN_API_CACHE_TTL_SECONDS = 300
+PLAN_API_RETRY_ATTEMPTS = 2
+PLAN_API_RETRY_STATUS_CODES = {429, 500, 502, 503, 504, 520, 522, 524, 530}
 LOCAL_CACHE_DIR = BASE_DIR / ".local_cache"
 PLAN_API_DISK_CACHE_DIR = LOCAL_CACHE_DIR / "plan_api"
 PLAN_API_KEY_LOCAL_CACHE_FILE = LOCAL_CACHE_DIR / "plan_api_key.txt"
@@ -1114,6 +1117,90 @@ def write_plan_api_disk_cache(cache_path: Path, df: pd.DataFrame) -> None:
         pass
 
 
+def is_retryable_plan_api_status(status_code: int | None) -> bool:
+    return status_code in PLAN_API_RETRY_STATUS_CODES
+
+
+def format_plan_api_request_error(error: object, status_code: int | None = None) -> str:
+    if status_code is not None:
+        if status_code == 530:
+            return "API 서버 오류(HTTP 530)"
+        if 500 <= status_code < 600:
+            return f"API 서버 오류(HTTP {status_code})"
+        return f"API 응답 오류(HTTP {status_code})"
+
+    text = clean_text_value(error)
+    text = re.sub(r"https?://\S+", "", text).strip()
+    text = text.split(" for url:", 1)[0].strip()
+    return text or "API 응답 오류"
+
+
+def request_plan_api_payload(url: str, params: dict[str, object], api_key: str) -> tuple[object | None, str]:
+    last_error = ""
+    for attempt in range(PLAN_API_RETRY_ATTEMPTS):
+        status_code: int | None = None
+        try:
+            response = requests.get(
+                url,
+                params=params,
+                headers={"X-API-Key": api_key},
+                timeout=PLAN_API_TIMEOUT_SECONDS,
+            )
+            status_code = response.status_code
+            if is_retryable_plan_api_status(status_code) and attempt < PLAN_API_RETRY_ATTEMPTS - 1:
+                time.sleep(0.4 * (attempt + 1))
+                continue
+            response.raise_for_status()
+            return response.json(), ""
+        except Exception as exc:
+            response = getattr(exc, "response", None)
+            status_code = getattr(response, "status_code", status_code)
+            last_error = format_plan_api_request_error(exc, status_code)
+            if is_retryable_plan_api_status(status_code) and attempt < PLAN_API_RETRY_ATTEMPTS - 1:
+                time.sleep(0.4 * (attempt + 1))
+                continue
+            break
+    return None, last_error
+
+
+def summarize_plan_api_operation_errors(errors: list[str]) -> str:
+    cleaned = [clean_text_value(error) for error in errors if clean_text_value(error)]
+    if not cleaned:
+        return ""
+
+    operations: list[str] = []
+    status_codes: list[str] = []
+    for error in cleaned:
+        oper_match = re.search(r"oper=([^:;\s]+)", error)
+        if oper_match:
+            operations.append(oper_match.group(1))
+        status_match = re.search(r"HTTP\s*(\d{3})", error)
+        if status_match:
+            status_codes.append(status_match.group(1))
+
+    unique_status_codes = sorted(set(status_codes))
+    if unique_status_codes and len(unique_status_codes) == 1:
+        op_text = f"공정 {', '.join(sorted(set(operations)))}" if operations else f"{len(cleaned)}개 공정"
+        code = unique_status_codes[0]
+        return f"APS API 서버 오류(HTTP {code})로 {op_text} 조회에 실패했습니다."
+
+    if len(cleaned) > 2:
+        return "; ".join(cleaned[:2]) + f"; 외 {len(cleaned) - 2}건"
+    return "; ".join(cleaned)
+
+
+def format_api_fallback_warning(error: object, fallback_label: str) -> str:
+    summary = clean_text_value(error)
+    summary = re.sub(r"^APS API 수요 조회 실패:\s*", "", summary)
+    summary = re.sub(r"https?://\S+", "", summary)
+    summary = re.sub(r"\s+", " ", summary).strip()
+    if len(summary) > 180:
+        summary = summary[:177].rstrip() + "..."
+    if not summary:
+        summary = "API 응답 오류"
+    return f"APS API 수요 조회가 일시적으로 실패해 {fallback_label}을 표시합니다. 원인: {summary}"
+
+
 def normalize_api_column_key(value: object) -> str:
     return re.sub(r"[\s_./()\-\[\]:]+", "", str(value).strip().lower())
 
@@ -1176,17 +1263,9 @@ def fetch_plan_api_dataframe_cached(
         if cached_df is not None:
             return cached_df, ""
 
-    try:
-        response = requests.get(
-            url,
-            params=params,
-            headers={"X-API-Key": api_key},
-            timeout=PLAN_API_TIMEOUT_SECONDS,
-        )
-        response.raise_for_status()
-        payload = response.json()
-    except Exception as exc:
-        return pd.DataFrame(), str(exc)
+    payload, error = request_plan_api_payload(url, params, api_key)
+    if error:
+        return pd.DataFrame(), error
 
     if isinstance(payload, dict) and payload.get("truncated") is True:
         returned_count = payload.get("returned_count", "?")
@@ -1223,17 +1302,9 @@ def fetch_plan_api_dataframe_direct(
         if cached_df is not None:
             return cached_df, ""
 
-    try:
-        response = requests.get(
-            url,
-            params=params,
-            headers={"X-API-Key": api_key},
-            timeout=PLAN_API_TIMEOUT_SECONDS,
-        )
-        response.raise_for_status()
-        payload = response.json()
-    except Exception as exc:
-        return pd.DataFrame(), str(exc)
+    payload, error = request_plan_api_payload(url, params, api_key)
+    if error:
+        return pd.DataFrame(), error
 
     if isinstance(payload, dict) and payload.get("truncated") is True:
         returned_count = payload.get("returned_count", "?")
@@ -1338,7 +1409,7 @@ def read_aps_plan_operations_dataframe(
                 frames.append(frame)
     if frames:
         return pd.concat(frames, ignore_index=True, sort=False), ""
-    return pd.DataFrame(), "; ".join(errors)
+    return pd.DataFrame(), summarize_plan_api_operation_errors(errors)
 
 
 def find_meta_value(payload: dict[str, object], candidates: list[str]) -> str:
@@ -13532,7 +13603,7 @@ def main() -> None:
                             updated_at = get_cloud_snapshot_meta_value("data_updated_at", data_live_updated_at)
                             source_label = "Cloud 스냅샷 (APS API 실패 fallback)"
                             sidebar_status_caption = "API 오류: 기존 스냅샷 표시"
-                            st.warning(f"APS API 수요 조회 실패로 기존 스냅샷을 표시합니다: {live_exc}")
+                            st.warning(format_api_fallback_warning(live_exc, "기존 스냅샷"))
                             fallback_loaded = True
                     except Exception:
                         fallback_loaded = False
@@ -13544,7 +13615,7 @@ def main() -> None:
                             updated_at = data_live_updated_at
                             source_label = "로컬 파일 (APS API 실패 fallback)"
                             sidebar_status_caption = "API 오류: 로컬 파일 기준"
-                            st.warning(f"APS API 수요 조회 실패로 로컬 파일 기준을 표시합니다: {live_exc}")
+                            st.warning(format_api_fallback_warning(live_exc, "로컬 파일 기준"))
                             fallback_loaded = True
                         except Exception as fallback_exc:
                             st.error(f"APS API 수요 기준 생산 부족 현황 계산 실패: {live_exc}")
