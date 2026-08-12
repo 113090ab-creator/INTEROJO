@@ -70,11 +70,12 @@ WAREHOUSE_MAP = {
     "검사접착재작업": "검사접착재작업창고",
     "누수규격검사": "누수규격검사 창고",
 }
+APS_WIP_TARGET_WH_NAMES = ("사출창고", "분리창고", "검사접착", "누수규격검사")
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 4000
 DISPLAY_ROW_LIMIT = 500
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260810-effective-combined-source-v1"
+APP_CACHE_VERSION = "20260812-aps-wip-wh-name-filter-v1"
 PLAN_API_BASE_URL_DEFAULT = "https://plan.interojo.net"
 PLAN_API_KEY_ENV = "PLAN_API_KEY"
 PLAN_API_BASE_URL_ENV = "PLAN_API_BASE_URL"
@@ -1433,6 +1434,17 @@ def get_wip_updated_at(base_dir: Path) -> str:
     return get_latest_files_updated_at(unique_existing_paths([inv_path]))
 
 
+def format_api_wip_source_label() -> str:
+    return (
+        f"APS WIP API ({format_reference_timestamp(get_plan_api_updated_at())}; "
+        f"WH_NAME {', '.join(APS_WIP_TARGET_WH_NAMES)})"
+    )
+
+
+def format_file_wip_source_label(base_dir: Path) -> str:
+    return f"WIP 파일 ({format_reference_timestamp(get_wip_updated_at(base_dir))})"
+
+
 def get_local_demand_updated_at(base_dir: Path) -> str:
     try:
         _, dem_path = find_excel_files(base_dir)
@@ -1466,7 +1478,11 @@ def render_sidebar_reference_dates(data_base_dir: Path, source_label: str) -> No
 
     st.markdown('<div class="sidebar-section-title">반영 기준일자</div>', unsafe_allow_html=True)
     st.caption(f"APS API 수요: {api_label}")
-    st.caption(f"WIP 파일: {format_reference_timestamp(get_wip_updated_at(data_base_dir))}")
+    if is_plan_api_enabled():
+        st.caption(f"APS WIP API: 우선 반영 ({format_reference_timestamp(api_updated_at)}, WH_NAME 4개)")
+        st.caption(f"로컬 WIP 파일: API WIP 없을 때 대체 ({format_reference_timestamp(get_wip_updated_at(data_base_dir))})")
+    else:
+        st.caption(f"WIP 파일: {format_reference_timestamp(get_wip_updated_at(data_base_dir))}")
     st.caption(f"로컬 수요 파일: {format_reference_timestamp(get_local_demand_updated_at(data_base_dir))}")
     st.caption(f"적용 데이터: {source_label}")
 
@@ -1730,7 +1746,7 @@ def select_data_source(base_dir: Path) -> tuple[Path, str, str]:
                 st.cache_data.clear()
                 st.cache_resource.clear()
                 st.rerun()
-            st.caption("APS 수요는 API 전체조회, WIP는 API 응답이 잘리거나 실패하면 기존 WIP 파일 기준으로 계산합니다.")
+            st.caption("APS 수요와 WIP를 API로 조회합니다. WIP는 WH_NAME 4개 창고만 반영하고, API WIP가 없을 때만 기존 WIP 파일을 대체 사용합니다.")
             api_updated_at = get_plan_api_updated_at()
             updated_at = api_updated_at if api_updated_at != "-" else get_data_updated_at(base_dir)
             return base_dir, "APS API + 로컬 기준정보", updated_at
@@ -2087,6 +2103,23 @@ def canonicalize_warehouse_label(raw_label: str) -> str:
         return label.replace(" ", "")
 
     return display_to_key.get(normalized, normalized)
+
+
+def filter_api_wip_raw_to_target_wh_names(raw: pd.DataFrame) -> pd.DataFrame:
+    if raw.empty:
+        return raw
+
+    filtered = raw.copy()
+    filtered.columns = [str(c).strip() for c in filtered.columns]
+    warehouse_col = pick_api_column(filtered.columns.tolist(), ["WH_NAME"])
+    if warehouse_col is None:
+        return filtered.iloc[0:0].copy()
+
+    selected = filtered[warehouse_col]
+    if isinstance(selected, pd.DataFrame):
+        selected = selected.iloc[:, 0]
+    canonical_wh_name = selected.astype(str).str.strip().map(canonicalize_warehouse_label)
+    return filtered[canonical_wh_name.isin(APS_WIP_TARGET_WH_NAMES)].copy()
 
 
 def build_inventory_df(inv: pd.DataFrame) -> pd.DataFrame:
@@ -5859,7 +5892,7 @@ def load_api_shortage_data(
     if raw.empty:
         empty_info = pd.DataFrame(
             {
-                "재고파일": [format_reference_timestamp(get_wip_updated_at(data_base_dir))],
+                "재고파일": [format_api_wip_source_label()],
                 "수요파일": [f"APS API ({format_reference_timestamp(get_plan_api_updated_at())})"],
                 "행수(현황표)": [0],
             }
@@ -5962,7 +5995,7 @@ def load_api_shortage_data(
     if work.empty:
         empty_info = pd.DataFrame(
             {
-                "재고파일": [format_reference_timestamp(get_wip_updated_at(data_base_dir))],
+                "재고파일": [format_api_wip_source_label()],
                 "수요파일": [f"APS API ({format_reference_timestamp(get_plan_api_updated_at())})"],
                 "행수(현황표)": [0],
             }
@@ -6018,7 +6051,7 @@ def load_api_shortage_data(
         leadji_u_map,
     ) = load_reference_maps_bundle(data_base_dir, reference_refresh_key)
 
-    inv_df = load_all_item_inventory_file_source(data_base_dir)
+    inv_df, inventory_source_label = load_all_item_inventory_source_with_label(data_base_dir)
     target_inv = inv_df[inv_df["창고"].isin(TARGET_WAREHOUSES)].copy()
     stock_lookup: dict[str, dict[str, float]] = {}
     for raw_name, display_name in WAREHOUSE_MAP.items():
@@ -6168,7 +6201,7 @@ def load_api_shortage_data(
 
     file_info_df = pd.DataFrame(
         {
-            "재고파일": [f"WIP ({format_reference_timestamp(get_wip_updated_at(data_base_dir))})"],
+            "재고파일": [inventory_source_label],
             "수요파일": [f"APS API ({format_reference_timestamp(get_plan_api_updated_at())})"],
             "행수(현황표)": [len(result)],
             "API 처리행수": [len(raw)],
@@ -6254,7 +6287,10 @@ def load_api_wip_inventory_df() -> pd.DataFrame:
     raw, error = read_plan_api_dataframe(APS_WIP_ENDPOINT, {"limit": PLAN_API_DEFAULT_ROW_LIMIT})
     if error or raw.empty:
         return pd.DataFrame(columns=["품목코드", "창고", "재공코드", "재고량"])
-    return build_inventory_df(raw)
+    filtered_raw = filter_api_wip_raw_to_target_wh_names(raw)
+    if filtered_raw.empty:
+        return pd.DataFrame(columns=["품목코드", "창고", "재공코드", "재고량"])
+    return build_inventory_df(filtered_raw)
 
 
 def load_api_demand_like_df(site_filter: str = "전체") -> pd.DataFrame:
@@ -6463,17 +6499,21 @@ def load_all_item_inventory_file_source(data_base_dir: Path) -> pd.DataFrame:
         raise
 
 
-def load_all_item_inventory_source(data_base_dir: Path) -> pd.DataFrame:
+def load_all_item_inventory_source_with_label(data_base_dir: Path) -> tuple[pd.DataFrame, str]:
     if is_plan_api_enabled():
         api_inv_df = load_api_wip_inventory_df()
         if not api_inv_df.empty:
-            return api_inv_df
+            return api_inv_df, format_api_wip_source_label()
     try:
-        return load_all_item_inventory_file_source(data_base_dir)
+        return load_all_item_inventory_file_source(data_base_dir), format_file_wip_source_label(data_base_dir)
     except Exception:
         if is_plan_api_enabled():
-            return pd.DataFrame(columns=["품목코드", "창고", "재공코드", "재고량"])
+            return pd.DataFrame(columns=["품목코드", "창고", "재공코드", "재고량"]), "WIP 없음"
         raise
+
+
+def load_all_item_inventory_source(data_base_dir: Path) -> pd.DataFrame:
+    return load_all_item_inventory_source_with_label(data_base_dir)[0]
 
 
 @st.cache_data(show_spinner=False, max_entries=CACHE_MAX_ENTRIES)
@@ -7690,7 +7730,7 @@ def build_all_item_flow_status_snapshot(
     all_items = all_items.drop(columns=["_납기일_dt"], errors="ignore")
 
     try:
-        inv_df = load_all_item_inventory_file_source(data_base_dir)
+        inv_df = load_all_item_inventory_source(data_base_dir)
     except Exception:
         inv_df = pd.DataFrame(columns=["품목코드", "창고", "재공코드", "재고량"])
     stock_lookup, _target_inv = build_target_stock_lookup(inv_df)
