@@ -77,7 +77,8 @@ TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 4000
 DISPLAY_ROW_LIMIT = 500
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260813-wip-api-warehouse-v1"
+APP_CACHE_VERSION = "20260813-local-folder-files-v1"
+DATA_SOURCE_DEFAULT_VERSION = "20260813-local-folder-files-default-v1"
 PLAN_API_BASE_URL_DEFAULT = "https://plan.interojo.net"
 PLAN_API_KEY_ENV = "PLAN_API_KEY"
 PLAN_API_BASE_URL_ENV = "PLAN_API_BASE_URL"
@@ -1953,8 +1954,10 @@ def stage_uploaded_data_files(
 
 def sync_plan_api_data_mode() -> bool:
     api_configured = is_plan_api_configured()
-    if api_configured:
-        set_session_value("use_plan_api_data_mode", True)
+    if get_session_value("data_source_default_version") != DATA_SOURCE_DEFAULT_VERSION:
+        set_session_value("use_plan_api_data_mode", False)
+        set_session_value("use_uploaded_data_mode", False)
+        set_session_value("data_source_default_version", DATA_SOURCE_DEFAULT_VERSION)
     set_session_value("plan_api_key_available", api_configured)
     if not api_configured and get_session_value("use_plan_api_data_mode", False):
         set_session_value("use_plan_api_data_mode", False)
@@ -1998,6 +2001,8 @@ def select_data_source(base_dir: Path) -> tuple[Path, str, str]:
             updated_at = api_updated_at if api_updated_at != "-" else get_data_updated_at(base_dir)
             source_name = "APS API 수요 + WIP API" if should_use_aps_wip_api_for_inventory() else "APS API 수요 + WIP 엑셀"
             return base_dir, source_name, updated_at
+    elif api_configured:
+        st.caption("현재 설정: 폴더 저장 파일 기준입니다. 저장된 수요/WIP 엑셀을 사용합니다.")
     elif not api_configured:
         st.caption("API 키 미설정: 기존 파일 기준으로 표시합니다.")
 
