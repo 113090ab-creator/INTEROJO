@@ -72,12 +72,12 @@ WAREHOUSE_MAP = {
     "누수규격검사": "누수규격검사 창고",
 }
 APS_WIP_TARGET_WH_NAMES = ("사출창고", "분리창고", "검사접착", "누수규격검사")
-USE_APS_WIP_API_FOR_INVENTORY = False
+USE_APS_WIP_API_FOR_INVENTORY = True
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 4000
 DISPLAY_ROW_LIMIT = 500
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260813-wip-excel-source-v1"
+APP_CACHE_VERSION = "20260813-wip-api-warehouse-v1"
 PLAN_API_BASE_URL_DEFAULT = "https://plan.interojo.net"
 PLAN_API_KEY_ENV = "PLAN_API_KEY"
 PLAN_API_BASE_URL_ENV = "PLAN_API_BASE_URL"
@@ -1350,6 +1350,38 @@ def fetch_plan_api_meta_cached(
     return payload if isinstance(payload, dict) else {}, ""
 
 
+@st.cache_data(show_spinner=False, ttl=PLAN_API_CACHE_TTL_SECONDS, max_entries=CACHE_MAX_ENTRIES)
+def fetch_plan_api_meta_with_params_cached(
+    base_url: str,
+    endpoint: str,
+    params_tuple: tuple[tuple[str, object], ...],
+    api_key_hash: str,
+    refresh_nonce: int,
+) -> tuple[dict[str, object], str]:
+    _ = api_key_hash, refresh_nonce
+    if requests is None:
+        return {}, "requests 패키지가 설치되어 있지 않습니다."
+
+    api_key = get_plan_api_key()
+    if not api_key:
+        return {}, f"{PLAN_API_KEY_ENV}가 설정되어 있지 않습니다."
+
+    url = f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}"
+    params = {str(key): value for key, value in params_tuple if value not in (None, "")}
+    try:
+        response = requests.get(
+            url,
+            params=params,
+            headers={"X-API-Key": api_key},
+            timeout=PLAN_API_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        return {}, str(exc)
+    return payload if isinstance(payload, dict) else {}, ""
+
+
 def read_plan_api_dataframe(endpoint: str, params: dict[str, object] | None = None) -> tuple[pd.DataFrame, str]:
     if not is_plan_api_enabled():
         return pd.DataFrame(), "API 자동조회가 꺼져 있습니다."
@@ -1413,6 +1445,59 @@ def read_aps_plan_operations_dataframe(
     return pd.DataFrame(), summarize_plan_api_operation_errors(errors)
 
 
+def summarize_aps_wip_warehouse_errors(errors: list[str]) -> str:
+    cleaned = [clean_text_value(error) for error in errors if clean_text_value(error)]
+    if not cleaned:
+        return ""
+    if len(cleaned) > 2:
+        return "; ".join(cleaned[:2]) + f"; 외 {len(cleaned) - 2}건"
+    return "; ".join(cleaned)
+
+
+def read_aps_wip_warehouse_dataframe() -> tuple[pd.DataFrame, str]:
+    if not is_plan_api_enabled():
+        return pd.DataFrame(), "API 자동조회가 꺼져 있습니다."
+    api_key = get_plan_api_key()
+    api_key_hash = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:12]
+    base_url = get_plan_api_base_url()
+    source_updated_at = get_aps_wip_api_updated_at()
+    frames: list[pd.DataFrame] = []
+    errors: list[str] = []
+
+    def fetch_warehouse(warehouse_name: str) -> tuple[str, pd.DataFrame, str]:
+        params: dict[str, object] = {
+            "limit": PLAN_API_DEFAULT_ROW_LIMIT,
+            "wh_name": warehouse_name,
+        }
+        params_tuple = tuple(sorted(params.items(), key=lambda item: item[0]))
+        frame, error = fetch_plan_api_dataframe_direct(
+            base_url,
+            APS_WIP_ENDPOINT,
+            params_tuple,
+            api_key,
+            api_key_hash,
+            source_updated_at,
+        )
+        return warehouse_name, frame, error
+
+    max_workers = max(1, min(len(APS_WIP_TARGET_WH_NAMES), 4))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(fetch_warehouse, warehouse_name) for warehouse_name in APS_WIP_TARGET_WH_NAMES]
+        for future in as_completed(futures):
+            warehouse_name, frame, error = future.result()
+            if error:
+                errors.append(f"wh_name={warehouse_name}: {error}")
+                continue
+            if not frame.empty:
+                frames.append(frame)
+
+    if errors:
+        return pd.DataFrame(), summarize_aps_wip_warehouse_errors(errors)
+    if frames:
+        return pd.concat(frames, ignore_index=True, sort=False), ""
+    return pd.DataFrame(), "APS WIP API 응답에서 행 데이터를 찾지 못했습니다."
+
+
 def find_meta_value(payload: dict[str, object], candidates: list[str]) -> str:
     if not payload:
         return ""
@@ -1473,6 +1558,54 @@ def get_plan_api_updated_at() -> str:
     return value
 
 
+def get_aps_wip_api_updated_at() -> str:
+    if not is_plan_api_configured():
+        return "-"
+    api_key_hash = hashlib.sha256(get_plan_api_key().encode("utf-8")).hexdigest()[:12]
+    params_tuple = tuple(
+        sorted(
+            {
+                "limit": 1,
+                "wh_name": APS_WIP_TARGET_WH_NAMES[0],
+            }.items(),
+            key=lambda item: item[0],
+        )
+    )
+    payload, error = fetch_plan_api_meta_with_params_cached(
+        get_plan_api_base_url(),
+        APS_WIP_ENDPOINT,
+        params_tuple,
+        api_key_hash,
+        get_plan_api_refresh_nonce(),
+    )
+    if error:
+        return "-"
+    value = find_meta_value(
+        payload,
+        [
+            "source_refreshed_at",
+            "sourceRefreshedAt",
+            "updated_at",
+            "last_updated_at",
+            "last_refreshed_at",
+            "refreshed_at",
+            "load_dt",
+            "LOAD_DT",
+            "snapshot_at",
+            "generated_at",
+            "기준시각",
+            "APS실행일시",
+            "실행시각",
+        ],
+    )
+    if not value:
+        return "-"
+    parsed = pd.to_datetime(value, errors="coerce")
+    if pd.notna(parsed):
+        return parsed.strftime("%Y-%m-%d %H:%M:%S")
+    return value
+
+
 def render_plan_api_status() -> None:
     if requests is None:
         st.warning("API 자동조회 불가: requests 패키지가 설치되어 있지 않습니다.")
@@ -1508,7 +1641,7 @@ def get_wip_updated_at(base_dir: Path) -> str:
 
 def format_api_wip_source_label() -> str:
     return (
-        f"APS WIP API ({format_reference_timestamp(get_plan_api_updated_at())}; "
+        f"APS WIP API ({format_reference_timestamp(get_aps_wip_api_updated_at())}; "
         f"WH_NAME {', '.join(APS_WIP_TARGET_WH_NAMES)})"
     )
 
@@ -1561,7 +1694,8 @@ def render_sidebar_reference_dates(data_base_dir: Path, source_label: str) -> No
     st.markdown('<div class="sidebar-section-title">반영 기준일자</div>', unsafe_allow_html=True)
     st.caption(f"APS API 수요: {api_label}")
     if should_use_aps_wip_api_for_inventory():
-        st.caption(f"APS WIP API: 우선 반영 ({format_reference_timestamp(api_updated_at)}, WH_NAME 4개)")
+        wip_api_updated_at = get_aps_wip_api_updated_at()
+        st.caption(f"APS WIP API: 우선 반영 ({format_reference_timestamp(wip_api_updated_at)}, WH_NAME 4개)")
         st.caption(f"로컬 WIP 파일: API WIP 없을 때 대체 ({format_reference_timestamp(get_wip_updated_at(data_base_dir))})")
     else:
         st.caption(f"WIP 파일: {format_reference_timestamp(get_wip_updated_at(data_base_dir))}")
@@ -1828,10 +1962,14 @@ def select_data_source(base_dir: Path) -> tuple[Path, str, str]:
                 st.cache_data.clear()
                 st.cache_resource.clear()
                 st.rerun()
-            st.caption("APS 수요는 API로 조회하고, WIP/공정재고는 기존 WIP 엑셀 파일 기준으로 계산합니다.")
+            if should_use_aps_wip_api_for_inventory():
+                st.caption("APS 수요와 WIP/공정재고를 API로 조회합니다. WIP API 실패 시 기존 WIP 엑셀 파일로 대체합니다.")
+            else:
+                st.caption("APS 수요는 API로 조회하고, WIP/공정재고는 기존 WIP 엑셀 파일 기준으로 계산합니다.")
             api_updated_at = get_plan_api_updated_at()
             updated_at = api_updated_at if api_updated_at != "-" else get_data_updated_at(base_dir)
-            return base_dir, "APS API 수요 + WIP 엑셀", updated_at
+            source_name = "APS API 수요 + WIP API" if should_use_aps_wip_api_for_inventory() else "APS API 수요 + WIP 엑셀"
+            return base_dir, source_name, updated_at
     elif not api_configured:
         st.caption("API 키 미설정: 기존 파일 기준으로 표시합니다.")
 
@@ -6366,7 +6504,7 @@ def build_first_occurrence_mask(source: pd.DataFrame, key_columns: list[str | No
 
 
 def load_api_wip_inventory_df() -> pd.DataFrame:
-    raw, error = read_plan_api_dataframe(APS_WIP_ENDPOINT, {"limit": PLAN_API_DEFAULT_ROW_LIMIT})
+    raw, error = read_aps_wip_warehouse_dataframe()
     if error or raw.empty:
         return pd.DataFrame(columns=["품목코드", "창고", "재공코드", "재고량"])
     filtered_raw = filter_api_wip_raw_to_target_wh_names(raw)
