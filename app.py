@@ -1494,7 +1494,19 @@ def read_aps_wip_warehouse_dataframe() -> tuple[pd.DataFrame, str]:
     if errors:
         return pd.DataFrame(), summarize_aps_wip_warehouse_errors(errors)
     if frames:
-        return pd.concat(frames, ignore_index=True, sort=False), ""
+        combined = pd.concat(frames, ignore_index=True, sort=False)
+        combined.columns = [str(col).strip() for col in combined.columns]
+        warehouse_col = pick_api_column(combined.columns.tolist(), ["WH_NAME", "wh_name", "창고명", "창고"])
+        if warehouse_col is None:
+            return pd.DataFrame(), "APS WIP API 응답에서 창고명 컬럼을 찾지 못했습니다."
+        warehouse_values = combined[warehouse_col]
+        if isinstance(warehouse_values, pd.DataFrame):
+            warehouse_values = warehouse_values.iloc[:, 0]
+        received_warehouses = set(warehouse_values.astype(str).str.strip().map(canonicalize_warehouse_label))
+        missing_warehouses = [name for name in APS_WIP_TARGET_WH_NAMES if name not in received_warehouses]
+        if missing_warehouses:
+            return pd.DataFrame(), f"APS WIP API 응답 누락 창고: {', '.join(missing_warehouses)}"
+        return combined, ""
     return pd.DataFrame(), "APS WIP API 응답에서 행 데이터를 찾지 못했습니다."
 
 
@@ -1650,6 +1662,19 @@ def format_file_wip_source_label(base_dir: Path) -> str:
     return f"WIP 파일 ({format_reference_timestamp(get_wip_updated_at(base_dir))})"
 
 
+def format_wip_api_fallback_source_label(base_dir: Path, api_error: object) -> str:
+    error_text = clean_text_value(api_error)
+    if len(error_text) > 120:
+        error_text = error_text[:117].rstrip() + "..."
+    file_label = format_file_wip_source_label(base_dir)
+    return f"{file_label} · APS WIP API 미반영: {error_text or '조회 실패'}"
+
+
+def remember_wip_inventory_source(label: str, api_error: object = "") -> None:
+    set_session_value("last_wip_inventory_source_label", label)
+    set_session_value("last_wip_inventory_api_error", clean_text_value(api_error))
+
+
 def should_use_aps_wip_api_for_inventory() -> bool:
     return USE_APS_WIP_API_FOR_INVENTORY and is_plan_api_enabled()
 
@@ -1697,6 +1722,9 @@ def render_sidebar_reference_dates(data_base_dir: Path, source_label: str) -> No
         wip_api_updated_at = get_aps_wip_api_updated_at()
         st.caption(f"APS WIP API: 우선 반영 ({format_reference_timestamp(wip_api_updated_at)}, WH_NAME 4개)")
         st.caption(f"로컬 WIP 파일: API WIP 없을 때 대체 ({format_reference_timestamp(get_wip_updated_at(data_base_dir))})")
+        last_wip_source = clean_text_value(get_session_value("last_wip_inventory_source_label", ""))
+        if last_wip_source:
+            st.caption(f"마지막 WIP 적용: {last_wip_source}")
     else:
         st.caption(f"WIP 파일: {format_reference_timestamp(get_wip_updated_at(data_base_dir))}")
     st.caption(f"로컬 수요 파일: {format_reference_timestamp(get_local_demand_updated_at(data_base_dir))}")
@@ -6503,14 +6531,22 @@ def build_first_occurrence_mask(source: pd.DataFrame, key_columns: list[str | No
     return ~key_frame.astype(str).agg("|".join, axis=1).duplicated()
 
 
-def load_api_wip_inventory_df() -> pd.DataFrame:
+def load_api_wip_inventory_df_with_error() -> tuple[pd.DataFrame, str]:
     raw, error = read_aps_wip_warehouse_dataframe()
     if error or raw.empty:
-        return pd.DataFrame(columns=["품목코드", "창고", "재공코드", "재고량"])
+        return pd.DataFrame(columns=["품목코드", "창고", "재공코드", "재고량"]), error or "APS WIP API 응답이 비어 있습니다."
     filtered_raw = filter_api_wip_raw_to_target_wh_names(raw)
     if filtered_raw.empty:
-        return pd.DataFrame(columns=["품목코드", "창고", "재공코드", "재고량"])
-    return build_inventory_df(filtered_raw)
+        return pd.DataFrame(columns=["품목코드", "창고", "재공코드", "재고량"]), "APS WIP API 응답에서 대상 창고 데이터를 찾지 못했습니다."
+    inventory = build_inventory_df(filtered_raw)
+    if inventory.empty:
+        return inventory, "APS WIP API 데이터를 재고 형식으로 변환하지 못했습니다."
+    return inventory, ""
+
+
+def load_api_wip_inventory_df() -> pd.DataFrame:
+    inventory, _ = load_api_wip_inventory_df_with_error()
+    return inventory
 
 
 def load_api_demand_like_df(site_filter: str = "전체") -> pd.DataFrame:
@@ -6721,13 +6757,29 @@ def load_all_item_inventory_file_source(data_base_dir: Path) -> pd.DataFrame:
 
 def load_all_item_inventory_source_with_label(data_base_dir: Path) -> tuple[pd.DataFrame, str]:
     if should_use_aps_wip_api_for_inventory():
-        api_inv_df = load_api_wip_inventory_df()
+        api_inv_df, api_error = load_api_wip_inventory_df_with_error()
         if not api_inv_df.empty:
-            return api_inv_df, format_api_wip_source_label()
+            label = format_api_wip_source_label()
+            remember_wip_inventory_source(label)
+            return api_inv_df, label
+        try:
+            label = format_wip_api_fallback_source_label(
+                data_base_dir,
+                api_error,
+            )
+            remember_wip_inventory_source(label, api_error)
+            return load_all_item_inventory_file_source(data_base_dir), label
+        except Exception:
+            label = format_wip_api_fallback_source_label(data_base_dir, api_error)
+            remember_wip_inventory_source(label, api_error)
+            return api_inv_df, label
     try:
-        return load_all_item_inventory_file_source(data_base_dir), format_file_wip_source_label(data_base_dir)
+        label = format_file_wip_source_label(data_base_dir)
+        remember_wip_inventory_source(label)
+        return load_all_item_inventory_file_source(data_base_dir), label
     except Exception:
         if is_plan_api_enabled():
+            remember_wip_inventory_source("WIP 없음", "WIP 파일 로드 실패")
             return pd.DataFrame(columns=["품목코드", "창고", "재공코드", "재고량"]), "WIP 없음"
         raise
 
