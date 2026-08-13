@@ -77,8 +77,8 @@ TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 4000
 DISPLAY_ROW_LIMIT = 500
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260813-local-folder-files-v1"
-DATA_SOURCE_DEFAULT_VERSION = "20260813-local-folder-files-default-v1"
+APP_CACHE_VERSION = "20260813-api-data-source-default-v1"
+DATA_SOURCE_DEFAULT_VERSION = "20260813-api-data-source-default-v1"
 PLAN_API_BASE_URL_DEFAULT = "https://plan.interojo.net"
 PLAN_API_KEY_ENV = "PLAN_API_KEY"
 PLAN_API_BASE_URL_ENV = "PLAN_API_BASE_URL"
@@ -1955,7 +1955,7 @@ def stage_uploaded_data_files(
 def sync_plan_api_data_mode() -> bool:
     api_configured = is_plan_api_configured()
     if get_session_value("data_source_default_version") != DATA_SOURCE_DEFAULT_VERSION:
-        set_session_value("use_plan_api_data_mode", False)
+        set_session_value("use_plan_api_data_mode", api_configured)
         set_session_value("use_uploaded_data_mode", False)
         set_session_value("data_source_default_version", DATA_SOURCE_DEFAULT_VERSION)
     set_session_value("plan_api_key_available", api_configured)
