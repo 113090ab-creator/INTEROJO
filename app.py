@@ -72,11 +72,12 @@ WAREHOUSE_MAP = {
     "누수규격검사": "누수규격검사 창고",
 }
 APS_WIP_TARGET_WH_NAMES = ("사출창고", "분리창고", "검사접착", "누수규격검사")
+USE_APS_WIP_API_FOR_INVENTORY = False
 TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 4000
 DISPLAY_ROW_LIMIT = 500
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260812-aps-wip-wh-name-filter-v1"
+APP_CACHE_VERSION = "20260813-wip-excel-source-v1"
 PLAN_API_BASE_URL_DEFAULT = "https://plan.interojo.net"
 PLAN_API_KEY_ENV = "PLAN_API_KEY"
 PLAN_API_BASE_URL_ENV = "PLAN_API_BASE_URL"
@@ -1516,6 +1517,16 @@ def format_file_wip_source_label(base_dir: Path) -> str:
     return f"WIP 파일 ({format_reference_timestamp(get_wip_updated_at(base_dir))})"
 
 
+def should_use_aps_wip_api_for_inventory() -> bool:
+    return USE_APS_WIP_API_FOR_INVENTORY and is_plan_api_enabled()
+
+
+def format_active_wip_source_label(base_dir: Path) -> str:
+    if should_use_aps_wip_api_for_inventory():
+        return format_api_wip_source_label()
+    return format_file_wip_source_label(base_dir)
+
+
 def get_local_demand_updated_at(base_dir: Path) -> str:
     try:
         _, dem_path = find_excel_files(base_dir)
@@ -1549,7 +1560,7 @@ def render_sidebar_reference_dates(data_base_dir: Path, source_label: str) -> No
 
     st.markdown('<div class="sidebar-section-title">반영 기준일자</div>', unsafe_allow_html=True)
     st.caption(f"APS API 수요: {api_label}")
-    if is_plan_api_enabled():
+    if should_use_aps_wip_api_for_inventory():
         st.caption(f"APS WIP API: 우선 반영 ({format_reference_timestamp(api_updated_at)}, WH_NAME 4개)")
         st.caption(f"로컬 WIP 파일: API WIP 없을 때 대체 ({format_reference_timestamp(get_wip_updated_at(data_base_dir))})")
     else:
@@ -1817,10 +1828,10 @@ def select_data_source(base_dir: Path) -> tuple[Path, str, str]:
                 st.cache_data.clear()
                 st.cache_resource.clear()
                 st.rerun()
-            st.caption("APS 수요와 WIP를 API로 조회합니다. WIP는 WH_NAME 4개 창고만 반영하고, API WIP가 없을 때만 기존 WIP 파일을 대체 사용합니다.")
+            st.caption("APS 수요는 API로 조회하고, WIP/공정재고는 기존 WIP 엑셀 파일 기준으로 계산합니다.")
             api_updated_at = get_plan_api_updated_at()
             updated_at = api_updated_at if api_updated_at != "-" else get_data_updated_at(base_dir)
-            return base_dir, "APS API + 로컬 기준정보", updated_at
+            return base_dir, "APS API 수요 + WIP 엑셀", updated_at
     elif not api_configured:
         st.caption("API 키 미설정: 기존 파일 기준으로 표시합니다.")
 
@@ -5963,7 +5974,7 @@ def load_api_shortage_data(
     if raw.empty:
         empty_info = pd.DataFrame(
             {
-                "재고파일": [format_api_wip_source_label()],
+                "재고파일": [format_active_wip_source_label(data_base_dir)],
                 "수요파일": [f"APS API ({format_reference_timestamp(get_plan_api_updated_at())})"],
                 "행수(현황표)": [0],
             }
@@ -6066,7 +6077,7 @@ def load_api_shortage_data(
     if work.empty:
         empty_info = pd.DataFrame(
             {
-                "재고파일": [format_api_wip_source_label()],
+                "재고파일": [format_active_wip_source_label(data_base_dir)],
                 "수요파일": [f"APS API ({format_reference_timestamp(get_plan_api_updated_at())})"],
                 "행수(현황표)": [0],
             }
@@ -6571,7 +6582,7 @@ def load_all_item_inventory_file_source(data_base_dir: Path) -> pd.DataFrame:
 
 
 def load_all_item_inventory_source_with_label(data_base_dir: Path) -> tuple[pd.DataFrame, str]:
-    if is_plan_api_enabled():
+    if should_use_aps_wip_api_for_inventory():
         api_inv_df = load_api_wip_inventory_df()
         if not api_inv_df.empty:
             return api_inv_df, format_api_wip_source_label()
