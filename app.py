@@ -13673,7 +13673,7 @@ def main() -> None:
                 shortage_api_site_options = [*SITE_GROUP_ORDER, "전체"]
                 shortage_api_site_key = "shortage_api_site_prefilter_v1"
                 if st.session_state.get(shortage_api_site_key) not in shortage_api_site_options:
-                    st.session_state[shortage_api_site_key] = EFFECTIVE_PRODUCTION_DEFAULT_SITE
+                    st.session_state.pop(shortage_api_site_key, None)
                 shortage_api_site_filter = (
                     st.pills(
                         "사이트코드",
