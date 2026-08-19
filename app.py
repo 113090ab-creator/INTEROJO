@@ -1511,16 +1511,25 @@ def read_aps_wip_warehouse_dataframe() -> tuple[pd.DataFrame, str]:
     return pd.DataFrame(), "APS WIP API 응답에서 행 데이터를 찾지 못했습니다."
 
 
-def find_meta_value(payload: dict[str, object], candidates: list[str]) -> str:
+def find_meta_value(payload: object, candidates: list[str]) -> str:
     if not payload:
         return ""
     normalized_candidates = {normalize_api_column_key(candidate) for candidate in candidates}
+    if isinstance(payload, list | tuple):
+        for item in payload:
+            nested = find_meta_value(item, candidates)
+            if nested:
+                return nested
+        return ""
+    if not isinstance(payload, dict):
+        return ""
     for key, value in payload.items():
         if normalize_api_column_key(key) in normalized_candidates:
-            text = str(value).strip()
-            if text and text.lower() not in INVALID_CATEGORY_VALUES:
-                return text
-        if isinstance(value, dict):
+            if not isinstance(value, dict | list | tuple):
+                text = str(value).strip()
+                if text and text.lower() not in INVALID_CATEGORY_VALUES:
+                    return text
+        if isinstance(value, dict | list | tuple):
             nested = find_meta_value(value, candidates)
             if nested:
                 return nested
@@ -1602,6 +1611,8 @@ def get_aps_wip_api_updated_at() -> str:
             "last_updated_at",
             "last_refreshed_at",
             "refreshed_at",
+            "extracted_at",
+            "extractedAt",
             "load_dt",
             "LOAD_DT",
             "snapshot_at",
@@ -1611,6 +1622,8 @@ def get_aps_wip_api_updated_at() -> str:
             "실행시각",
         ],
     )
+    if not value:
+        value = find_meta_value(payload, ["query_date", "queryDate", "date_label"])
     if not value:
         return "-"
     parsed = pd.to_datetime(value, errors="coerce")
@@ -1630,6 +1643,8 @@ def render_plan_api_status() -> None:
     updated_at = get_plan_api_updated_at()
     if updated_at != "-":
         st.caption(f"APS API 갱신시각: {updated_at}")
+    if should_use_aps_wip_api_for_inventory():
+        st.caption(f"APS WIP API 기준시각: {format_reference_timestamp(get_aps_wip_api_updated_at())}")
 
 
 def get_data_updated_at(base_dir: Path) -> str:
@@ -1721,7 +1736,7 @@ def render_sidebar_reference_dates(data_base_dir: Path, source_label: str) -> No
     st.caption(f"APS API 수요: {api_label}")
     if should_use_aps_wip_api_for_inventory():
         wip_api_updated_at = get_aps_wip_api_updated_at()
-        st.caption(f"APS WIP API: 우선 반영 ({format_reference_timestamp(wip_api_updated_at)}, WH_NAME 4개)")
+        st.caption(f"APS WIP API: 반영 ({format_reference_timestamp(wip_api_updated_at)}, WH_NAME 4개)")
         st.caption(f"로컬 WIP 파일: API WIP 없을 때 대체 ({format_reference_timestamp(get_wip_updated_at(data_base_dir))})")
         last_wip_source = clean_text_value(get_session_value("last_wip_inventory_source_label", ""))
         if last_wip_source:
