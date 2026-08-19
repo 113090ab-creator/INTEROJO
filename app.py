@@ -1523,12 +1523,15 @@ def find_meta_value(payload: object, candidates: list[str]) -> str:
         return ""
     if not isinstance(payload, dict):
         return ""
+
     for key, value in payload.items():
         if normalize_api_column_key(key) in normalized_candidates:
             if not isinstance(value, dict | list | tuple):
                 text = str(value).strip()
                 if text and text.lower() not in INVALID_CATEGORY_VALUES:
                     return text
+
+    for value in payload.values():
         if isinstance(value, dict | list | tuple):
             nested = find_meta_value(value, candidates)
             if nested:
