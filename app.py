@@ -79,8 +79,8 @@ TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 4000
 DISPLAY_ROW_LIMIT = 500
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260821-product-names-category-v1"
-DATA_SOURCE_DEFAULT_VERSION = "20260821-product-names-category-v1"
+APP_CACHE_VERSION = "20260821-bom-api-rq-match-v1"
+DATA_SOURCE_DEFAULT_VERSION = "20260821-bom-api-rq-match-v1"
 PLAN_API_BASE_URL_DEFAULT = "https://plan.interojo.net"
 PLAN_API_KEY_ENV = "PLAN_API_KEY"
 PLAN_API_BASE_URL_ENV = "PLAN_API_BASE_URL"
@@ -99,9 +99,13 @@ APS_PLAN_ENDPOINT = "/api/aps-plan"
 APS_WIP_ENDPOINT = "/api/aps-wip"
 APS_PLAN_META_ENDPOINT = "/api/aps-plan/meta"
 PRODUCT_NAMES_ENDPOINT = "/api/product-names"
+BOM_EXPLOSION_ENDPOINT = "/api/bom-explosion"
 PRODUCTION_PERFORMANCE_ENDPOINT = "/api/production-performance"
 ITEM_INVENTORY_LEDGER_ENDPOINT = "/api/item-inventory-ledger"
 PURCHASE_REQUESTS_ENDPOINT = "/api/purchase-requests"
+BOM_API_PREFIX_ROW_LIMIT = 3000
+BOM_API_SINGLE_ROW_LIMIT = 500
+BOM_API_MAX_PREFIX_GROUPS = 80
 APS_PLAN_SHORTAGE_OPERATIONS = ("10", "20", "45", "55", "80")
 APS_PLAN_FLOW_OPERATIONS = ("10", "80")
 EFFECTIVE_PRODUCTION_OPERATIONS = ("10", "80")
@@ -3079,6 +3083,19 @@ def map_demand_code_to_process_code(demand_code: str, process_prefix: str) -> st
     return code
 
 
+def trim_process_packaging_suffix(process_code: object) -> str:
+    code = str(process_code).strip()
+    if not code or code.lower() == "nan":
+        return code
+
+    # Some P codes carry a final packing/spec digit that is not present on the
+    # corresponding R/Q process item, e.g. P1286...180CHC2 -> Q5335...180CHC.
+    match = re.match(r"^(.*\d{3}[A-Z]{2,})(\d)$", code)
+    if match:
+        return match.group(1)
+    return code
+
+
 def normalize_rework_match_value(value: object) -> str:
     text = str(value).strip().upper()
     if not text or text.lower() in INVALID_CATEGORY_VALUES:
@@ -4309,7 +4326,7 @@ def merge_mapped_base_code(inferred_code: str, mapped_base_code: str, prefix: st
         return mapped
 
     if inferred.startswith(prefix) and mapped.startswith(prefix) and len(inferred) >= 5 and len(mapped) >= 5:
-        return mapped[:5] + inferred[5:]
+        return trim_process_packaging_suffix(mapped[:5] + inferred[5:])
     return mapped
 
 
@@ -4319,6 +4336,9 @@ def iter_inventory_code_candidates(process_code: str) -> list[str]:
         return []
 
     candidates = [code]
+    trimmed = trim_process_packaging_suffix(code)
+    if trimmed != code:
+        candidates.append(trimmed)
     bul_match = re.match(r"^(.*BUL)\d+$", code, flags=re.IGNORECASE)
     if bul_match:
         candidates.append(bul_match.group(1))
@@ -4598,6 +4618,223 @@ def load_bom_maps_streaming(
         return result
     finally:
         wb.close()
+
+
+def normalize_bom_code5(value: object, prefix: str | None = None) -> str:
+    code = normalize_item_code_value(value)
+    code5 = code[:5]
+    if not re.match(r"^[PQRSTU]\d{4}$", code5):
+        return ""
+    if prefix and not code5.startswith(prefix):
+        return ""
+    return code5
+
+
+def build_bom_maps_from_api_rows(raw: pd.DataFrame) -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, str]]:
+    if raw.empty:
+        return {}, {}, {}, {}
+
+    work = raw.copy()
+    work.columns = [str(c).strip() for c in work.columns]
+    columns = work.columns.tolist()
+    root_col = pick_api_column(columns, ["root_cd", "ROOT_CD", "상위시작코드", "루트코드"])
+    parent_col = pick_api_column(columns, ["parent_cd", "PARENT_CD", "상위코드", "모품목코드"])
+    child_col = pick_api_column(columns, ["child_cd", "CHILD_CD", "하위코드", "자품목코드"])
+    level_col = pick_api_column(columns, ["lvl", "LVL", "level", "레벨"])
+    if parent_col is None or child_col is None:
+        return {}, {}, {}, {}
+
+    q_base_best: dict[str, tuple[float, int, str]] = {}
+    r_base_best: dict[str, tuple[float, int, str]] = {}
+    q_exact_best: dict[str, tuple[float, int, str]] = {}
+    r_exact_best: dict[str, tuple[float, int, str]] = {}
+
+    def put_base(
+        target: dict[str, tuple[float, int, str]],
+        sales_code5: str,
+        process_code5: str,
+        level: float,
+        row_no: int,
+    ) -> None:
+        if not sales_code5.startswith("P") or not process_code5.startswith(("Q", "R")):
+            return
+        current = target.get(sales_code5)
+        candidate = (level, row_no, process_code5)
+        if current is None or candidate[:2] < current[:2]:
+            target[sales_code5] = candidate
+
+    def put_exact(
+        target: dict[str, tuple[float, int, str]],
+        sales_code: str,
+        process_code: str,
+        level: float,
+        row_no: int,
+    ) -> None:
+        if not sales_code.startswith("P") or not process_code.startswith(("Q", "R")):
+            return
+        if len(sales_code) <= 5 or len(process_code) <= 5:
+            return
+        current = target.get(sales_code)
+        candidate = (level, row_no, process_code)
+        if current is None or candidate[:2] < current[:2]:
+            target[sales_code] = candidate
+
+    for row_no, row in enumerate(work.to_dict("records")):
+        root_code = normalize_item_code_value(row.get(root_col, "")) if root_col is not None else ""
+        parent_code = normalize_item_code_value(row.get(parent_col, ""))
+        child_code = normalize_item_code_value(row.get(child_col, ""))
+        root5 = normalize_bom_code5(root_code)
+        parent5 = normalize_bom_code5(parent_code)
+        child5 = normalize_bom_code5(child_code)
+        if not parent5 or not child5:
+            continue
+        level = parse_sequence_priority(row.get(level_col, None) if level_col is not None else None)
+
+        if parent5.startswith("P") and child5.startswith("Q"):
+            put_base(q_base_best, parent5, child5, level, row_no)
+            put_exact(q_exact_best, parent_code, child_code, level, row_no)
+        elif parent5.startswith("P") and child5.startswith("R"):
+            put_base(r_base_best, parent5, child5, level, row_no)
+            put_exact(r_exact_best, parent_code, child_code, level, row_no)
+
+        if root5.startswith("P") and child5.startswith("Q") and parent5 == root5:
+            put_base(q_base_best, root5, child5, level, row_no)
+        elif root5.startswith("P") and child5.startswith("R") and parent5.startswith(("P", "Q")):
+            put_base(r_base_best, root5, child5, level, row_no)
+
+    bom_q_base_map = {sales: code for sales, (_, _, code) in q_base_best.items()}
+    bom_r_base_map = {sales: code for sales, (_, _, code) in r_base_best.items()}
+    for sales_code5, q_code5 in bom_q_base_map.items():
+        if sales_code5 not in bom_r_base_map and q_code5.startswith("Q") and len(q_code5) >= 5:
+            bom_r_base_map[sales_code5] = "R" + q_code5[1:5]
+    for sales_code5, r_code5 in bom_r_base_map.items():
+        if sales_code5 not in bom_q_base_map and r_code5.startswith("R") and len(r_code5) >= 5:
+            bom_q_base_map[sales_code5] = "Q" + r_code5[1:5]
+
+    bom_q_exact_map = {sales: code for sales, (_, _, code) in q_exact_best.items()}
+    bom_r_exact_map = {sales: code for sales, (_, _, code) in r_exact_best.items()}
+    for sales_code, q_code in list(bom_q_exact_map.items()):
+        if sales_code not in bom_r_exact_map and q_code.startswith("Q") and len(q_code) > 1:
+            bom_r_exact_map[sales_code] = "R" + q_code[1:]
+    for sales_code, r_code in list(bom_r_exact_map.items()):
+        if sales_code not in bom_q_exact_map and r_code.startswith("R") and len(r_code) > 1:
+            bom_q_exact_map[sales_code] = "Q" + r_code[1:]
+
+    return bom_r_base_map, bom_q_base_map, bom_r_exact_map, bom_q_exact_map
+
+
+def merge_bom_map_sets(
+    base_maps: tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, str]],
+    override_maps: tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, str]],
+) -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, str]]:
+    merged = []
+    for base, override in zip(base_maps, override_maps):
+        work = dict(base)
+        work.update({k: v for k, v in override.items() if clean_text_value(v)})
+        merged.append(work)
+    return tuple(merged)  # type: ignore[return-value]
+
+
+def load_api_bom_maps_for_code5s(
+    code5_values: object,
+    existing_r_base_map: dict[str, str] | None = None,
+    existing_q_base_map: dict[str, str] | None = None,
+) -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, str]]:
+    if not is_plan_api_configured():
+        return {}, {}, {}, {}
+
+    normalized_codes = sorted(
+        {
+            normalize_bom_code5(value, "P")
+            for value in list(code5_values) if clean_text_value(value)
+        }
+    )
+    normalized_codes = [code for code in normalized_codes if code]
+    if not normalized_codes:
+        return {}, {}, {}, {}
+
+    existing_r_base_map = existing_r_base_map or {}
+    existing_q_base_map = existing_q_base_map or {}
+    missing_codes = [
+        code
+        for code in normalized_codes
+        if code not in existing_r_base_map or code not in existing_q_base_map
+    ]
+    if not missing_codes:
+        return {}, {}, {}, {}
+
+    prefix_groups: dict[str, set[str]] = {}
+    for code in missing_codes:
+        prefix_groups.setdefault(code[:4], set()).add(code)
+    if len(prefix_groups) > BOM_API_MAX_PREFIX_GROUPS:
+        prefix_groups = dict(sorted(prefix_groups.items())[:BOM_API_MAX_PREFIX_GROUPS])
+    attempted_codes = {code for codes in prefix_groups.values() for code in codes}
+
+    api_key_hash = hashlib.sha256(get_plan_api_key().encode("utf-8")).hexdigest()[:12]
+    source_updated_at = get_plan_api_updated_at()
+    refresh_nonce = get_plan_api_refresh_nonce()
+    combined_maps = ({}, {}, {}, {})
+    covered_codes: set[str] = set()
+
+    for gd_cd, wanted_codes in sorted(prefix_groups.items()):
+        limit = BOM_API_SINGLE_ROW_LIMIT if len(gd_cd) == 5 else BOM_API_PREFIX_ROW_LIMIT
+        raw, error = fetch_plan_api_dataframe_cached(
+            get_plan_api_base_url(),
+            BOM_EXPLOSION_ENDPOINT,
+            (("gd_cd", gd_cd), ("limit", limit)),
+            api_key_hash,
+            source_updated_at,
+            refresh_nonce,
+        )
+        if error or raw.empty:
+            continue
+        maps = build_bom_maps_from_api_rows(raw)
+        filtered_maps = tuple(
+            {key: value for key, value in mapping.items() if key in wanted_codes or len(key) > 5}
+            for mapping in maps
+        )
+        combined_maps = merge_bom_map_sets(combined_maps, filtered_maps)
+        covered_codes.update(set(filtered_maps[0]) | set(filtered_maps[1]))
+
+    unresolved_codes = [code for code in sorted(attempted_codes) if code not in covered_codes]
+    for code in unresolved_codes:
+        raw, error = fetch_plan_api_dataframe_cached(
+            get_plan_api_base_url(),
+            BOM_EXPLOSION_ENDPOINT,
+            (("gd_cd", code), ("limit", BOM_API_SINGLE_ROW_LIMIT)),
+            api_key_hash,
+            source_updated_at,
+            refresh_nonce,
+        )
+        if error or raw.empty:
+            continue
+        maps = build_bom_maps_from_api_rows(raw)
+        filtered_maps = tuple(
+            {key: value for key, value in mapping.items() if key == code or len(key) > 5}
+            for mapping in maps
+        )
+        combined_maps = merge_bom_map_sets(combined_maps, filtered_maps)
+
+    return combined_maps
+
+
+def select_bom_api_code5_scope(df: pd.DataFrame, code5_col: str = "코드5") -> list[str]:
+    if df.empty or code5_col not in df.columns:
+        return []
+    qty_cols = [
+        "부족수량",
+        "사출생산필요수량",
+        SEPARATION_REQUIRED_QTY_COL,
+        LEADJI_REQUIRED_QTY_COL,
+        ADHESION_REQUIRED_QTY_COL,
+    ]
+    mask = pd.Series(False, index=df.index)
+    for col in qty_cols:
+        if col in df.columns:
+            mask |= parse_mixed_numeric(df[col]) > 0
+    if not mask.any():
+        return []
+    return sorted({normalize_bom_code5(value, "P") for value in df.loc[mask, code5_col].tolist() if clean_text_value(value)})
 
 
 def load_reference_maps_bundle(
@@ -6198,10 +6435,28 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
     grouped_demand["제품명"] = grouped_demand["코드5"].map(product_name_map).fillna(grouped_demand["제품명"])
     grouped_demand["제품명"] = grouped_demand["제품명"].replace({"": "-", "nan": "-", "None": "-"}).fillna("-")
 
+    api_bom_maps = load_api_bom_maps_for_code5s(
+        select_bom_api_code5_scope(grouped_demand),
+        bom_r_base_map,
+        bom_q_base_map,
+    )
+    bom_r_base_map, bom_q_base_map, bom_r_exact_map, bom_q_exact_map = merge_bom_map_sets(
+        (bom_r_base_map, bom_q_base_map, bom_r_exact_map, bom_q_exact_map),
+        api_bom_maps,
+    )
+
     inferred_r = grouped_demand["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "R"))
     inferred_q = grouped_demand["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "Q"))
-    mapped_r_base = grouped_demand["코드5"].map(leadji_r_map).fillna(grouped_demand["코드5"].map(r_ref_map))
-    mapped_q_base = grouped_demand["코드5"].map(leadji_q_map).fillna(grouped_demand["코드5"].map(q_ref_map))
+    mapped_r_base = (
+        grouped_demand["코드5"].map(bom_r_base_map)
+        .fillna(grouped_demand["코드5"].map(leadji_r_map))
+        .fillna(grouped_demand["코드5"].map(r_ref_map))
+    )
+    mapped_q_base = (
+        grouped_demand["코드5"].map(bom_q_base_map)
+        .fillna(grouped_demand["코드5"].map(leadji_q_map))
+        .fillna(grouped_demand["코드5"].map(q_ref_map))
+    )
 
     merged_r = pd.Series(
         [merge_mapped_base_code(inferred, mapped, "R") for inferred, mapped in zip(inferred_r, mapped_r_base)],
@@ -6212,7 +6467,7 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
         index=grouped_demand.index,
     )
 
-    # 리드지정보/분류정보의 공정 base가 있으면 P행에도 우선 적용하고, 없을 때만 P->R/Q 추론을 사용한다.
+    # BOM 기준 공정 base를 우선 적용하고, 없을 때만 리드지/분류정보와 P->R/Q 추론을 사용한다.
     grouped_demand["R코드"] = merged_r
     grouped_demand["Q코드"] = merged_q
 
@@ -6501,8 +6756,8 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
                 process_code_map.get("누수규격검사 창고", "-"),
             ],
             "재고코드 매핑 규칙": [
-                "리드지정보 우선, 없으면 분류정보, 그래도 없으면 P코드->R코드 유추 (BUL1/BUL2는 BUL로 보정)",
-                "리드지정보/분류정보 Q코드 우선, 없으면 P코드->Q코드 유추, Q재고가 없으면 리드지정보 외주(U) 코드로 보정",
+                "BOM현황 우선, 없으면 리드지정보/분류정보, 그래도 없으면 P코드->R코드 유추 (BUL1/BUL2는 BUL로 보정)",
+                "BOM현황 우선, 없으면 리드지정보/분류정보, 그래도 없으면 P코드->Q코드 유추, Q재고가 없으면 리드지정보 외주(U) 코드로 보정",
                 "P코드 그대로 사용",
                 "WH_NAME=검사접착 중 재공 코드 끝부분 -C 계열은 별도 분류, 재작업가능은 재작업 시트 또는 생산현황 B:J 수요정보 기준",
                 "P코드 그대로 사용",
@@ -6745,10 +7000,20 @@ def load_api_shortage_data(
 
     result = grouped.copy()
     code5 = result["품목코드"].astype(str).str[:5]
+    result["_코드5"] = code5
+    api_bom_maps = load_api_bom_maps_for_code5s(
+        select_bom_api_code5_scope(result, "_코드5"),
+        bom_r_base_map,
+        bom_q_base_map,
+    )
+    bom_r_base_map, bom_q_base_map, bom_r_exact_map, bom_q_exact_map = merge_bom_map_sets(
+        (bom_r_base_map, bom_q_base_map, bom_r_exact_map, bom_q_exact_map),
+        api_bom_maps,
+    )
     inferred_r = result["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "R"))
     inferred_q = result["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "Q"))
-    mapped_r_base = code5.map(leadji_r_map).fillna(code5.map(r_ref_map)).fillna(code5.map(bom_r_base_map))
-    mapped_q_base = code5.map(leadji_q_map).fillna(code5.map(q_ref_map)).fillna(code5.map(bom_q_base_map))
+    mapped_r_base = code5.map(bom_r_base_map).fillna(code5.map(leadji_r_map)).fillna(code5.map(r_ref_map))
+    mapped_q_base = code5.map(bom_q_base_map).fillna(code5.map(leadji_q_map)).fillna(code5.map(q_ref_map))
     result["R코드"] = [
         merge_mapped_base_code(inferred, mapped, "R") for inferred, mapped in zip(inferred_r, mapped_r_base)
     ]
@@ -6767,6 +7032,7 @@ def load_api_shortage_data(
     ]
     result["R코드 제품명"] = result["R코드"].astype(str).str[:5].map(r_name_map).fillna(result["제품명"])
     result["R코드 제품명"] = result["R코드 제품명"].replace({"": "-", "nan": "-", "None": "-"}).fillna("-")
+    result = result.drop(columns=["_코드5"], errors="ignore")
 
     item_prefix = result["품목코드"].astype(str).str.upper().str[:1]
     result["사출창고"] = [
@@ -7342,8 +7608,8 @@ def build_process_code_scope(
     inferred_r = scope["생산코드"].map(lambda x: map_demand_code_to_process_code(x, "R"))
     inferred_q = scope["생산코드"].map(lambda x: map_demand_code_to_process_code(x, "Q"))
 
-    mapped_r_base = scope["코드5"].map(leadji_r_map).fillna(scope["코드5"].map(r_ref_map))
-    mapped_q_base = scope["코드5"].map(leadji_q_map).fillna(scope["코드5"].map(q_ref_map))
+    mapped_r_base = scope["코드5"].map(bom_r_base_map).fillna(scope["코드5"].map(leadji_r_map)).fillna(scope["코드5"].map(r_ref_map))
+    mapped_q_base = scope["코드5"].map(bom_q_base_map).fillna(scope["코드5"].map(leadji_q_map)).fillna(scope["코드5"].map(q_ref_map))
     scope["사출코드"] = [
         merge_mapped_base_code(inferred, mapped, "R") for inferred, mapped in zip(inferred_r, mapped_r_base)
     ]
