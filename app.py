@@ -289,6 +289,7 @@ CUSTOMER_EXACT_CATEGORY_RULES = {
     "PIA Co.,Ltd.": "PIA 종합",
     "PIA Corporation": "PIA 종합",
     "INTEROJO CHINA CO., LTD": "중국(IRIS)",
+    "한국알콘": "Alcon",
     "MG Medical Group": "MG MEDICAL",
     "SINCERE Co.,Ltd": "Sincere",
     "T-garden": "T-Garden",
@@ -307,6 +308,7 @@ CUSTOMER_CATEGORY_RULES = {
     "T-Garden": ["T-GARDEN", "TGARDEN", "T GARDEN"],
     "Sincere": ["SINCERE"],
     "Feel Good": ["FEEL GOOD", "FEELGOOD"],
+    "Alcon": ["ALCON", "알콘", "한국알콘"],
     "국내": ["국내", "KOREA", "인터로조", "클라렌", "CLALEN", "LENSVERY", "LENS VERY"],
     "MG MEDICAL": ["MG MEDICAL", "MG MEDICAL GROUP"],
 }
@@ -7705,7 +7707,7 @@ def normalize_flow_customer_group(value: object) -> str:
         return "ALENSA"
     if any(token in compact for token in ["FEELGOOD", "CROSSBIRD"]):
         return "FEEL GOOD"
-    if "ALCON" in compact:
+    if "ALCON" in compact or "알콘" in raw:
         return "Alcon"
     if any(token in compact for token in ["CHINA", "IRIS", "WENZHOU"]) or "중국" in raw:
         return "CHINA/IRIS"
