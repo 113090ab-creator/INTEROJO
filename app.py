@@ -40,6 +40,8 @@ UPLOAD_SIGNATURE_FILE = "upload_signature.txt"
 CLOUD_SNAPSHOT_DIR = BASE_DIR / "cloud_snapshots"
 DISPLAY_TZ = ZoneInfo("Asia/Seoul")
 ORDER_NO_COL = "수주번호"
+ORDER_RECEIVED_DATE_COL = "접수일"
+PIA_ORDER_CLASS_COL = "PIA구분"
 LEADJI_REQUIRED_QTY_COL = "[45]하이드레이션/전면검사 필요수량"
 LEADJI_REQUIRED_DUE_COL = "[45]하이드레이션/전면검사 납기일"
 ADHESION_REQUIRED_QTY_COL = "[55]접착/멸균 필요수량"
@@ -77,8 +79,8 @@ TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 4000
 DISPLAY_ROW_LIMIT = 500
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260813-api-data-source-default-v1"
-DATA_SOURCE_DEFAULT_VERSION = "20260813-api-data-source-default-v1"
+APP_CACHE_VERSION = "20260820-pia-order-class-v1"
+DATA_SOURCE_DEFAULT_VERSION = "20260820-pia-order-class-v1"
 PLAN_API_BASE_URL_DEFAULT = "https://plan.interojo.net"
 PLAN_API_KEY_ENV = "PLAN_API_KEY"
 PLAN_API_BASE_URL_ENV = "PLAN_API_BASE_URL"
@@ -97,6 +99,8 @@ APS_PLAN_ENDPOINT = "/api/aps-plan"
 APS_WIP_ENDPOINT = "/api/aps-wip"
 APS_PLAN_META_ENDPOINT = "/api/aps-plan/meta"
 PRODUCTION_PERFORMANCE_ENDPOINT = "/api/production-performance"
+ITEM_INVENTORY_LEDGER_ENDPOINT = "/api/item-inventory-ledger"
+PURCHASE_REQUESTS_ENDPOINT = "/api/purchase-requests"
 APS_PLAN_SHORTAGE_OPERATIONS = ("10", "20", "45", "55", "80")
 APS_PLAN_FLOW_OPERATIONS = ("10", "80")
 EFFECTIVE_PRODUCTION_OPERATIONS = ("10", "80")
@@ -255,6 +259,30 @@ DEMAND_DETAIL_ROWS_COL = "수요상세목록"
 ROW_DETAIL_MARKER = "__ROW_DETAIL__"
 SITE_GROUP_ORDER = ["A관", "C관", "S관"]
 SITE_GROUP_API_PARAMS = {"A관": "A", "C관": "C", "S관": "S"}
+ORDER_RECEIVED_DATE_CANDIDATES = (
+    "접수일",
+    "오더접수일",
+    "수주일",
+    "수주일자",
+    "수주등록일",
+    "주문일",
+    "주문일자",
+    "발주일",
+    "발주일자",
+    "SO_DATE",
+    "so_date",
+    "ORDER_DATE",
+    "order_date",
+    "RECEIVED_DATE",
+    "received_date",
+    "RECEIPT_DATE",
+    "receipt_date",
+    "REQUEST_DATE",
+    "request_date",
+    "CREATED_AT",
+    "created_at",
+)
+PIA_ORDER_CLASS_FILTER_OPTIONS = ("전체", "신제품", "8월 접수", "7월 접수", "기타 접수", "접수일 미확인")
 
 CUSTOMER_EXACT_CATEGORY_RULES = {
     "PIA Co.,Ltd.": "PIA 종합",
@@ -330,6 +358,8 @@ COLUMN_LABEL_ALIASES = {
     "재작업가능": "재작업가능",
     "비고": "비고",
     "확인구분": "확인구분",
+    "접수일": "접수일",
+    "PIA구분": "PIA구분",
     "리스크구분": "리스크",
     "제품군키": "제품군",
     "재고수량": "재고",
@@ -1635,6 +1665,74 @@ def get_aps_wip_api_updated_at() -> str:
     return value
 
 
+def get_plan_endpoint_updated_at(endpoint: str, params: dict[str, object] | None = None) -> str:
+    if not is_plan_api_configured():
+        return "-"
+    api_key_hash = hashlib.sha256(get_plan_api_key().encode("utf-8")).hexdigest()[:12]
+    request_params = {"limit": 1}
+    request_params.update(params or {})
+    params_tuple = tuple(sorted(request_params.items(), key=lambda item: item[0]))
+    payload, error = fetch_plan_api_meta_with_params_cached(
+        get_plan_api_base_url(),
+        endpoint,
+        params_tuple,
+        api_key_hash,
+        get_plan_api_refresh_nonce(),
+    )
+    if error:
+        return "-"
+    value = find_meta_value(
+        payload,
+        [
+            "source_refreshed_at",
+            "sourceRefreshedAt",
+            "updated_at",
+            "last_updated_at",
+            "last_refreshed_at",
+            "refreshed_at",
+            "extracted_at",
+            "extractedAt",
+            "기준시각",
+            "추출시각",
+        ],
+    )
+    if not value:
+        value = find_meta_value(payload, ["query_date", "queryDate", "date_to", "dateTo", "조회일자"])
+    if not value:
+        return "-"
+    parsed = pd.to_datetime(value, errors="coerce")
+    if pd.notna(parsed):
+        return parsed.strftime("%Y-%m-%d %H:%M:%S")
+    return value
+
+
+def read_plan_endpoint_dataframe(endpoint: str, params: dict[str, object] | None = None) -> tuple[pd.DataFrame, str]:
+    if not is_plan_api_enabled():
+        return pd.DataFrame(), "API 자동조회가 꺼져 있습니다."
+    api_key_hash = hashlib.sha256(get_plan_api_key().encode("utf-8")).hexdigest()[:12]
+    params_tuple = tuple(sorted((params or {}).items(), key=lambda item: item[0]))
+    source_updated_at = get_plan_endpoint_updated_at(endpoint)
+    if source_updated_at == "-":
+        source_updated_at = get_plan_api_updated_at()
+    return fetch_plan_api_dataframe_cached(
+        get_plan_api_base_url(),
+        endpoint,
+        params_tuple,
+        api_key_hash,
+        source_updated_at,
+        get_plan_api_refresh_nonce(),
+    )
+
+
+def get_leadji_api_updated_at() -> str:
+    return get_latest_reference_timestamp(
+        [
+            get_plan_endpoint_updated_at(ITEM_INVENTORY_LEDGER_ENDPOINT),
+            get_plan_endpoint_updated_at(PURCHASE_REQUESTS_ENDPOINT),
+        ]
+    )
+
+
 def render_plan_api_status() -> None:
     if requests is None:
         st.warning("API 자동조회 불가: requests 패키지가 설치되어 있지 않습니다.")
@@ -1648,6 +1746,10 @@ def render_plan_api_status() -> None:
         st.caption(f"APS API 갱신시각: {updated_at}")
     if should_use_aps_wip_api_for_inventory():
         st.caption(f"APS WIP API 기준시각: {format_reference_timestamp(get_aps_wip_api_updated_at())}")
+    if is_plan_api_enabled():
+        leadji_api_updated_at = get_leadji_api_updated_at()
+        if leadji_api_updated_at != "-":
+            st.caption(f"리드지 재고/구매의뢰 API 기준시각: {format_reference_timestamp(leadji_api_updated_at)}")
 
 
 def get_data_updated_at(base_dir: Path) -> str:
@@ -1720,6 +1822,27 @@ def get_aps_or_file_updated_at(file_updated_at: str) -> str:
     return file_updated_at
 
 
+def get_latest_reference_timestamp(values: list[str]) -> str:
+    best_text = "-"
+    best_dt = None
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text == "-":
+            continue
+        parsed = pd.to_datetime(text, errors="coerce")
+        if pd.isna(parsed):
+            if best_dt is None and best_text == "-":
+                best_text = text
+            continue
+        parsed_ts = parsed.to_pydatetime()
+        if parsed_ts.tzinfo is None:
+            parsed_ts = parsed_ts.replace(tzinfo=DISPLAY_TZ)
+        if best_dt is None or parsed_ts > best_dt:
+            best_dt = parsed_ts
+            best_text = parsed_ts.strftime("%Y-%m-%d %H:%M:%S")
+    return best_text
+
+
 def format_reference_timestamp(value: str, fallback: str = "확인 불가") -> str:
     text = clean_text_value(value)
     return text if text and text != "-" else fallback
@@ -1777,16 +1900,22 @@ def get_leadji_status_updated_at(base_dir: Path) -> str:
     paths = unique_existing_paths(
         [inv_path, dem_path, find_product_name_reference_file(base_dir), find_leadji_order_status_file(base_dir)]
     )
-    return get_latest_files_updated_at(paths)
+    updated_values = [get_latest_files_updated_at(paths)]
+    if is_plan_api_enabled():
+        updated_values.append(get_leadji_api_updated_at())
+    return get_latest_reference_timestamp(updated_values)
 
 
 def get_leadji_order_updated_at(base_dir: Path) -> str:
     order_path = find_leadji_order_status_file(base_dir)
-    if order_path is None:
-        return "-"
-    stat = order_path.stat()
-    refresh_key = f"{order_path.name}:{stat.st_size}:{stat.st_mtime_ns}"
-    return get_leadji_order_updated_at_cached(refresh_key, str(order_path))
+    updated_values: list[str] = []
+    if order_path is not None:
+        stat = order_path.stat()
+        refresh_key = f"{order_path.name}:{stat.st_size}:{stat.st_mtime_ns}"
+        updated_values.append(get_leadji_order_updated_at_cached(refresh_key, str(order_path)))
+    if is_plan_api_enabled():
+        updated_values.append(get_plan_endpoint_updated_at(PURCHASE_REQUESTS_ENDPOINT))
+    return get_latest_reference_timestamp(updated_values)
 
 
 @st.cache_data(show_spinner=False)
@@ -2313,7 +2442,7 @@ def parse_mixed_excel_date(series: pd.Series) -> pd.Series:
     numeric_mask_source = numeric_like | numeric_text
 
     numeric = pd.to_numeric(obj.where(numeric_mask_source), errors="coerce")
-    numeric_mask = numeric.notna() & (numeric > 0)
+    numeric_mask = numeric.notna() & (numeric > 0) & (numeric < 80000)
     if numeric_mask.any():
         parsed.loc[numeric_mask] = pd.to_datetime(
             numeric.loc[numeric_mask], unit="D", origin="1899-12-30", errors="coerce"
@@ -3325,6 +3454,104 @@ def clean_text_value(value: object) -> str:
     return "" if text.lower() in INVALID_CATEGORY_VALUES else text
 
 
+def normalize_order_received_date_series(series: pd.Series) -> pd.Series:
+    text = series.astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+    yyyymmdd = text.str.extract(r"^(\d{8})$", expand=False)
+    parsed_yyyymmdd = pd.to_datetime(yyyymmdd, format="%Y%m%d", errors="coerce")
+    parsed = pd.to_datetime(text.where(yyyymmdd.isna()), errors="coerce")
+    parsed = parsed.where(parsed.notna(), parsed_yyyymmdd)
+    return parsed.dt.strftime("%Y-%m-%d").fillna("")
+
+
+def derive_order_received_date_from_order_no(order_no: pd.Series) -> pd.Series:
+    text = order_no.astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+    candidate = text.str.extract(r"^(\d{8})", expand=False)
+    parsed = pd.to_datetime(candidate, format="%Y%m%d", errors="coerce")
+    return parsed.dt.strftime("%Y-%m-%d").fillna("")
+
+
+def build_order_received_date_series(
+    source: pd.DataFrame,
+    received_col: str | None = None,
+    order_col: str | None = ORDER_NO_COL,
+) -> pd.Series:
+    received = pd.Series("", index=source.index, dtype="object")
+    if received_col and received_col in source.columns:
+        received = normalize_order_received_date_series(source[received_col])
+    if order_col and order_col in source.columns:
+        fallback = derive_order_received_date_from_order_no(source[order_col])
+        missing = received.astype(str).str.strip().str.lower().isin(INVALID_CATEGORY_VALUES)
+        received = received.where(~missing, fallback)
+    return received.fillna("")
+
+
+def build_pia_scope_mask(df: pd.DataFrame) -> pd.Series:
+    mask = pd.Series(False, index=df.index)
+    for col in ["거래처", "시트분류", "분류별요약", "제품명"]:
+        if col not in df.columns:
+            continue
+        text = df[col].astype(str)
+        mask |= text.str.contains("PIA", case=False, na=False, regex=False)
+    return mask
+
+
+def build_new_product_mask(df: pd.DataFrame) -> pd.Series:
+    mask = pd.Series(False, index=df.index)
+    if "제품명" in df.columns:
+        mask |= df["제품명"].astype(str).str.contains(r"신규|신제품|\bNEW\b", case=False, na=False, regex=True)
+    for col in ["신제품여부", "신규분류"]:
+        if col not in df.columns:
+            continue
+        text = df[col].astype(str).str.strip()
+        valid = ~text.str.lower().isin(INVALID_CATEGORY_VALUES)
+        explicit = text.str.contains(r"신규|신제품|\bNEW\b", case=False, na=False, regex=True)
+        yes_no = text.str.upper().isin({"Y", "YES", "TRUE", "1"})
+        mask |= valid & (explicit | yes_no)
+    return mask
+
+
+def add_pia_order_classification(df: pd.DataFrame) -> pd.DataFrame:
+    result = df.copy()
+    result[ORDER_RECEIVED_DATE_COL] = build_order_received_date_series(
+        result,
+        ORDER_RECEIVED_DATE_COL if ORDER_RECEIVED_DATE_COL in result.columns else None,
+        ORDER_NO_COL if ORDER_NO_COL in result.columns else None,
+    )
+
+    pia_mask = build_pia_scope_mask(result)
+    new_product_mask = build_new_product_mask(result)
+    received_dt = pd.to_datetime(result[ORDER_RECEIVED_DATE_COL], errors="coerce")
+    month_label = pd.Series("접수일 미확인", index=result.index, dtype="object")
+    month_label.loc[received_dt.notna() & received_dt.dt.month.eq(8)] = "8월 접수"
+    month_label.loc[received_dt.notna() & received_dt.dt.month.eq(7)] = "7월 접수"
+    month_label.loc[received_dt.notna() & ~received_dt.dt.month.isin([7, 8])] = "기타 접수"
+
+    class_values: list[str] = []
+    for is_pia, is_new, received_label in zip(pia_mask, new_product_mask, month_label):
+        if not is_pia:
+            class_values.append("")
+            continue
+        labels = []
+        if is_new:
+            labels.append("신제품")
+        labels.append(str(received_label))
+        class_values.append(" / ".join(labels))
+    result[PIA_ORDER_CLASS_COL] = class_values
+    return result
+
+
+def filter_by_pia_order_class(df: pd.DataFrame, selected_options: tuple[str, ...]) -> pd.DataFrame:
+    if not is_specific_pill_selection(selected_options):
+        return df
+    if PIA_ORDER_CLASS_COL not in df.columns:
+        return df.iloc[0:0].copy()
+    class_text = df[PIA_ORDER_CLASS_COL].astype(str)
+    mask = pd.Series(False, index=df.index)
+    for option in selected_options:
+        mask |= class_text.str.contains(re.escape(option), na=False)
+    return df[mask].copy()
+
+
 def clean_initial_value(value: object) -> str:
     text = clean_text_value(value)
     if not text:
@@ -4044,11 +4271,16 @@ def build_reference_refresh_key(base_dir: Path) -> str:
 
 
 def build_leadji_order_refresh_key(base_dir: Path) -> str:
+    parts = [f"leadji-order:{APP_CACHE_VERSION}"]
     order_path = find_leadji_order_status_file(base_dir)
     if order_path is None:
-        return "-"
-    stat = order_path.stat()
-    return f"{order_path.name}:{stat.st_size}:{stat.st_mtime_ns}"
+        parts.append("purchase-order-file:missing")
+    else:
+        stat = order_path.stat()
+        parts.append(f"purchase-order-file:{order_path.name}:{stat.st_size}:{stat.st_mtime_ns}")
+    if is_plan_api_enabled():
+        parts.append(f"purchase-requests-api:{build_plan_api_refresh_key()}")
+    return "|".join(parts)
 
 
 def build_leadji_status_refresh_key(base_dir: Path) -> str:
@@ -4059,6 +4291,8 @@ def build_leadji_status_refresh_key(base_dir: Path) -> str:
         parts.append(f"data-error:{exc}")
     parts.append(f"reference:{build_reference_refresh_key(base_dir)}")
     parts.append(f"leadji-order:{build_leadji_order_refresh_key(base_dir)}")
+    if is_plan_api_enabled():
+        parts.append(f"leadji-api:{build_plan_api_refresh_key()}")
     return "|".join(parts)
 
 
@@ -4692,8 +4926,8 @@ def pick_fixed_column_width_px(column_name: str, max_length: int, numeric_like: 
 
     long_text_columns = {"제품명", "R코드 제품명", "리드지명", "제품명 예시", "분류 판단 근거"}
     medium_text_columns = {"품목코드", "R코드", "Q코드", "U코드", "생산코드", "리드지코드", "P코드 예시"}
-    status_columns = {"상태", "확인구분"}
-    date_columns = {"납기일", "입고예상일자", "생산 최소 납기일", "최소납기일"}
+    status_columns = {"상태", "확인구분", "PIA구분"}
+    date_columns = {"납기일", "사출납기일", "접수일", "입고예상일자", "생산 최소 납기일", "최소납기일"}
 
     if column_name in long_text_columns:
         return int(max(240, min(380, 28 + max_length * 7)))
@@ -4707,6 +4941,8 @@ def pick_fixed_column_width_px(column_name: str, max_length: int, numeric_like: 
         return 112
     if column_name == "확인구분":
         return 150
+    if column_name == "PIA구분":
+        return 140
     if column_name in {"재작업", "비고"}:
         return int(max(120, min(220, 28 + max_length * 7)))
     if column_name in status_columns:
@@ -5730,6 +5966,7 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
             "사이트코드": site_series,
             "거래처": customer_series,
             ORDER_NO_COL: order_no_series,
+            ORDER_RECEIVED_DATE_COL: derive_order_received_date_from_order_no(order_no_series),
             "이니셜": initial_series,
             "품목코드": item_series,
             "제품명": name_series,
@@ -5774,6 +6011,7 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
                 "이니셜",
                 "거래처",
                 ORDER_NO_COL,
+                ORDER_RECEIVED_DATE_COL,
                 "품목코드",
                 "납기일",
                 "사출납기일",
@@ -6087,6 +6325,8 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
     result["파워"] = result["품목코드"].map(extract_power_from_code)
     result["납기일"] = pd.to_datetime(result["납기일"], errors="coerce").dt.strftime("%Y-%m-%d")
     result["납기일"] = result["납기일"].fillna("-")
+    result[ORDER_RECEIVED_DATE_COL] = normalize_order_received_date_series(result[ORDER_RECEIVED_DATE_COL])
+    result[ORDER_RECEIVED_DATE_COL] = result[ORDER_RECEIVED_DATE_COL].replace("", "-")
     if "사출납기일" in result.columns:
         result["사출납기일"] = pd.to_datetime(result["사출납기일"], errors="coerce").dt.strftime("%Y-%m-%d")
         result["사출납기일"] = result["사출납기일"].fillna("-")
@@ -6189,6 +6429,7 @@ def load_api_shortage_data(
     oper_col = pick_api_column(columns, ["oper_id", "OPER_ID", "공정코드", "공정"])
     plan_qty_col = pick_api_column(columns, ["plan_qty", "PLAN_QTY", "생산 수량", "생산수량", "계획수량"])
     due_col = pick_api_column(columns, ["due_date", "DUE_DATE", "납기일"])
+    received_col = pick_api_column(columns, list(ORDER_RECEIVED_DATE_CANDIDATES))
 
     if item_col is None or oper_col is None or plan_qty_col is None:
         raise ValueError("APS API 응답에서 item_id/oper_id/plan_qty 컬럼을 찾지 못했습니다.")
@@ -6249,6 +6490,7 @@ def load_api_shortage_data(
             "사이트코드": api_text(site_col, "API").map(normalize_site_group),
             "거래처": api_text(customer_col),
             ORDER_NO_COL: api_text(order_col),
+            ORDER_RECEIVED_DATE_COL: build_order_received_date_series(raw, received_col, order_col),
             "이니셜": initial_text,
             "품목코드": api_text(item_col).map(normalize_item_code_value),
             "수요품목코드": api_text(demand_item_col).map(normalize_item_code_value),
@@ -6273,7 +6515,16 @@ def load_api_shortage_data(
         )
         return pd.DataFrame(), empty_info, pd.DataFrame()
 
-    group_keys = ["사이트코드", "거래처", ORDER_NO_COL, "이니셜", "품목코드", "제품명", "API납기일"]
+    group_keys = [
+        "사이트코드",
+        "거래처",
+        ORDER_NO_COL,
+        ORDER_RECEIVED_DATE_COL,
+        "이니셜",
+        "품목코드",
+        "제품명",
+        "API납기일",
+    ]
     qty_pivot = (
         work.pivot_table(
             index=group_keys,
@@ -6426,6 +6677,7 @@ def load_api_shortage_data(
         "사이트코드",
         "거래처",
         ORDER_NO_COL,
+        ORDER_RECEIVED_DATE_COL,
         "이니셜",
         "품목코드",
         "R코드",
@@ -6578,6 +6830,7 @@ def load_api_demand_like_df(site_filter: str = "전체") -> pd.DataFrame:
         "사이트코드",
         "거래처",
         ORDER_NO_COL,
+        ORDER_RECEIVED_DATE_COL,
         "이니셜",
         "품목코드",
         "제품명",
@@ -6650,6 +6903,7 @@ def load_api_demand_like_df(site_filter: str = "전체") -> pd.DataFrame:
     )
     due_col = pick_api_column(columns, ["납기일", "요청납기일", "납품일자", "DUE_DATE", "DELIVERY_DATE"])
     inj_due_col = pick_api_column(columns, ["사출납기일", "사출 납기일", "INJECTION_DUE_DATE", "TARGET_DATETIME", "target_datetime"])
+    received_col = pick_api_column(columns, list(ORDER_RECEIVED_DATE_CANDIDATES))
     plan_qty_col = pick_api_column(columns, ["PLAN_QTY", "plan_qty", "계획수량"])
     oper_col = pick_api_column(columns, ["OPER_ID", "oper_id", "공정코드", "공정"])
     shortage_col = pick_api_column(
@@ -6715,6 +6969,7 @@ def load_api_demand_like_df(site_filter: str = "전체") -> pd.DataFrame:
             "사이트코드": api_text_series(raw, site_col, "API"),
             "거래처": api_text_series(raw, customer_col),
             ORDER_NO_COL: api_text_series(raw, order_col),
+            ORDER_RECEIVED_DATE_COL: build_order_received_date_series(raw, received_col, order_col),
             "이니셜": initial_text,
             "품목코드": item_codes,
             "제품명": api_text_series(raw, name_col),
@@ -8580,6 +8835,116 @@ def apply_filters(
     )
 
 
+def build_valid_leadji_code_set(leadji_info: pd.DataFrame) -> set[str]:
+    if leadji_info.empty:
+        return set()
+    mapping = build_leadji_code_mapping(leadji_info)
+    if mapping.empty or "리드지코드" not in mapping.columns:
+        return set()
+    codes = mapping["리드지코드"].map(normalize_leadji_code_key)
+    return {code for code in codes if code and re.fullmatch(r"[A-Z]{2}\d{4}", code)}
+
+
+def build_leadji_stock_from_inventory_ledger_api(
+    raw: pd.DataFrame, valid_leadji_codes: tuple[str, ...]
+) -> tuple[pd.DataFrame, str]:
+    output_columns = ["품목코드", "창고", "재고"]
+    if raw.empty:
+        return pd.DataFrame(columns=output_columns), "기간별 품목 수불 현황 API 응답이 비어 있습니다."
+
+    columns = raw.columns.tolist()
+    code_col = pick_api_column(columns, ["itm_cd", "ITM_CD", "품목코드", "item_cd", "ITEM_CD", "ITEM_CODE"])
+    warehouse_col = pick_api_column(columns, ["wh_nm", "WH_NM", "창고", "창고명", "WH_NAME", "wh_name"])
+    qty_col = pick_api_column(
+        columns,
+        ["end_qty", "END_QTY", "기말재고", "현재고", "재고", "재고수량", "stock_qty", "STOCK_QTY"],
+    )
+    if code_col is None or warehouse_col is None or qty_col is None:
+        return pd.DataFrame(columns=output_columns), "기간별 품목 수불 현황 API에서 품목/창고/재고 컬럼을 찾지 못했습니다."
+
+    stock = pd.DataFrame(
+        {
+            "품목코드": raw[code_col].map(normalize_leadji_code_key),
+            "창고": raw[warehouse_col].astype(str).str.strip(),
+            "재고": parse_mixed_numeric(raw[qty_col]),
+        }
+    )
+    stock = stock[stock["품목코드"].str.fullmatch(r"[A-Z]{2}\d{4}", na=False)]
+    valid_code_set = set(valid_leadji_codes)
+    if valid_code_set:
+        stock = stock[stock["품목코드"].isin(valid_code_set)]
+    else:
+        return pd.DataFrame(columns=output_columns), "리드지 기준 코드가 없어 재고 API 행을 필터링할 수 없습니다."
+    stock = stock[(stock["창고"] != "") & ~stock["창고"].str.lower().isin(INVALID_CATEGORY_VALUES)]
+    stock = stock[stock["재고"] > 0]
+    if stock.empty:
+        return pd.DataFrame(columns=output_columns), "기간별 품목 수불 현황 API에 리드지 재고 행이 없습니다."
+    return stock[output_columns], ""
+
+
+def load_api_leadji_stock_data(valid_leadji_codes: tuple[str, ...]) -> tuple[pd.DataFrame, str]:
+    raw, error = read_plan_endpoint_dataframe(ITEM_INVENTORY_LEDGER_ENDPOINT, {"limit": PLAN_API_DEFAULT_ROW_LIMIT})
+    if error:
+        return pd.DataFrame(columns=["품목코드", "창고", "재고"]), error
+    return build_leadji_stock_from_inventory_ledger_api(raw, valid_leadji_codes)
+
+
+def build_purchase_request_summary_from_api(
+    raw: pd.DataFrame, valid_leadji_codes: tuple[str, ...]
+) -> tuple[pd.DataFrame, str]:
+    output_columns = ["리드지코드", "리드지명", "구매의뢰수량", "입고예상일자_dt"]
+    if raw.empty:
+        return pd.DataFrame(columns=output_columns), "구매 의뢰 현황 API 응답이 비어 있습니다."
+
+    valid_code_set = set(valid_leadji_codes)
+    if not valid_code_set:
+        return pd.DataFrame(columns=output_columns), "리드지 기준 코드가 없어 구매의뢰 API 행을 필터링할 수 없습니다."
+
+    columns = raw.columns.tolist()
+    code_col = pick_api_column(columns, ["itm_cd", "ITM_CD", "품목코드", "item_cd", "ITEM_CD", "ITEM_CODE"])
+    name_col = pick_api_column(columns, ["itm_nm", "ITM_NM", "품목명", "리드지명", "item_name", "ITEM_NAME"])
+    qty_col = pick_api_column(
+        columns,
+        ["not_inqty", "NOT_INQTY", "발주잔량", "미입고수량", "잔량", "req_qty", "REQ_QTY", "의뢰수량"],
+    )
+    due_col = pick_api_column(
+        columns,
+        ["dlv_dt", "DLV_DT", "납기일", "요청납기일", "입고예상일자", "req_dt", "REQ_DT", "요청일"],
+    )
+    if code_col is None or qty_col is None:
+        return pd.DataFrame(columns=output_columns), "구매 의뢰 현황 API에서 품목/수량 컬럼을 찾지 못했습니다."
+
+    request = pd.DataFrame(
+        {
+            "리드지코드": raw[code_col].map(normalize_leadji_code_key),
+            "리드지명": raw[name_col].astype(str).str.strip() if name_col is not None else "-",
+            "구매의뢰수량": parse_mixed_numeric(raw[qty_col]),
+            "입고예상일자_dt": parse_mixed_excel_date(raw[due_col]) if due_col is not None else pd.NaT,
+        }
+    )
+    request = request[request["리드지코드"].isin(valid_code_set)]
+    request = request[request["구매의뢰수량"] > 0]
+    if request.empty:
+        return pd.DataFrame(columns=output_columns), "구매 의뢰 현황 API에 리드지 미입고 잔량 행이 없습니다."
+
+    def first_nonempty_text(series: pd.Series) -> str:
+        text = series.astype(str).str.strip()
+        text = text[(text != "") & (text.str.lower() != "nan") & (text.str.lower() != "none")]
+        return text.iloc[0] if not text.empty else "-"
+
+    summary = request.groupby("리드지코드", as_index=False).agg(
+        {"리드지명": first_nonempty_text, "구매의뢰수량": "sum", "입고예상일자_dt": "min"}
+    )
+    return summary[output_columns], ""
+
+
+def load_api_leadji_purchase_request_data(valid_leadji_codes: tuple[str, ...]) -> tuple[pd.DataFrame, str]:
+    raw, error = read_plan_endpoint_dataframe(PURCHASE_REQUESTS_ENDPOINT, {"limit": PLAN_API_DEFAULT_ROW_LIMIT})
+    if error:
+        return pd.DataFrame(columns=["리드지코드", "리드지명", "구매의뢰수량", "입고예상일자_dt"]), error
+    return build_purchase_request_summary_from_api(raw, valid_leadji_codes)
+
+
 @st.cache_resource(show_spinner=False)
 def load_leadji_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
     _ = refresh_key
@@ -8652,14 +9017,23 @@ def load_leadji_data(refresh_key: str, base_dir_str: str | None = None) -> tuple
             if col in leadji_stock.columns:
                 leadji_stock[col] = parse_mixed_numeric(leadji_stock[col])
 
+    if is_plan_api_enabled():
+        valid_leadji_codes = tuple(sorted(build_valid_leadji_code_set(leadji_info)))
+        api_stock, _api_stock_error = load_api_leadji_stock_data(valid_leadji_codes)
+        if not api_stock.empty:
+            leadji_stock = api_stock
+
     return leadji_info, leadji_stock
 
 
 @st.cache_resource(show_spinner=False)
-def load_leadji_order_data(refresh_key: str, base_dir_str: str | None = None) -> pd.DataFrame:
+def load_leadji_order_data(
+    refresh_key: str, base_dir_str: str | None = None, valid_leadji_codes: tuple[str, ...] = ()
+) -> pd.DataFrame:
     _ = refresh_key
     data_base_dir = Path(base_dir_str) if base_dir_str else BASE_DIR
     order_path = find_leadji_order_status_file(data_base_dir)
+    valid_leadji_code_set = set(valid_leadji_codes)
 
     empty = pd.DataFrame(
         columns=[
@@ -8672,13 +9046,16 @@ def load_leadji_order_data(refresh_key: str, base_dir_str: str | None = None) ->
             "구매의뢰수량",
         ]
     )
-    if order_path is None:
+    if order_path is None and not is_plan_api_enabled():
         return empty
 
-    try:
-        sheet_names = pd.ExcelFile(order_path).sheet_names
-    except Exception:
-        return empty
+    if order_path is not None:
+        try:
+            sheet_names = pd.ExcelFile(order_path).sheet_names
+        except Exception:
+            sheet_names = []
+    else:
+        sheet_names = []
 
     normalized_sheet_names = {str(name).replace(" ", ""): name for name in sheet_names}
     purchase_order_sheet = normalized_sheet_names.get("구매발주현황", sheet_names[0] if sheet_names else 0)
@@ -8691,17 +9068,22 @@ def load_leadji_order_data(refresh_key: str, base_dir_str: str | None = None) ->
         text = text[(text != "") & (text.str.lower() != "nan") & (text.str.lower() != "none")]
         return text.iloc[0] if not text.empty else "-"
 
-    try:
-        # 구매발주현황 기준: J열(품목코드), O열(미입고수량), X열(납기일자).
-        # 화면의 "발주수량"은 현재 남아 있는 입고 예정 수량이므로 미입고수량을 사용한다.
-        raw_order = pd.read_excel(order_path, sheet_name=purchase_order_sheet, header=0, usecols=[9, 11, 14, 23])
-    except Exception:
+    if order_path is not None and sheet_names:
+        try:
+            # 구매발주현황 기준: J열(품목코드), O열(미입고수량), X열(납기일자).
+            # 화면의 "발주수량"은 현재 남아 있는 입고 예정 수량이므로 미입고수량을 사용한다.
+            raw_order = pd.read_excel(order_path, sheet_name=purchase_order_sheet, header=0, usecols=[9, 11, 14, 23])
+        except Exception:
+            raw_order = pd.DataFrame()
+    else:
         raw_order = pd.DataFrame()
 
     if not raw_order.empty:
         raw_order.columns = ["리드지코드_raw", "리드지명", "구매발주수량", "입고예상일자_raw"]
         raw_order["리드지코드"] = raw_order["리드지코드_raw"].map(normalize_leadji_code_key)
         raw_order = raw_order[raw_order["리드지코드"].str.fullmatch(r"[A-Z]{2}\d{4}", na=False)]
+        if valid_leadji_code_set:
+            raw_order = raw_order[raw_order["리드지코드"].isin(valid_leadji_code_set)]
         raw_order["구매발주수량"] = parse_mixed_numeric(raw_order["구매발주수량"])
         raw_order["입고예상일자_dt"] = parse_mixed_excel_date(raw_order["입고예상일자_raw"])
         raw_order = raw_order[raw_order["구매발주수량"] > 0]
@@ -8711,29 +9093,36 @@ def load_leadji_order_data(refresh_key: str, base_dir_str: str | None = None) ->
             )
             summaries.append(order_summary)
 
-    if purchase_request_sheet is not None:
-        try:
-            # 구매의뢰현황 기준: G열(품목코드), U열(발주잔량), Y열(요청일).
-            raw_request = pd.read_excel(
-                order_path, sheet_name=purchase_request_sheet, header=0, usecols=[6, 7, 20, 24]
-            )
-        except Exception:
-            raw_request = pd.DataFrame()
-    else:
-        raw_request = pd.DataFrame()
-
-    if not raw_request.empty:
-        raw_request.columns = ["리드지코드_raw", "리드지명", "구매의뢰수량", "입고예상일자_raw"]
-        raw_request["리드지코드"] = raw_request["리드지코드_raw"].map(normalize_leadji_code_key)
-        raw_request = raw_request[raw_request["리드지코드"].str.fullmatch(r"[A-Z]{2}\d{4}", na=False)]
-        raw_request["구매의뢰수량"] = parse_mixed_numeric(raw_request["구매의뢰수량"])
-        raw_request["입고예상일자_dt"] = parse_mixed_excel_date(raw_request["입고예상일자_raw"])
-        raw_request = raw_request[raw_request["구매의뢰수량"] > 0]
-        if not raw_request.empty:
-            request_summary = raw_request.groupby("리드지코드", as_index=False).agg(
-                {"리드지명": first_nonempty_text, "구매의뢰수량": "sum", "입고예상일자_dt": "min"}
-            )
+    if is_plan_api_enabled():
+        request_summary, _api_request_error = load_api_leadji_purchase_request_data(valid_leadji_codes)
+        if not request_summary.empty:
             summaries.append(request_summary)
+    else:
+        if purchase_request_sheet is not None:
+            try:
+                # 구매의뢰현황 기준: G열(품목코드), U열(발주잔량), Y열(요청일).
+                raw_request = pd.read_excel(
+                    order_path, sheet_name=purchase_request_sheet, header=0, usecols=[6, 7, 20, 24]
+                )
+            except Exception:
+                raw_request = pd.DataFrame()
+        else:
+            raw_request = pd.DataFrame()
+
+        if not raw_request.empty:
+            raw_request.columns = ["리드지코드_raw", "리드지명", "구매의뢰수량", "입고예상일자_raw"]
+            raw_request["리드지코드"] = raw_request["리드지코드_raw"].map(normalize_leadji_code_key)
+            raw_request = raw_request[raw_request["리드지코드"].str.fullmatch(r"[A-Z]{2}\d{4}", na=False)]
+            if valid_leadji_code_set:
+                raw_request = raw_request[raw_request["리드지코드"].isin(valid_leadji_code_set)]
+            raw_request["구매의뢰수량"] = parse_mixed_numeric(raw_request["구매의뢰수량"])
+            raw_request["입고예상일자_dt"] = parse_mixed_excel_date(raw_request["입고예상일자_raw"])
+            raw_request = raw_request[raw_request["구매의뢰수량"] > 0]
+            if not raw_request.empty:
+                request_summary = raw_request.groupby("리드지코드", as_index=False).agg(
+                    {"리드지명": first_nonempty_text, "구매의뢰수량": "sum", "입고예상일자_dt": "min"}
+                )
+                summaries.append(request_summary)
 
     if not summaries:
         return empty
@@ -8769,10 +9158,14 @@ def load_leadji_status_snapshot(
     data_refresh_key = build_data_refresh_key(data_base_dir)
     reference_refresh_key = build_reference_refresh_key(data_base_dir)
     leadji_order_refresh_key = build_leadji_order_refresh_key(data_base_dir)
+    leadji_data_refresh_key = reference_refresh_key
+    if is_plan_api_enabled():
+        leadji_data_refresh_key = f"{reference_refresh_key}|leadji-stock-api:{build_plan_api_refresh_key()}"
 
     shortage_df, _, _ = load_data(data_refresh_key, str(data_base_dir))
-    leadji_info, leadji_stock = load_leadji_data(reference_refresh_key, str(data_base_dir))
-    leadji_order_df = load_leadji_order_data(leadji_order_refresh_key, str(data_base_dir))
+    leadji_info, leadji_stock = load_leadji_data(leadji_data_refresh_key, str(data_base_dir))
+    valid_leadji_codes = tuple(sorted(build_valid_leadji_code_set(leadji_info)))
+    leadji_order_df = load_leadji_order_data(leadji_order_refresh_key, str(data_base_dir), valid_leadji_codes)
     return shortage_df, leadji_info, leadji_stock, leadji_order_df
 
 
@@ -9934,6 +10327,8 @@ def render_shortage_dashboard(
         "R코드",
         "Q코드",
         "제품명",
+        PIA_ORDER_CLASS_COL,
+        ORDER_RECEIVED_DATE_COL,
         "파워",
         "납기일",
         "사출납기일",
@@ -10306,6 +10701,23 @@ def render_shortage_dashboard(
             p_view.loc[due_missing & fallback_due_valid, "납기일"] = fallback_due_text[
                 due_missing & fallback_due_valid
             ]
+
+        p_view = add_pia_order_classification(p_view)
+        pia_order_pills_key = "shortage_pia_order_class_pills_v1"
+        pia_order_options = list(PIA_ORDER_CLASS_FILTER_OPTIONS)
+        prepare_multi_pill_state(pia_order_pills_key, pia_order_options)
+        selected_pia_order_options = finalize_multi_pill_selection(
+            pia_order_pills_key,
+            st.pills(
+                "PIA 확인 구분",
+                options=pia_order_options,
+                selection_mode="multi",
+                key=pia_order_pills_key,
+                on_change=sync_multi_pill_state,
+                args=(pia_order_pills_key,),
+            ),
+        )
+        p_view = filter_by_pia_order_class(p_view, selected_pia_order_options)
 
         p_detail_columns = detail_columns.copy()
         if "사출 부족수량" not in p_detail_columns:
@@ -11007,6 +11419,8 @@ def render_leadji_dashboard(
 ) -> None:
     st.subheader("리드지 현황")
     st.caption(f"업데이트: {updated_at}")
+    if is_plan_api_enabled():
+        st.caption("리드지 재고: 기간별 품목 수불 현황(집계) API · 구매의뢰: 구매 의뢰 현황 API · 구매발주: 엑셀")
     download_stamp = datetime.now(DISPLAY_TZ).strftime("%Y%m%d_%H%M%S")
 
     summary_df = build_leadji_requirement_summary(shortage_df, leadji_info, leadji_stock)
@@ -11256,6 +11670,8 @@ def render_leadji_pcode5_dashboard(
 ) -> None:
     st.subheader("생산코드별 리드지 현황")
     st.caption(f"업데이트: {updated_at}")
+    if is_plan_api_enabled():
+        st.caption("리드지 재고: 기간별 품목 수불 현황(집계) API")
     st.caption(
         f"집계 기준: 품목코드별 ({LEADJI_REQUIRED_QTY_COL} - {LEADJI_COMPLETED_STOCK_COL})를 0 미만 0으로 만든 뒤 P코드 단위 합산(sum)"
     )
@@ -13734,6 +14150,9 @@ def main() -> None:
             elif is_plan_api_enabled() and selected_top_view in {"전체 품목 현황", "생산 부족 현황"}:
                 updated_at = sidebar_live_updated_at
                 sidebar_status_caption = "API 모드: APS 수요 + WIP 기준"
+            elif is_plan_api_enabled() and selected_top_view in {"리드지 현황", "생산코드별 리드지"}:
+                updated_at = sidebar_live_updated_at
+                sidebar_status_caption = "API 모드: 리드지 재고/구매의뢰 + 구매발주 엑셀"
             elif is_plan_api_enabled():
                 updated_at = sidebar_live_updated_at
                 sidebar_status_caption = "파일 계산 모드: WIP/로컬 수요 파일 기준"
