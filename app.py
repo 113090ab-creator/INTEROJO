@@ -5452,7 +5452,6 @@ def build_rcode_summary(df: pd.DataFrame) -> pd.DataFrame:
     columns = [
         "R코드",
         "R코드 제품명",
-        "사출 납기일",
         "사출 생산 필요수량 합계",
         "사출창고 합계",
         "분리창고 합계",
@@ -5475,7 +5474,6 @@ def build_rcode_summary(df: pd.DataFrame) -> pd.DataFrame:
         .agg(
             {
                 "R코드 제품명": lambda s: summarize_unique(s, head_count=1),
-                "사출납기일": "min",
                 "사출생산필요수량": "sum",
                 "사출창고": "sum",
                 "분리창고": "sum",
@@ -5484,7 +5482,6 @@ def build_rcode_summary(df: pd.DataFrame) -> pd.DataFrame:
         )
         .rename(
             columns={
-                "사출납기일": "사출 납기일",
                 "사출생산필요수량": "사출 생산 필요수량 합계",
                 "사출창고": "사출창고 합계",
                 "분리창고": "분리창고 합계",
@@ -10331,7 +10328,6 @@ def render_shortage_dashboard(
         ORDER_RECEIVED_DATE_COL,
         "파워",
         "납기일",
-        "사출납기일",
         "부족수량",
         "사출창고",
         "분리창고",
