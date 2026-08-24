@@ -3917,6 +3917,78 @@ def normalize_flow_link_key_columns(df: pd.DataFrame, key_cols: list[str]) -> pd
     return normalized
 
 
+def collapse_duplicate_p_demand_rows(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    key_candidates = [
+        "사이트코드",
+        ORDER_NO_COL,
+        ORDER_RECEIVED_DATE_COL,
+        "거래처",
+        "이니셜",
+        "품목코드",
+        "R코드",
+        "Q코드",
+        "제품명",
+        PIA_ORDER_CLASS_COL,
+        "파워",
+        "납기일",
+    ]
+    key_cols = [col for col in key_candidates if col in df.columns]
+    if not key_cols:
+        return df
+
+    normalized = normalize_flow_link_key_columns(df, key_cols)
+    duplicate_mask = normalized.duplicated(subset=key_cols, keep=False)
+    if not duplicate_mask.any():
+        return df
+
+    max_numeric_cols = {
+        DEMAND_QTY_COL,
+        "부족수량",
+        "사출생산필요수량",
+        "사출 부족수량",
+        "사출 부족수량(연결R)",
+        SEPARATION_REQUIRED_QTY_COL,
+        LEADJI_REQUIRED_QTY_COL,
+        ADHESION_REQUIRED_QTY_COL,
+        "표시부족수량",
+        "사출창고",
+        "분리창고",
+        "검사접착창고",
+        "검사접착재작업창고",
+        "누수규격검사 창고",
+        "공정재고 합계",
+    }
+    joined_text_cols = {"비고", "재작업", "확인구분", "분류 판단 근거"}
+
+    def first_non_empty(values: pd.Series) -> object:
+        for value in values:
+            text = clean_text_value(value)
+            if text:
+                return value
+        return values.iloc[0] if not values.empty else ""
+
+    def max_numeric(values: pd.Series) -> float:
+        return float(parse_mixed_numeric(values).max())
+
+    agg_map: dict[str, object] = {}
+    for col in normalized.columns:
+        if col in key_cols:
+            continue
+        if col in max_numeric_cols or pd.api.types.is_numeric_dtype(normalized[col]):
+            agg_map[col] = max_numeric
+        elif col in joined_text_cols:
+            agg_map[col] = join_unique_text_values
+        else:
+            agg_map[col] = first_non_empty
+
+    collapsed = normalized.groupby(key_cols, as_index=False, dropna=False, sort=False).agg(agg_map)
+    ordered_columns = [col for col in df.columns if col in collapsed.columns]
+    return collapsed[ordered_columns]
+
+
 def match_keyword_category(text: object, rules: dict[str, list[str]]) -> tuple[str, str]:
     normalized_text = normalize_keyword_key(text)
     if not normalized_text:
@@ -11127,6 +11199,33 @@ def render_shortage_dashboard(
             p_view.loc[due_missing & fallback_due_valid, "납기일"] = fallback_due_text[
                 due_missing & fallback_due_valid
             ]
+
+        p_view = collapse_duplicate_p_demand_rows(p_view)
+        p_view["표시부족수량"] = (
+            parse_mixed_numeric(p_view["부족수량"])
+            + parse_mixed_numeric(p_view["사출 부족수량"])
+            + parse_mixed_numeric(p_view[SEPARATION_REQUIRED_QTY_COL])
+            + parse_mixed_numeric(p_view[LEADJI_REQUIRED_QTY_COL])
+            + parse_mixed_numeric(p_view[ADHESION_REQUIRED_QTY_COL])
+        )
+        stock_total = (
+            parse_mixed_numeric(p_view["공정재고 합계"])
+            if "공정재고 합계" in p_view.columns
+            else pd.Series(0.0, index=p_view.index)
+        )
+        injection_shortage = parse_mixed_numeric(p_view["사출 부족수량"])
+        final_shortage = parse_mixed_numeric(p_view["부족수량"])
+        p_view["확인구분"] = ""
+        p_view.loc[(final_shortage > 0) & (stock_total > 0), "확인구분"] = "공정재고 확인"
+        p_view.loc[injection_shortage > 0, "확인구분"] = "사출필요"
+        p_view.loc[
+            (final_shortage > 0) & (injection_shortage <= 0) & (stock_total <= 0),
+            "확인구분",
+        ] = "최종부족/재고없음"
+        if "재작업" in p_view.columns:
+            rework_text = p_view["재작업"].astype(str).str.strip()
+            rework_available = rework_text.ne("") & ~rework_text.str.lower().isin(INVALID_CATEGORY_VALUES)
+            p_view.loc[rework_available & (p_view["확인구분"].astype(str).str.strip() == ""), "확인구분"] = "재작업가능"
 
         p_view = add_pia_order_classification(p_view)
         pia_order_pills_key = "shortage_pia_order_class_pills_v1"
