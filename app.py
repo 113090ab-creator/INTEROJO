@@ -258,6 +258,23 @@ ALL_ITEM_STATUS_OPTIONS = [
 POWER_VALUE_PATTERN = re.compile(r"([+-]\d{1,2}(?:\.\d{1,2})?)")
 UNCLASSIFIED_SHEET_CATEGORY = "미분류"
 INVALID_CATEGORY_VALUES = {"", "-", "nan", "none", "nat", "null", "na", "<na>"}
+PRODUCT_SEARCH_STOPWORDS = {
+    "a",
+    "d",
+    "m",
+    "s",
+    "uv",
+    "pia",
+    "co",
+    "ltd",
+    "the",
+    "and",
+    "일본",
+    "신규",
+    "중",
+    "대",
+    "소",
+}
 REWORK_AVAILABLE_QTY_COL = "재작업가능"
 INITIAL_ORDER_MAP_COL = "이니셜별오더수량"
 DEMAND_DETAIL_ROWS_COL = "수요상세목록"
@@ -5698,16 +5715,68 @@ def filter_with_terms(df: pd.DataFrame, column: str, query: str) -> pd.DataFrame
     return df[df[column].astype(str).str.contains(pattern, case=False, na=False)]
 
 
+def build_terms_any_mask(df: pd.DataFrame, columns: list[str], query: str) -> pd.Series:
+    terms = split_query_terms(query)
+    mask = pd.Series(False, index=df.index)
+    if not terms:
+        return pd.Series(True, index=df.index)
+
+    pattern = "|".join(re.escape(term) for term in terms)
+    for col in columns:
+        mask = mask | df[col].astype(str).str.contains(pattern, case=False, na=False)
+    return mask
+
+
 def filter_with_terms_any(df: pd.DataFrame, columns: list[str], query: str) -> pd.DataFrame:
     terms = split_query_terms(query)
     if not terms:
         return df
-
-    pattern = "|".join(re.escape(term) for term in terms)
-    mask = pd.Series(False, index=df.index)
-    for col in columns:
-        mask = mask | df[col].astype(str).str.contains(pattern, case=False, na=False)
+    mask = build_terms_any_mask(df, columns, query)
     return df[mask]
+
+
+def normalize_product_search_text(value: object) -> str:
+    text = clean_text_value(value).lower()
+    text = re.sub(r"[^0-9a-z가-힣]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def extract_product_search_tokens(value: object) -> list[str]:
+    tokens: list[str] = []
+    for token in normalize_product_search_text(value).split():
+        if token in PRODUCT_SEARCH_STOPWORDS:
+            continue
+        if len(token) <= 1:
+            continue
+        if token.isdigit():
+            continue
+        if re.fullmatch(r"\d+(?:년|day|days)?", token):
+            continue
+        if token not in tokens:
+            tokens.append(token)
+    return tokens
+
+
+def build_relaxed_product_search_mask(df: pd.DataFrame, query: str) -> pd.Series:
+    product_columns = [
+        col
+        for col in ["제품명", "R코드 제품명", "제품명 예시", "Q기준 제품명"]
+        if col in df.columns
+    ]
+    mask = pd.Series(False, index=df.index)
+    if not product_columns:
+        return mask
+
+    haystack = df[product_columns].fillna("").astype(str).agg(" ".join, axis=1).map(normalize_product_search_text)
+    for term in split_query_terms(query):
+        tokens = extract_product_search_tokens(term)
+        if len(tokens) < 2:
+            continue
+        term_mask = pd.Series(True, index=df.index)
+        for token in tokens:
+            term_mask = term_mask & haystack.str.contains(re.escape(token), na=False)
+        mask = mask | term_mask
+    return mask
 
 
 def filter_display_table_with_query(df: pd.DataFrame, query: str) -> pd.DataFrame:
@@ -5716,7 +5785,9 @@ def filter_display_table_with_query(df: pd.DataFrame, query: str) -> pd.DataFram
     search_columns = df.columns.tolist()
     if not search_columns:
         return df
-    return filter_with_terms_any(df, search_columns, query)
+    exact_mask = build_terms_any_mask(df, search_columns, query)
+    product_mask = build_relaxed_product_search_mask(df, query)
+    return df[exact_mask | product_mask]
 
 
 def normalize_warehouse_name(value: str) -> str:
@@ -11249,10 +11320,13 @@ def render_shortage_dashboard(
             insert_idx = p_detail_columns.index("부족수량") + 1 if "부족수량" in p_detail_columns else len(p_detail_columns)
             p_detail_columns.insert(insert_idx, "사출 부족수량")
         p_detail_columns = move_columns_to_end(p_detail_columns, ["비고"])
-        p_table = p_view.sort_values(
-            ["표시부족수량", "부족수량", "사출 부족수량", "이니셜", "거래처"],
-            ascending=[False, False, False, True, True],
-        )[p_detail_columns]
+        sort_columns = ["표시부족수량", "부족수량", "사출 부족수량", "이니셜", "거래처"]
+        sort_ascending = [False, False, False, True, True]
+        if direct_query and "이니셜" in p_view.columns:
+            p_view["_안전정렬"] = p_view["이니셜"].astype(str).str.contains("안전", na=False).astype(int)
+            sort_columns = ["_안전정렬", *sort_columns]
+            sort_ascending = [True, *sort_ascending]
+        p_table = p_view.sort_values(sort_columns, ascending=sort_ascending)[p_detail_columns]
         p_table_ui = p_table.drop(columns=["상태"], errors="ignore")
         with full_demand_summary_slot.container():
             full_demand_summary = build_summary_group_totals_with_safe_split(p_view)
