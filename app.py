@@ -12363,7 +12363,8 @@ def build_effective_api_snapshot_date(source_updated_at: str, fallback_date: str
     parsed = pd.to_datetime(source_updated_at, errors="coerce")
     if pd.notna(parsed):
         source_date = parsed.strftime("%Y%m%d")
-        return min(source_date, str(fallback_date))
+        today = pd.Timestamp.now(tz=DISPLAY_TZ).strftime("%Y%m%d")
+        return min(source_date, today)
     return fallback_date
 
 
@@ -12807,6 +12808,10 @@ def load_effective_production_dashboard_data(
         "production_raw_rows": len(raw_production),
         "plan_rows": len(demand),
         "production_rows": len(production),
+        "requested_start_date": start_date_text,
+        "requested_end_date": end_date_text,
+        "plan_actual_start_date": valid_plan_dates[0] if valid_plan_dates else "",
+        "plan_actual_end_date": valid_plan_dates[-1] if valid_plan_dates else "",
         "snapshot_date": snapshot_date_text,
     }
     errors = "; ".join(
@@ -13229,16 +13234,71 @@ def load_api_effective_dashboard_data(
         "demand_source_label": f"APS API 수요 {format_effective_int(api_metadata.get('plan_rows', 0))}행",
         "display_cutoff_date": display_cutoff_date,
         "api_start_date": api_start_date,
+        "api_requested_start_date": api_metadata.get("requested_start_date", api_start_date),
+        "api_requested_end_date": api_metadata.get("requested_end_date", display_cutoff_date),
+        "api_actual_start_date": demand_start if detail_dates else "",
+        "api_actual_end_date": demand_end if detail_dates else "",
         "raw_rows": api_metadata.get("plan_raw_rows", 0),
         "production_raw_rows": api_metadata.get("production_raw_rows", 0),
         "production_rows": api_metadata.get("production_rows", 0),
         "detail_rows": len(detail),
         "match_key": "제품코드 전체 문자열",
         "loaded_at": datetime.now(DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S"),
-        "stale_missing_reason": "APS API 수요 데이터가 없어",
+        "stale_missing_reason": "APS API가 해당 기간의 과거 수요 스냅샷을 반환하지 않아",
         "errors": api_errors,
     }
     return summary, change_analysis, sheet_name_analysis, major_category_analysis, detail, metadata
+
+
+def shift_effective_date_text(value: object, days: int) -> str:
+    parsed = pd.to_datetime(clean_text_value(value), format="%Y%m%d", errors="coerce")
+    if pd.isna(parsed):
+        return ""
+    return (parsed + pd.Timedelta(days=days)).strftime("%Y%m%d")
+
+
+def build_effective_missing_periods(
+    original_end_date: object,
+    api_start_date: object,
+    api_snapshot_date: object,
+    api_actual_start_date: object,
+    api_actual_end_date: object,
+) -> list[dict[str, str]]:
+    periods: list[dict[str, str]] = []
+    api_start = clean_text_value(api_start_date)
+    api_snapshot = clean_text_value(api_snapshot_date)
+    api_actual_start = clean_text_value(api_actual_start_date)
+    api_actual_end = clean_text_value(api_actual_end_date)
+
+    def add_period(start_value: object, end_value: object, reason: str) -> None:
+        start_text = clean_text_value(start_value)
+        end_text = clean_text_value(end_value)
+        if start_text and end_text and start_text <= end_text:
+            periods.append({"start": start_text, "end": end_text, "reason": reason})
+
+    api_gap_start = api_start
+    next_after_original = shift_effective_date_text(original_end_date, 1)
+    if next_after_original and next_after_original > api_gap_start:
+        api_gap_start = next_after_original
+
+    if api_actual_start:
+        add_period(
+            api_gap_start,
+            shift_effective_date_text(api_actual_start, -1),
+            "APS API에서 해당 과거 계획일자 수요가 조회되지 않아",
+        )
+        add_period(
+            shift_effective_date_text(api_actual_end, 1),
+            api_snapshot,
+            "APS API에서 해당 계획일자 수요가 조회되지 않아",
+        )
+    else:
+        add_period(
+            api_gap_start,
+            api_snapshot,
+            "APS API 수요 행이 없어",
+        )
+    return periods
 
 
 @st.cache_data(show_spinner=False, ttl=PLAN_API_CACHE_TTL_SECONDS, max_entries=CACHE_MAX_ENTRIES)
@@ -13324,7 +13384,17 @@ def load_combined_effective_dashboard_data(
     )
     original_start = clean_text_value(original_metadata.get("demand_start", ""))
     original_end = clean_text_value(original_metadata.get("demand_end", ""))
-    api_snapshot_text = clean_text_value(api_metadata.get("demand_end", api_snapshot_date))
+    api_requested_start = clean_text_value(api_metadata.get("api_requested_start_date", api_start_date))
+    api_requested_end = clean_text_value(api_metadata.get("api_requested_end_date", api_snapshot_date))
+    api_actual_start = clean_text_value(api_metadata.get("api_actual_start_date", ""))
+    api_actual_end = clean_text_value(api_metadata.get("api_actual_end_date", ""))
+    missing_periods = build_effective_missing_periods(
+        original_end,
+        api_requested_start or api_start_date,
+        api_requested_end or api_snapshot_date,
+        api_actual_start,
+        api_actual_end,
+    )
     metadata = {
         "source": f"통합 기준: 기존 엑셀 + APS API 수요 ({EFFECTIVE_PRODUCTION_DEFAULT_SITE})",
         "source_mode": "combined",
@@ -13333,7 +13403,12 @@ def load_combined_effective_dashboard_data(
         "excel_start_date": original_start,
         "excel_end_date": original_end or excel_cutoff_date,
         "api_start_date": api_start_date,
-        "api_snapshot_date": api_snapshot_text,
+        "api_requested_start_date": api_requested_start or api_start_date,
+        "api_requested_end_date": api_requested_end or api_snapshot_date,
+        "api_actual_start_date": api_actual_start,
+        "api_actual_end_date": api_actual_end,
+        "api_snapshot_date": api_requested_end or api_snapshot_date,
+        "missing_periods": missing_periods,
         "demand_file_count": int(original_metadata.get("demand_file_count", 0) or 0),
         "demand_source_label": (
             f"엑셀 수요파일 {format_effective_int(original_metadata.get('demand_file_count', 0))}개"
@@ -13346,7 +13421,7 @@ def load_combined_effective_dashboard_data(
         "detail_rows": len(detail),
         "match_key": "제품코드 전체 문자열",
         "loaded_at": datetime.now(DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S"),
-        "stale_missing_reason": "APS API 수요 데이터가 없어",
+        "stale_missing_reason": "APS API가 해당 기간의 과거 수요 스냅샷을 반환하지 않아",
         "errors": "; ".join(error for error in errors if error),
     }
     return summary, change_analysis, sheet_name_analysis, major_category_analysis, detail, metadata
@@ -14258,7 +14333,10 @@ def render_effective_overproduction_panel(
 
 def render_effective_production_dashboard() -> None:
     st.subheader("생산유효도 분석")
-    st.caption("통합 기준은 2026-08-05까지 기존 엑셀 수요, 2026-08-06부터 APS API 수요를 이어서 봅니다.")
+    st.caption(
+        "통합 기준은 2026-08-05까지 기존 엑셀 수요를 쓰고, "
+        "이후는 APS API에서 실제 조회되는 계획일자 수요만 반영합니다."
+    )
 
     if effective_report is None:
         st.error("생산유효도 계산 모듈을 불러오지 못했습니다. 다른 생산현황 메뉴는 계속 사용할 수 있습니다.")
@@ -14364,9 +14442,19 @@ def render_effective_production_dashboard() -> None:
     if metadata.get("source_mode") == "combined":
         excel_start = format_effective_date_option(metadata.get("excel_start_date", ""))
         excel_end = format_effective_date_option(metadata.get("excel_end_date", ""))
-        api_start = format_effective_date_option(metadata.get("api_start_date", ""))
-        api_snapshot = format_effective_date_option(metadata.get("api_snapshot_date", metadata.get("demand_end", "")))
-        demand_period_label = f"엑셀: {excel_start} ~ {excel_end} · APS API: {api_start}부터 · 적용 스냅샷: {api_snapshot}"
+        api_requested_start = format_effective_date_option(metadata.get("api_requested_start_date", metadata.get("api_start_date", "")))
+        api_requested_end = format_effective_date_option(metadata.get("api_requested_end_date", metadata.get("api_snapshot_date", "")))
+        api_actual_start = clean_text_value(metadata.get("api_actual_start_date", ""))
+        api_actual_end = clean_text_value(metadata.get("api_actual_end_date", ""))
+        api_actual_label = (
+            f"반영: {format_effective_date_option(api_actual_start)} ~ {format_effective_date_option(api_actual_end)}"
+            if api_actual_start and api_actual_end
+            else "반영 없음"
+        )
+        demand_period_label = (
+            f"엑셀: {excel_start} ~ {excel_end} · "
+            f"APS API 요청: {api_requested_start} ~ {api_requested_end} · APS API {api_actual_label}"
+        )
     elif metadata.get("api_start_date"):
         demand_period_label = (
             f"조회 기준: {format_effective_date_option(metadata['api_start_date'])}부터 · "
@@ -14384,7 +14472,17 @@ def render_effective_production_dashboard() -> None:
     )
     demand_end_text = str(metadata.get("demand_end", ""))
     display_cutoff_text = str(metadata.get("display_cutoff_date", ""))
-    if demand_end_text and display_cutoff_text and demand_end_text < display_cutoff_text:
+    missing_periods = metadata.get("missing_periods") or []
+    if missing_periods:
+        for period in missing_periods:
+            missing_start_text = format_effective_date_option(period.get("start", ""))
+            missing_end_text = format_effective_date_option(period.get("end", ""))
+            missing_reason = period.get("reason", "수요 데이터가 없어")
+            st.warning(
+                f"{missing_start_text} ~ {missing_end_text} 수요정보가 없습니다. "
+                f"{missing_reason} 해당 기간은 생산유효도 계산에서 제외됩니다."
+            )
+    elif demand_end_text and display_cutoff_text and demand_end_text < display_cutoff_text:
         missing_start = pd.to_datetime(demand_end_text, format="%Y%m%d", errors="coerce")
         missing_end = pd.to_datetime(display_cutoff_text, format="%Y%m%d", errors="coerce")
         if pd.notna(missing_start) and pd.notna(missing_end):
