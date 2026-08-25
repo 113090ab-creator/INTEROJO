@@ -1,4 +1,5 @@
 import hashlib
+import html
 import json
 import os
 import pickle
@@ -532,6 +533,29 @@ def inject_dashboard_theme() -> None:
             border: 1px solid #D7DBE8;
             background: #F7F8FB;
             box-shadow: 0 4px 14px rgba(26, 43, 94, 0.06);
+        }
+        .api-unavailable-banner {
+            border: 2px solid #DC2626;
+            border-left: 8px solid #DC2626;
+            border-radius: 10px;
+            background: #FEF2F2;
+            box-shadow: 0 12px 30px rgba(220, 38, 38, 0.12);
+            padding: 16px 18px;
+            margin: 0 0 18px;
+        }
+        .api-unavailable-title {
+            color: #B91C1C;
+            font-size: 30px;
+            font-weight: 900;
+            line-height: 1.1;
+            margin: 0 0 6px;
+        }
+        .api-unavailable-body {
+            color: #991B1B;
+            font-size: 15px;
+            font-weight: 750;
+            line-height: 1.45;
+            margin: 0;
         }
         [data-testid="stDataFrame"] {
             border: 1px solid #E5E7EB;
@@ -1266,6 +1290,57 @@ def format_api_fallback_warning(error: object, fallback_label: str) -> str:
     return f"APS API 수요 조회가 일시적으로 실패해 {fallback_label}을 표시합니다. 원인: {summary}"
 
 
+def format_api_unavailable_banner_message(error: object, fallback_label: str) -> str:
+    warning = format_api_fallback_warning(error, fallback_label)
+    return warning.replace("APS API 수요 조회가 일시적으로 실패해", "필요한 APS API가 모두 조회되지 않아", 1)
+
+
+def infer_api_unavailable_banner_message(file_info_df: pd.DataFrame | None, source_label: str = "") -> str:
+    source_parts = [clean_text_value(source_label)]
+    stock_source_text = ""
+    if isinstance(file_info_df, pd.DataFrame) and not file_info_df.empty:
+        first_row = file_info_df.iloc[0]
+        for column in ["수요파일", "재고파일"]:
+            if column in file_info_df.columns:
+                value_text = clean_text_value(first_row.get(column, ""))
+                source_parts.append(value_text)
+                if column == "재고파일":
+                    stock_source_text = value_text
+    source_text = " ".join(part for part in source_parts if part)
+    if not source_text:
+        return ""
+
+    if "APS API 실패 fallback" in source_text:
+        if "Cloud 스냅샷" in source_text:
+            return "필요한 APS API가 모두 조회되지 않아 기존 스냅샷을 표시합니다."
+        if "로컬 파일" in source_text:
+            return "필요한 APS API가 모두 조회되지 않아 로컬 파일 기준으로 표시합니다."
+        return "필요한 APS API가 모두 조회되지 않아 대체 데이터를 표시합니다."
+
+    if "APS WIP API 미반영" in stock_source_text:
+        detail = re.sub(r"https?://\S+", "", stock_source_text)
+        detail = re.sub(r"\s+", " ", detail).strip()
+        if len(detail) > 180:
+            detail = detail[:177].rstrip() + "..."
+        return f"필요한 APS WIP API가 조회되지 않아 재고는 파일 기준으로 표시합니다. {detail}"
+    return ""
+
+
+def render_api_unavailable_banner(message: str) -> None:
+    text = clean_text_value(message)
+    if not text:
+        return
+    st.markdown(
+        f"""
+        <div class="api-unavailable-banner">
+            <div class="api-unavailable-title">조회불가</div>
+            <p class="api-unavailable-body">{html.escape(text)}</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def normalize_api_column_key(value: object) -> str:
     return re.sub(r"[\s_./()\-\[\]:]+", "", str(value).strip().lower())
 
@@ -1646,9 +1721,14 @@ def read_aps_plan_operations_dataframe(
                 continue
             if not frame.empty:
                 frames.append(frame)
+    if errors:
+        summary = summarize_plan_api_operation_errors(errors) or "일부 APS API 조회에 실패했습니다."
+        if frames:
+            summary = f"{summary}; 일부 공정 API만 응답해 결과를 사용하지 않았습니다."
+        return pd.DataFrame(), summary
     if frames:
         return pd.concat(frames, ignore_index=True, sort=False), ""
-    return pd.DataFrame(), summarize_plan_api_operation_errors(errors)
+    return pd.DataFrame(), ""
 
 
 def summarize_aps_wip_warehouse_errors(errors: list[str]) -> str:
@@ -10915,10 +10995,14 @@ def render_shortage_dashboard(
     data_base_dir: Path | None = None,
     source_label: str = "",
     locked_site_filter: str | None = None,
+    api_alert_message: str = "",
 ) -> None:
     enriched_df = add_rq_group_columns(df)
     filtered = apply_filters(enriched_df, updated_at, data_base_dir, source_label, locked_site_filter)
     download_stamp = datetime.now(DISPLAY_TZ).strftime("%Y%m%d_%H%M%S")
+    render_api_unavailable_banner(
+        api_alert_message or infer_api_unavailable_banner_message(file_info_df, source_label)
+    )
 
     detail_columns = [
         "거래처",
@@ -14919,6 +15003,7 @@ def main() -> None:
         all_items_df = pd.DataFrame()
         code_mismatch_df = pd.DataFrame()
         all_items_full_builder = None
+        api_alert_message = ""
         if selected_top_view == "전체 품목 현황":
             all_item_live_updated_at = get_aps_or_file_updated_at(get_all_item_updated_at(data_base_dir))
             use_all_item_cloud_snapshot = (not is_plan_api_enabled()) and cloud_snapshots_available and is_cloud_snapshot_fresh(
@@ -14996,7 +15081,7 @@ def main() -> None:
                             updated_at = get_cloud_snapshot_meta_value("data_updated_at", data_live_updated_at)
                             source_label = "Cloud 스냅샷 (APS API 실패 fallback)"
                             sidebar_status_caption = "API 오류: 기존 스냅샷 표시"
-                            st.warning(format_api_fallback_warning(live_exc, "기존 스냅샷"))
+                            api_alert_message = format_api_unavailable_banner_message(live_exc, "기존 스냅샷")
                             fallback_loaded = True
                     except Exception:
                         fallback_loaded = False
@@ -15008,7 +15093,7 @@ def main() -> None:
                             updated_at = data_live_updated_at
                             source_label = "로컬 파일 (APS API 실패 fallback)"
                             sidebar_status_caption = "API 오류: 로컬 파일 기준"
-                            st.warning(format_api_fallback_warning(live_exc, "로컬 파일 기준"))
+                            api_alert_message = format_api_unavailable_banner_message(live_exc, "로컬 파일 기준")
                             fallback_loaded = True
                         except Exception as fallback_exc:
                             st.error(f"APS API 수요 기준 생산 부족 현황 계산 실패: {live_exc}")
@@ -15065,7 +15150,15 @@ def main() -> None:
         render_all_items_dashboard(all_items_df, updated_at, all_items_full_builder, all_item_site_filter)
     elif selected_top_view == "생산 부족 현황":
         locked_site_filter = shortage_api_site_filter if is_plan_api_enabled() else None
-        render_shortage_dashboard(df, updated_at, file_info_df, data_base_dir, source_label, locked_site_filter)
+        render_shortage_dashboard(
+            df,
+            updated_at,
+            file_info_df,
+            data_base_dir,
+            source_label,
+            locked_site_filter,
+            api_alert_message,
+        )
     elif selected_top_view == "리드지 현황":
         render_leadji_dashboard(updated_at, df, leadji_info, leadji_stock, leadji_order_df)
     elif selected_top_view == "생산코드별 리드지":
