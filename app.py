@@ -84,10 +84,10 @@ DATA_SOURCE_DEFAULT_VERSION = "20260821-bom-api-rq-match-v1"
 PLAN_API_BASE_URL_DEFAULT = "https://plan.interojo.net"
 PLAN_API_KEY_ENV = "PLAN_API_KEY"
 PLAN_API_BASE_URL_ENV = "PLAN_API_BASE_URL"
-PLAN_API_TIMEOUT_SECONDS = 120
+PLAN_API_TIMEOUT_SECONDS = int(os.getenv("PLAN_API_TIMEOUT_SECONDS", "30"))
 PLAN_API_DEFAULT_ROW_LIMIT = 0
 PLAN_API_CACHE_TTL_SECONDS = 300
-PLAN_API_RETRY_ATTEMPTS = 2
+PLAN_API_RETRY_ATTEMPTS = int(os.getenv("PLAN_API_RETRY_ATTEMPTS", "1"))
 PLAN_API_RETRY_STATUS_CODES = {429, 500, 502, 503, 504, 520, 522, 524}
 LOCAL_CACHE_DIR = BASE_DIR / ".local_cache"
 PLAN_API_DISK_CACHE_DIR = LOCAL_CACHE_DIR / "plan_api"
@@ -5788,10 +5788,14 @@ def build_relaxed_product_search_mask(df: pd.DataFrame, query: str) -> pd.Series
     return mask
 
 
-def filter_display_table_with_query(df: pd.DataFrame, query: str) -> pd.DataFrame:
+def filter_display_table_with_query(
+    df: pd.DataFrame,
+    query: str,
+    columns: list[str] | None = None,
+) -> pd.DataFrame:
     if df.empty:
         return df
-    search_columns = df.columns.tolist()
+    search_columns = [col for col in (columns or df.columns.tolist()) if col in df.columns]
     if not search_columns:
         return df
     exact_mask = build_terms_any_mask(df, search_columns, query)
@@ -10783,7 +10787,24 @@ def render_inventory_risk_dashboard(risk_df: pd.DataFrame, updated_at: str) -> N
     if selected_warehouses:
         working = working[working["창고"].isin(selected_warehouses)]
     if direct_query:
-        working = filter_display_table_with_query(working, direct_query).copy()
+        inventory_search_columns = [
+            col
+            for col in [
+                "리스크구분",
+                "창고",
+                "품목코드",
+                "제품군키",
+                "제품명 예시",
+                "이니셜 예시",
+                "납기일",
+                "분류별요약",
+                "시트분류",
+                "재공코드 예시",
+                "LOT 예시",
+            ]
+            if col in working.columns
+        ]
+        working = filter_display_table_with_query(working, direct_query, inventory_search_columns).copy()
 
     total_stock = parse_mixed_numeric(working["재고수량"]).sum()
     no_demand_stock = parse_mixed_numeric(
@@ -10940,7 +10961,32 @@ def render_shortage_dashboard(
     with result_col:
         result_caption = st.empty()
     if direct_query:
-        filtered = filter_display_table_with_query(filtered, direct_query).copy()
+        shortage_direct_search_columns = [
+            col
+            for col in [
+                "사이트코드",
+                ORDER_NO_COL,
+                ORDER_RECEIVED_DATE_COL,
+                "거래처",
+                "이니셜",
+                "품목코드",
+                "R코드",
+                "Q코드",
+                "U코드",
+                "제품명",
+                "R코드 제품명",
+                "분류별요약",
+                "시트분류",
+                PIA_ORDER_CLASS_COL,
+                "파워",
+                "납기일",
+                "사출납기일",
+                "비고",
+                "재작업",
+            ]
+            if col in filtered.columns
+        ]
+        filtered = filter_display_table_with_query(filtered, direct_query, shortage_direct_search_columns).copy()
     link_mapping_scope = enriched_df.copy()
 
     locked_site_text = clean_text_value(locked_site_filter)
@@ -11022,11 +11068,6 @@ def render_shortage_dashboard(
             p_rows = p_view.copy()
             r_rows = p_view.iloc[0:0].copy()
 
-        synthetic_full_rows = build_synthetic_p_rows_for_process_scope(
-            link_mapping_scope,
-            link_mapping_scope,
-            p_view.columns.tolist(),
-        )
         synthetic_display_rows = build_synthetic_p_rows_for_process_scope(
             p_view,
             link_mapping_scope,
@@ -11121,31 +11162,16 @@ def render_shortage_dashboard(
             if key_cols and not r_scope.empty:
                 p_rows = normalize_flow_link_key_columns(p_rows, key_cols)
                 r_scope = normalize_flow_link_key_columns(r_scope, key_cols)
-                r_key_inj_all = (
-                    r_scope.groupby(key_cols, as_index=False, dropna=False)["사출생산필요수량"]
-                    .sum()
-                    .rename(columns={"사출생산필요수량": "연결R 사출수량"})
-                )
                 p_keys = p_rows[key_cols].drop_duplicates()
-                full_p_keys = pd.DataFrame(columns=key_cols)
-                if "품목코드" in link_mapping_scope.columns and all(c in link_mapping_scope.columns for c in key_cols):
-                    full_p_scope = link_mapping_scope[
-                        link_mapping_scope["품목코드"].astype(str).str.upper().str.startswith("P")
-                    ]
-                    if not synthetic_full_rows.empty:
-                        full_p_scope = pd.concat([full_p_scope, synthetic_full_rows], ignore_index=True, sort=False)
-                    full_p_scope = normalize_flow_link_key_columns(full_p_scope, key_cols)
-                    full_p_keys = full_p_scope[key_cols].drop_duplicates()
-                if not full_p_keys.empty:
-                    unmatched_r = r_key_inj_all.merge(full_p_keys, on=key_cols, how="left", indicator=True)
-                    unmatched_inj_total = float(
-                        unmatched_r.loc[unmatched_r["_merge"] == "left_only", "연결R 사출수량"].sum()
+                r_scope = r_scope.merge(p_keys, on=key_cols, how="inner") if not p_keys.empty else r_scope.iloc[0:0]
+                if r_scope.empty:
+                    r_key_inj = pd.DataFrame(columns=[*key_cols, "연결R 사출수량"])
+                else:
+                    r_key_inj = (
+                        r_scope.groupby(key_cols, as_index=False, dropna=False)["사출생산필요수량"]
+                        .sum()
+                        .rename(columns={"사출생산필요수량": "연결R 사출수량"})
                     )
-                r_key_inj = (
-                    r_key_inj_all.merge(p_keys, on=key_cols, how="inner")
-                    if not p_keys.empty
-                    else r_key_inj_all.iloc[0:0].copy()
-                )
 
                 p_rows = p_rows.merge(r_key_inj, on=key_cols, how="left")
                 p_key_short_sum = p_rows.groupby(key_cols, dropna=False)["부족수량"].transform("sum")
@@ -11182,31 +11208,16 @@ def render_shortage_dashboard(
                 if not q_scope.empty:
                     p_rows = normalize_flow_link_key_columns(p_rows, q_link_cols)
                     q_scope = normalize_flow_link_key_columns(q_scope, q_link_cols)
-                    q_key_sep_all = (
-                        q_scope.groupby(q_link_cols, as_index=False, dropna=False)[SEPARATION_REQUIRED_QTY_COL]
-                        .sum()
-                        .rename(columns={SEPARATION_REQUIRED_QTY_COL: "연결Q 분리수량"})
-                    )
                     q_keys = p_rows[q_link_cols].drop_duplicates()
-                    full_p_q_keys = pd.DataFrame(columns=q_link_cols)
-                    if "품목코드" in link_mapping_scope.columns and all(c in link_mapping_scope.columns for c in q_link_cols):
-                        full_p_scope = link_mapping_scope[
-                            link_mapping_scope["품목코드"].astype(str).str.upper().str.startswith("P")
-                        ]
-                        if not synthetic_full_rows.empty:
-                            full_p_scope = pd.concat([full_p_scope, synthetic_full_rows], ignore_index=True, sort=False)
-                        full_p_scope = normalize_flow_link_key_columns(full_p_scope, q_link_cols)
-                        full_p_q_keys = full_p_scope[q_link_cols].drop_duplicates()
-                    if not full_p_q_keys.empty:
-                        unmatched_q = q_key_sep_all.merge(full_p_q_keys, on=q_link_cols, how="left", indicator=True)
-                        unmatched_sep_total = float(
-                            unmatched_q.loc[unmatched_q["_merge"] == "left_only", "연결Q 분리수량"].sum()
+                    q_scope = q_scope.merge(q_keys, on=q_link_cols, how="inner") if not q_keys.empty else q_scope.iloc[0:0]
+                    if q_scope.empty:
+                        q_key_sep = pd.DataFrame(columns=[*q_link_cols, "연결Q 분리수량"])
+                    else:
+                        q_key_sep = (
+                            q_scope.groupby(q_link_cols, as_index=False, dropna=False)[SEPARATION_REQUIRED_QTY_COL]
+                            .sum()
+                            .rename(columns={SEPARATION_REQUIRED_QTY_COL: "연결Q 분리수량"})
                         )
-                    q_key_sep = (
-                        q_key_sep_all.merge(q_keys, on=q_link_cols, how="inner")
-                        if not q_keys.empty
-                        else q_key_sep_all.iloc[0:0].copy()
-                    )
                     mapped_sep_total = float(q_key_sep["연결Q 분리수량"].sum())
                     p_rows = p_rows.merge(q_key_sep, on=q_link_cols, how="left")
                     linked_sep = parse_mixed_numeric(p_rows["연결Q 분리수량"])
