@@ -474,6 +474,15 @@ def inject_dashboard_theme() -> None:
             padding: 6px 8px;
             margin-bottom: 3px;
         }
+        [data-testid="stSidebarCollapseButton"] span,
+        [data-testid="stSidebarCollapseButton"] [data-testid="stIconMaterial"],
+        [data-testid="stSidebarCollapseButton"] .material-icons,
+        [data-testid="stSidebarCollapseButton"] .material-icons-outlined,
+        [data-testid="stSidebarCollapseButton"] .material-symbols-rounded {
+            font-size: 0 !important;
+            line-height: 0 !important;
+            overflow: hidden !important;
+        }
         h1, h2, h3 {
             color: #111827;
             letter-spacing: 0;
@@ -13107,20 +13116,31 @@ def load_original_effective_dashboard_data(
     base_url: str,
     api_key_hash: str,
     refresh_nonce: int,
+    include_aps_snapshots: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, object]]:
     _ = source_signature, api_key_hash, refresh_nonce
     if effective_report is None:
         raise ValueError("생산유효도 계산 모듈을 찾지 못했습니다.")
 
     source_dir = Path(source_dir_text)
+    is_aps_snapshot = getattr(effective_report, "is_aps_plan_snapshot", lambda _path: False)
     input_files = [
         (date, path)
         for date, path in effective_report.find_input_files(source_dir)
         if str(date) <= str(display_cutoff_date)
+        and (include_aps_snapshots or not is_aps_snapshot(path))
     ]
     if not input_files:
         raise ValueError(f"{format_effective_date_option(display_cutoff_date)}까지 표시할 수요정보 파일이 없습니다.")
 
+    excel_dates = sorted(date for date, path in input_files if not is_aps_snapshot(path))
+    aps_snapshot_dates = sorted(date for date, path in input_files if is_aps_snapshot(path))
+    source_parts: list[str] = []
+    if excel_dates:
+        source_parts.append(f"엑셀 수요파일 {format_effective_int(len(excel_dates))}일")
+    if aps_snapshot_dates:
+        source_parts.append(f"APS 스냅샷 {format_effective_int(len(aps_snapshot_dates))}일")
+    demand_source_label = " + ".join(source_parts) if source_parts else f"수요파일 {format_effective_int(len(input_files))}개"
     input_dates = {date for date, _path in input_files}
     production_df = load_effective_report_with_main_api_settings(source_dir, input_dates, base_url)
     if production_df.empty:
@@ -13140,10 +13160,18 @@ def load_original_effective_dashboard_data(
     )
     major_category_analysis = effective_report.summarize_by_classification(detail, effective_report.MAJOR_CATEGORY_COL)
     metadata = {
-        "source": "기존 생산유효도 계산 모듈",
+        "source": "수요 엑셀 + APS 스냅샷" if include_aps_snapshots else "기존 생산유효도 계산 모듈",
+        "source_mode": "snapshot_combined" if include_aps_snapshots else "excel_only",
         "demand_start": min(input_dates),
         "demand_end": max(input_dates),
         "demand_file_count": len(input_files),
+        "demand_source_label": demand_source_label,
+        "excel_demand_count": len(excel_dates),
+        "aps_snapshot_count": len(aps_snapshot_dates),
+        "excel_start_date": excel_dates[0] if excel_dates else "",
+        "excel_end_date": excel_dates[-1] if excel_dates else "",
+        "aps_snapshot_start_date": aps_snapshot_dates[0] if aps_snapshot_dates else "",
+        "aps_snapshot_end_date": aps_snapshot_dates[-1] if aps_snapshot_dates else "",
         "display_cutoff_date": display_cutoff_date,
         "raw_rows": len(production_df),
         "production_rows": len(production),
@@ -13677,25 +13705,24 @@ def build_top_production_products_table(detail: pd.DataFrame, top_n: int = 15) -
     if scope.empty:
         return pd.DataFrame()
 
-    group_columns = [effective_report.OUTPUT_SKU_COL, effective_report.OUTPUT_PRODUCT_NAME_COL]
     optional_columns = [
         effective_report.MAJOR_CATEGORY_COL,
         effective_report.SHEET_NAME_COL,
     ]
+    agg_spec = {
+        effective_report.OUTPUT_PRODUCT_NAME_COL: (effective_report.OUTPUT_PRODUCT_NAME_COL, first_nonempty_text),
+        "생산량": (effective_report.ACTUAL_QTY_COL, "sum"),
+        "유효생산량": (effective_report.EFFECTIVE_PRODUCTION_COL, "sum"),
+        "비유효생산량": (effective_report.INEFFECTIVE_PRODUCTION_COL, "sum"),
+        "생산공정": (effective_report.OUTPUT_PROCESS_COL, join_unique_text_values),
+    }
     for column in optional_columns:
         if column in scope.columns:
-            group_columns.append(column)
+            agg_spec[column] = (column, lambda values: summarize_unique(values, head_count=2))
 
     summary = (
-        scope.groupby(group_columns, as_index=False)
-        .agg(
-            **{
-                "생산량": (effective_report.ACTUAL_QTY_COL, "sum"),
-                "유효생산량": (effective_report.EFFECTIVE_PRODUCTION_COL, "sum"),
-                "비유효생산량": (effective_report.INEFFECTIVE_PRODUCTION_COL, "sum"),
-                "생산공정": (effective_report.OUTPUT_PROCESS_COL, join_unique_text_values),
-            }
-        )
+        scope.groupby(effective_report.OUTPUT_SKU_COL, as_index=False)
+        .agg(**agg_spec)
         .sort_values("생산량", ascending=False)
         .head(top_n)
         .reset_index(drop=True)
@@ -14408,8 +14435,7 @@ def render_effective_overproduction_panel(
 def render_effective_production_dashboard() -> None:
     st.subheader("생산유효도 분석")
     st.caption(
-        "통합 기준은 2026-08-05까지 기존 엑셀 수요를 쓰고, "
-        "이후는 APS API에서 실제 조회되는 계획일자 수요만 반영합니다."
+        "통합 기준은 원본 생산유효도 앱과 동일하게 수요 엑셀과 저장된 APS 스냅샷을 함께 반영합니다."
     )
 
     if effective_report is None:
@@ -14449,19 +14475,19 @@ def render_effective_production_dashboard() -> None:
             st.rerun()
 
     source_mode = source_mode or "통합 기준"
-    display_cutoff_date = api_snapshot_date if source_mode != "기존 엑셀 기준" else file_cutoff_date
+    display_cutoff_date = api_snapshot_date if source_mode == "APS API 기준" else file_cutoff_date
     with st.spinner("생산유효도 데이터를 계산하는 중입니다..."):
         if source_mode == "통합 기준":
-            summary_df, change_df, sheet_name_df, major_category_df, detail_df, metadata = load_combined_effective_dashboard_data(
+            summary_df, change_df, sheet_name_df, major_category_df, detail_df, metadata = load_original_effective_dashboard_data(
                 str(EFFECTIVE_PRODUCTION_SOURCE_DIR),
-                EFFECTIVE_PRODUCTION_API_START_DATE,
-                api_snapshot_date,
-                file_cutoff_date,
+                display_cutoff_date,
                 source_signature,
                 get_plan_api_base_url(),
                 api_key_hash,
                 get_plan_api_refresh_nonce(),
+                True,
             )
+            metadata["source"] = f"통합 기준: 수요 엑셀 + APS 스냅샷 ({EFFECTIVE_PRODUCTION_DEFAULT_SITE})"
         elif source_mode == "APS API 기준":
             summary_df, change_df, sheet_name_df, major_category_df, detail_df, metadata = load_api_effective_dashboard_data(
                 str(EFFECTIVE_PRODUCTION_SOURCE_DIR),
@@ -14479,6 +14505,7 @@ def render_effective_production_dashboard() -> None:
                 get_plan_api_base_url(),
                 api_key_hash,
                 get_plan_api_refresh_nonce(),
+                False,
             )
 
     if summary_df.empty:
@@ -14513,7 +14540,22 @@ def render_effective_production_dashboard() -> None:
     overproduction_candidates = build_effective_overproduction_candidates(month_detail, doi_reference, top_n=50)
 
     demand_source_label = metadata.get("demand_source_label") or f"수요파일 {metadata['demand_file_count']:,}개"
-    if metadata.get("source_mode") == "combined":
+    if metadata.get("source_mode") == "snapshot_combined":
+        demand_start = format_effective_date_option(metadata.get("demand_start", ""))
+        demand_end = format_effective_date_option(metadata.get("demand_end", ""))
+        excel_start = clean_text_value(metadata.get("excel_start_date", ""))
+        excel_end = clean_text_value(metadata.get("excel_end_date", ""))
+        aps_start = clean_text_value(metadata.get("aps_snapshot_start_date", ""))
+        aps_end = clean_text_value(metadata.get("aps_snapshot_end_date", ""))
+        source_ranges: list[str] = []
+        if excel_start and excel_end:
+            source_ranges.append(f"엑셀: {format_effective_date_option(excel_start)} ~ {format_effective_date_option(excel_end)}")
+        if aps_start and aps_end:
+            source_ranges.append(f"APS 스냅샷: {format_effective_date_option(aps_start)} ~ {format_effective_date_option(aps_end)}")
+        demand_period_label = f"수요기간: {demand_start} ~ {demand_end}"
+        if source_ranges:
+            demand_period_label = f"{demand_period_label} · {' · '.join(source_ranges)}"
+    elif metadata.get("source_mode") == "combined":
         excel_start = format_effective_date_option(metadata.get("excel_start_date", ""))
         excel_end = format_effective_date_option(metadata.get("excel_end_date", ""))
         api_requested_start = format_effective_date_option(metadata.get("api_requested_start_date", metadata.get("api_start_date", "")))

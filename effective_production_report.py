@@ -45,7 +45,9 @@ SITE_FILTER = "C관"
 TARGET_PROCESSES = ("[10]사출조립", "[80]누수/규격검사")
 INSPECTION_PROCESS = "[80]누수/규격검사"
 INPUT_RE = re.compile(r"^수요정보\(전공정\)_(\d{8})\.xlsx$")
+LEGACY_INPUT_RE = re.compile(r"^유효생산량_기준일_(\d{8})\.xlsx$")
 FALLBACK_INPUT_RE = re.compile(r"^생산유효도_공정별_(\d{8})(?:_[^.]*)?\.xlsx$")
+APS_PLAN_SNAPSHOT_RE = re.compile(r"^APS_PLAN_(\d{8})_\d{6}\.pkl$")
 PRODUCTION_FILE = "생산실적.xlsx"
 PRODUCTION_SOURCE_ENV = "PRODUCTION_SOURCE"
 PRODUCTION_API_URL_ENV = "PRODUCTION_API_URL"
@@ -63,6 +65,7 @@ PRODUCTION_API_DATA_DIR_ENV = "PRODUCTION_API_DATA_DIR"
 DEFAULT_PRODUCTION_API_URL = "https://plan.interojo.net/api/production-performance"
 DEFAULT_PRODUCTION_API_CHUNK_DAYS = 7
 DEFAULT_PRODUCTION_API_DATA_DIR = "data"
+APS_PLAN_SNAPSHOT_DIR = Path(DEFAULT_PRODUCTION_API_DATA_DIR) / "aps_plan_snapshots"
 CLASSIFICATION_FILE = "제품명 기준 정보.xlsx"
 CLASSIFICATION_SHEET = "분류정보"
 
@@ -207,6 +210,29 @@ def has_report_sheets(path: Path) -> bool:
         return False
 
 
+def is_aps_plan_snapshot(path: Path) -> bool:
+    return bool(APS_PLAN_SNAPSHOT_RE.match(path.name))
+
+
+def find_aps_plan_snapshot_files(root: Path) -> dict[str, Path]:
+    snapshot_dir = root / APS_PLAN_SNAPSHOT_DIR
+    if not snapshot_dir.exists():
+        return {}
+
+    files_by_date: dict[str, Path] = {}
+    for path in snapshot_dir.glob("APS_PLAN_*.pkl"):
+        match = APS_PLAN_SNAPSHOT_RE.match(path.name)
+        if not match:
+            continue
+        if path.stat().st_size < 1024:
+            continue
+        date = match.group(1)
+        current = files_by_date.get(date)
+        if current is None or path.name > current.name:
+            files_by_date[date] = path
+    return files_by_date
+
+
 def find_input_files(root: Path) -> list[tuple[str, Path]]:
     files_by_date: dict[str, Path] = {}
 
@@ -215,10 +241,18 @@ def find_input_files(root: Path) -> list[tuple[str, Path]]:
         if match:
             files_by_date[match.group(1)] = path
 
+    for path in root.glob("유효생산량_기준일_*.xlsx"):
+        match = LEGACY_INPUT_RE.match(path.name)
+        if match:
+            files_by_date.setdefault(match.group(1), path)
+
     for path in root.glob("생산유효도_공정별_*.xlsx"):
         match = FALLBACK_INPUT_RE.match(path.name)
         if match and not has_report_sheets(path):
             files_by_date.setdefault(match.group(1), path)
+
+    for date, path in find_aps_plan_snapshot_files(root).items():
+        files_by_date.setdefault(date, path)
 
     return sorted(files_by_date.items())
 
@@ -405,6 +439,22 @@ def join_unique_text(series: pd.Series) -> str:
     return "; ".join(values)
 
 
+def optional_column_series(df: pd.DataFrame, column: str, default: object = "") -> pd.Series:
+    if column in df.columns:
+        return df[column]
+    return pd.Series(default, index=df.index)
+
+
+def first_nonempty_series(df: pd.DataFrame, columns: tuple[str, ...]) -> pd.Series:
+    result = pd.Series("", index=df.index, dtype="object")
+    for column in columns:
+        if column not in df.columns:
+            continue
+        values = df[column].fillna("").astype(str).str.strip()
+        result = result.where(result.astype(str).str.strip().ne(""), values)
+    return result
+
+
 def is_wide_process_demand(df: pd.DataFrame) -> bool:
     if df.empty:
         return False
@@ -483,9 +533,62 @@ def prepare_wide_process_demand_data(
     return demand
 
 
+def prepare_aps_plan_demand_data(
+    date: str, path: Path, match_on_product_name: bool = False
+) -> pd.DataFrame:
+    raw = pd.read_pickle(path)
+    required = {"oper_id", "res_site_id", "item_id", "plan_qty"}
+    missing = required - set(raw.columns)
+    if missing:
+        raise ValueError(f"{path.name}: missing columns: {', '.join(sorted(missing))}")
+
+    target = raw.copy()
+    target[SITE_COL] = target["res_site_id"].map(normalize_production_api_site)
+    target[PROCESS_COL] = target["oper_id"].map(normalize_production_api_process)
+    target = target[
+        target[SITE_COL].astype(str).str.contains(SITE_FILTER, na=False)
+        & target[PROCESS_COL].map(normalize_process).isin(TARGET_PROCESSES)
+    ].copy()
+
+    target[OUTPUT_PRODUCT_NAME_COL] = first_nonempty_series(
+        target, ("item_name", "demand_item_name", "item_name2")
+    )
+    if match_on_product_name:
+        target[SKU_COL] = target[OUTPUT_PRODUCT_NAME_COL].astype(str).str.strip()
+    else:
+        target[SKU_COL] = first_nonempty_series(target, ("item_id", "item_cd")).astype(str).str.strip()
+    target = target[target[SKU_COL].ne("") & target[SKU_COL].str.lower().ne("nan")]
+    target[DATE_COL] = date
+    target[CUSTOMER_COL] = optional_column_series(target, "cust_name").astype(str).str.strip()
+    target[INITIAL_COL] = optional_column_series(target, "initial").astype(str).str.strip()
+    target["수요량"] = to_number(optional_column_series(target, "demand_qty", 0))
+    target[NEED_QTY_COL] = to_number(target["plan_qty"])
+    target[SHORTAGE_QTY_COL] = target[NEED_QTY_COL]
+
+    demand = (
+        target.groupby([DATE_COL, PROCESS_COL, SKU_COL], as_index=False)
+        .agg(
+            **{
+                OUTPUT_PRODUCT_NAME_COL: (OUTPUT_PRODUCT_NAME_COL, "first"),
+                CUSTOMER_COL: (CUSTOMER_COL, join_unique_text),
+                INITIAL_COL: (INITIAL_COL, join_unique_text),
+                "수요량": ("수요량", "sum"),
+                NEED_QTY_COL: (NEED_QTY_COL, "sum"),
+                SHORTAGE_QTY_COL: (SHORTAGE_QTY_COL, "sum"),
+            }
+        )
+        .sort_values([DATE_COL, PROCESS_COL, SKU_COL])
+    )
+    demand[DEMAND_EXISTS_COL] = True
+    return demand
+
+
 def prepare_demand_data(
     date: str, path: Path, match_on_product_name: bool = False
 ) -> pd.DataFrame:
+    if is_aps_plan_snapshot(path):
+        return prepare_aps_plan_demand_data(date, path, match_on_product_name)
+
     raw = read_xlsx_raw(path)
     if is_wide_process_demand(raw):
         return prepare_wide_process_demand_data(date, path, raw, match_on_product_name)
