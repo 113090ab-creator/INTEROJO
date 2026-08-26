@@ -85,7 +85,7 @@ DATA_SOURCE_DEFAULT_VERSION = "20260821-bom-api-rq-match-v1"
 PLAN_API_BASE_URL_DEFAULT = "https://plan.interojo.net"
 PLAN_API_KEY_ENV = "PLAN_API_KEY"
 PLAN_API_BASE_URL_ENV = "PLAN_API_BASE_URL"
-PLAN_API_TIMEOUT_SECONDS = int(os.getenv("PLAN_API_TIMEOUT_SECONDS", "8"))
+PLAN_API_TIMEOUT_SECONDS = int(os.getenv("PLAN_API_TIMEOUT_SECONDS", "30"))
 PLAN_API_DEFAULT_ROW_LIMIT = 0
 PLAN_API_CACHE_TTL_SECONDS = 300
 PLAN_API_RETRY_ATTEMPTS = int(os.getenv("PLAN_API_RETRY_ATTEMPTS", "1"))
@@ -1294,7 +1294,10 @@ def summarize_plan_api_operation_errors(errors: list[str]) -> str:
         if re.search(r"(응답 지연|read\s+timed\s+out|timed\s+out|timeout)", error, flags=re.IGNORECASE)
     ]
     if timeout_errors and len(timeout_errors) == len(cleaned):
-        op_text = f"공정 {', '.join(sorted(set(operations)))}" if operations else f"{len(cleaned)}개 조회"
+        if operations:
+            op_text = f"공정 {', '.join(sorted(set(operations)))}"
+        else:
+            op_text = "수요 조회" if len(cleaned) == 1 else "일부 조회"
         return f"APS API 응답 지연으로 {op_text}가 {PLAN_API_TIMEOUT_SECONDS}초 안에 완료되지 않았습니다."
 
     if len(cleaned) > 2:
