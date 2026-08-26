@@ -90,7 +90,7 @@ PLAN_API_DEFAULT_ROW_LIMIT = 0
 PLAN_API_CACHE_TTL_SECONDS = 300
 PLAN_API_RETRY_ATTEMPTS = int(os.getenv("PLAN_API_RETRY_ATTEMPTS", "1"))
 PLAN_API_RETRY_STATUS_CODES = {429, 500, 502, 503, 504, 520, 522, 524}
-SHORTAGE_SNAPSHOT_FIRST = os.getenv("INTEROJO_SHORTAGE_SNAPSHOT_FIRST", "1").strip().lower() not in {
+SHORTAGE_SNAPSHOT_FIRST = os.getenv("INTEROJO_SHORTAGE_SNAPSHOT_FIRST", "0").strip().lower() not in {
     "0",
     "false",
     "no",
@@ -1308,6 +1308,23 @@ def format_api_unavailable_banner_message(error: object, fallback_label: str) ->
     return warning.replace("APS API 수요 조회가 일시적으로 실패해", "필요한 APS API가 모두 조회되지 않아", 1)
 
 
+def format_aps_api_error_banner_message(error: object, display_label: str = "") -> str:
+    summary = clean_text_value(error)
+    summary = re.sub(r"^APS API 수요 조회 실패:\s*", "", summary)
+    summary = re.sub(r"https?://\S+", "", summary)
+    summary = re.sub(r"\s+", " ", summary).strip()
+    if len(summary) > 180:
+        summary = summary[:177].rstrip() + "..."
+    if not summary:
+        summary = "API 응답 오류"
+
+    message = "APS API 조회 실패로 최신 수요 데이터를 표시할 수 없습니다."
+    display_text = clean_text_value(display_label)
+    if display_text:
+        message += f" 현재 화면은 {display_text}입니다."
+    return f"{message} 원인: {summary}"
+
+
 def infer_api_unavailable_banner_message(file_info_df: pd.DataFrame | None, source_label: str = "") -> str:
     source_parts = [clean_text_value(source_label)]
     stock_source_text = ""
@@ -1339,14 +1356,15 @@ def infer_api_unavailable_banner_message(file_info_df: pd.DataFrame | None, sour
     return ""
 
 
-def render_api_unavailable_banner(message: str) -> None:
+def render_api_unavailable_banner(message: str, title: str = "조회불가") -> None:
     text = clean_text_value(message)
     if not text:
         return
+    title_text = clean_text_value(title) or "조회불가"
     st.markdown(
         f"""
         <div class="api-unavailable-banner">
-            <div class="api-unavailable-title">조회불가</div>
+            <div class="api-unavailable-title">{html.escape(title_text)}</div>
             <p class="api-unavailable-body">{html.escape(text)}</p>
         </div>
         """,
@@ -2421,8 +2439,8 @@ def select_data_source(base_dir: Path, selected_top_view: str = "") -> tuple[Pat
                 st.caption("최신 API가 필요할 때만 APS API 새로고침을 누르세요.")
             elif should_use_aps_wip_api_for_inventory():
                 st.caption(
-                    "생산 부족 현황 기본 화면은 빠른 표시를 위해 저장된 스냅샷을 먼저 표시합니다. "
-                    "APS API 새로고침을 누르면 최신 API를 조회합니다."
+                    "APS 수요와 WIP/공정재고를 API로 조회합니다. "
+                    "API가 제한 시간 안에 응답하지 않거나 실패하면 기존 스냅샷이 있을 때만 표시하고, 없으면 오류로 안내합니다."
                 )
             else:
                 st.caption("APS 수요는 API로 조회하고, WIP/공정재고는 기존 WIP 엑셀 파일 기준으로 계산합니다.")
@@ -2548,6 +2566,38 @@ def should_use_shortage_snapshot_first(data_base_dir: Path) -> bool:
     return SHORTAGE_SNAPSHOT_FIRST and can_use_cloud_shortage_snapshot(data_base_dir)
 
 
+def normalize_shortage_snapshot_site_filter(site_filter: str = "전체") -> str:
+    text = clean_text_value(site_filter)
+    if not text or text == "전체":
+        return "전체"
+    return normalize_site_group(text)
+
+
+def shortage_snapshot_site_suffix(site_filter: str = "전체") -> str:
+    site = normalize_shortage_snapshot_site_filter(site_filter)
+    if site == "전체":
+        return ""
+    prefix = site[:1].upper()
+    if prefix in {"A", "C", "S"}:
+        return f"_{prefix.lower()}site"
+    safe = re.sub(r"[^A-Za-z0-9]+", "_", site).strip("_").lower()
+    return f"_{safe}" if safe else ""
+
+
+def shortage_snapshot_file_names(site_filter: str = "전체") -> tuple[str, str, str]:
+    suffix = shortage_snapshot_site_suffix(site_filter)
+    return (
+        f"shortage_snapshot{suffix}.csv.gz",
+        f"shortage_file_info{suffix}.csv.gz",
+        f"process_map{suffix}.csv.gz",
+    )
+
+
+def shortage_snapshot_meta_key(site_filter: str = "전체") -> str:
+    site = normalize_shortage_snapshot_site_filter(site_filter)
+    return "data_updated_at" if site == "전체" else f"data_updated_at_{site}"
+
+
 def build_cloud_snapshot_refresh_key(*names: str) -> str:
     parts: list[str] = []
     for name in names:
@@ -2574,6 +2624,25 @@ def load_cloud_snapshot_csv(name: str) -> pd.DataFrame:
     return read_cloud_snapshot_csv(name, refresh_key)
 
 
+def write_cloud_snapshot_csv(name: str, df: pd.DataFrame) -> bool:
+    if not isinstance(df, pd.DataFrame):
+        return False
+    path = CLOUD_SNAPSHOT_DIR / name
+    temp_path = path.with_suffix(path.suffix + f".{uuid.uuid4().hex}.tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        compression = "gzip" if path.name.endswith(".gz") else None
+        df.to_csv(temp_path, index=False, encoding="utf-8-sig", compression=compression)
+        temp_path.replace(path)
+        return True
+    except Exception:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return False
+
+
 def get_cloud_snapshot_meta_value(key: str, default: str = "-") -> str:
     meta = load_cloud_snapshot_csv("snapshot_meta.csv")
     if meta.empty or not {"key", "value"}.issubset(meta.columns):
@@ -2582,6 +2651,40 @@ def get_cloud_snapshot_meta_value(key: str, default: str = "-") -> str:
     if values.empty:
         return default
     return str(values.iloc[0])
+
+
+def write_cloud_snapshot_meta_value(key: str, value: str) -> bool:
+    clean_key = clean_text_value(key)
+    if not clean_key:
+        return False
+    meta_path = CLOUD_SNAPSHOT_DIR / "snapshot_meta.csv"
+    if meta_path.exists():
+        try:
+            meta = pd.read_csv(meta_path, encoding="utf-8-sig")
+        except Exception:
+            meta = pd.DataFrame(columns=["key", "value"])
+    else:
+        meta = pd.DataFrame(columns=["key", "value"])
+    if not {"key", "value"}.issubset(meta.columns):
+        meta = pd.DataFrame(columns=["key", "value"])
+    meta = meta[["key", "value"]].copy()
+    meta["key"] = meta["key"].map(clean_text_value)
+    if clean_key in set(meta["key"]):
+        meta.loc[meta["key"] == clean_key, "value"] = clean_text_value(value)
+    else:
+        meta = pd.concat(
+            [meta, pd.DataFrame([{"key": clean_key, "value": clean_text_value(value)}])],
+            ignore_index=True,
+        )
+    return write_cloud_snapshot_csv("snapshot_meta.csv", meta)
+
+
+def get_cloud_shortage_snapshot_updated_at(site_filter: str = "전체", default: str = "-") -> str:
+    key = shortage_snapshot_meta_key(site_filter)
+    value = get_cloud_snapshot_meta_value(key, "")
+    if value:
+        return value
+    return get_cloud_snapshot_meta_value("data_updated_at", default)
 
 
 def parse_updated_at_value(value: object) -> datetime | None:
@@ -2602,12 +2705,33 @@ def is_cloud_snapshot_fresh(meta_key: str, live_updated_at: str) -> bool:
     return cloud_dt.timestamp() + 1 >= live_dt.timestamp()
 
 
-def load_cloud_shortage_snapshot() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def load_cloud_shortage_snapshot(site_filter: str = "전체") -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    snapshot_name, info_name, process_name = shortage_snapshot_file_names(site_filter)
+    if snapshot_name != "shortage_snapshot.csv.gz" and not (CLOUD_SNAPSHOT_DIR / snapshot_name).exists():
+        snapshot_name, info_name, process_name = shortage_snapshot_file_names("전체")
     return (
-        load_cloud_snapshot_csv("shortage_snapshot.csv.gz"),
-        load_cloud_snapshot_csv("shortage_file_info.csv.gz"),
-        load_cloud_snapshot_csv("process_map.csv.gz"),
+        load_cloud_snapshot_csv(snapshot_name),
+        load_cloud_snapshot_csv(info_name),
+        load_cloud_snapshot_csv(process_name),
     )
+
+
+def write_cloud_shortage_snapshot(
+    df: pd.DataFrame,
+    file_info_df: pd.DataFrame,
+    process_map_df: pd.DataFrame,
+    updated_at: str,
+    site_filter: str = "전체",
+) -> bool:
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return False
+    snapshot_name, info_name, process_name = shortage_snapshot_file_names(site_filter)
+    ok = write_cloud_snapshot_csv(snapshot_name, df)
+    ok = write_cloud_snapshot_csv(info_name, file_info_df if isinstance(file_info_df, pd.DataFrame) else pd.DataFrame()) and ok
+    ok = write_cloud_snapshot_csv(process_name, process_map_df if isinstance(process_map_df, pd.DataFrame) else pd.DataFrame()) and ok
+    if ok:
+        ok = write_cloud_snapshot_meta_value(shortage_snapshot_meta_key(site_filter), updated_at) and ok
+    return ok
 
 
 def load_cloud_inventory_risk_snapshot() -> pd.DataFrame:
@@ -4130,6 +4254,43 @@ def collapse_duplicate_p_demand_rows(df: pd.DataFrame) -> pd.DataFrame:
     collapsed = normalized.groupby(key_cols, as_index=False, dropna=False, sort=False).agg(agg_map)
     ordered_columns = [col for col in df.columns if col in collapsed.columns]
     return collapsed[ordered_columns]
+
+
+def build_empty_shortage_dashboard_df() -> pd.DataFrame:
+    columns = [
+        "사이트코드",
+        "거래처",
+        ORDER_NO_COL,
+        ORDER_RECEIVED_DATE_COL,
+        "이니셜",
+        "품목코드",
+        "R코드",
+        "Q코드",
+        "U코드",
+        "제품명",
+        DEMAND_QTY_COL,
+        PIA_ORDER_CLASS_COL,
+        "파워",
+        "납기일",
+        "사출납기일",
+        "부족수량",
+        "사출생산필요수량",
+        SEPARATION_REQUIRED_QTY_COL,
+        LEADJI_REQUIRED_QTY_COL,
+        ADHESION_REQUIRED_QTY_COL,
+        "사출창고",
+        "분리창고",
+        "검사접착창고",
+        "검사접착재작업창고",
+        "누수규격검사 창고",
+        "공정재고 합계",
+        "비고",
+        "재작업",
+        "시트분류",
+        "분류별요약",
+        "R코드 제품명",
+    ]
+    return pd.DataFrame(columns=list(dict.fromkeys(columns)))
 
 
 def match_keyword_category(text: object, rules: dict[str, list[str]]) -> tuple[str, str]:
@@ -5984,6 +6145,8 @@ def style_leadji_shortage_table(display_df: pd.DataFrame, source_df: pd.DataFram
 @st.cache_data(show_spinner=False, max_entries=CACHE_MAX_ENTRIES)
 def add_rq_group_columns(df: pd.DataFrame) -> pd.DataFrame:
     enriched = df.copy()
+    if "품목코드" not in enriched.columns:
+        enriched["품목코드"] = ""
     if "R코드" not in enriched.columns:
         enriched["R코드"] = enriched["품목코드"].map(lambda x: map_demand_code_to_process_code(x, "R"))
     if "Q코드" not in enriched.columns:
@@ -11033,12 +11196,14 @@ def render_shortage_dashboard(
     source_label: str = "",
     locked_site_filter: str | None = None,
     api_alert_message: str = "",
+    api_alert_title: str = "조회불가",
 ) -> None:
     enriched_df = add_rq_group_columns(df)
     filtered = apply_filters(enriched_df, updated_at, data_base_dir, source_label, locked_site_filter)
     download_stamp = datetime.now(DISPLAY_TZ).strftime("%Y%m%d_%H%M%S")
     render_api_unavailable_banner(
-        api_alert_message or infer_api_unavailable_banner_message(file_info_df, source_label)
+        api_alert_message or infer_api_unavailable_banner_message(file_info_df, source_label),
+        api_alert_title,
     )
 
     detail_columns = [
@@ -15053,6 +15218,7 @@ def main() -> None:
         code_mismatch_df = pd.DataFrame()
         all_items_full_builder = None
         api_alert_message = ""
+        api_alert_title = "조회불가"
         if selected_top_view == "전체 품목 현황":
             all_item_live_updated_at = get_aps_or_file_updated_at(get_all_item_updated_at(data_base_dir))
             use_all_item_cloud_snapshot = (not is_plan_api_enabled()) and cloud_snapshots_available and is_cloud_snapshot_fresh(
@@ -15116,13 +15282,14 @@ def main() -> None:
                 quick_snapshot_loaded = False
                 if not force_live_shortage_api and should_use_shortage_snapshot_first(data_base_dir):
                     try:
-                        snapshot_df, snapshot_file_info_df, _ = load_cloud_shortage_snapshot()
+                        snapshot_df, snapshot_file_info_df, _ = load_cloud_shortage_snapshot(shortage_api_site_filter)
                         if not snapshot_df.empty:
                             df = snapshot_df
                             file_info_df = snapshot_file_info_df
-                            updated_at = get_cloud_snapshot_meta_value("data_updated_at", data_live_updated_at)
+                            updated_at = get_cloud_shortage_snapshot_updated_at(shortage_api_site_filter, data_live_updated_at)
                             source_label = "Cloud 스냅샷 (빠른 조회)"
                             sidebar_status_caption = "빠른 조회: Cloud 스냅샷 사용"
+                            shortage_locked_site_filter = shortage_api_site_filter
                             quick_snapshot_loaded = True
                     except Exception:
                         quick_snapshot_loaded = False
@@ -15130,41 +15297,57 @@ def main() -> None:
                 if not quick_snapshot_loaded:
                     try:
                         refresh_key = build_api_shortage_refresh_key(data_base_dir, shortage_api_site_filter)
-                        df, file_info_df, _ = load_api_shortage_data(
+                        df, file_info_df, process_map_df = load_api_shortage_data(
                             refresh_key,
                             str(data_base_dir),
                             shortage_api_site_filter,
                         )
                         updated_at = get_plan_api_updated_at()
+                        write_cloud_shortage_snapshot(
+                            df,
+                            file_info_df,
+                            process_map_df,
+                            updated_at,
+                            shortage_api_site_filter,
+                        )
                         shortage_locked_site_filter = shortage_api_site_filter
                     except Exception as live_exc:
                         fallback_loaded = False
                         try:
-                            snapshot_df, snapshot_file_info_df, _ = load_cloud_shortage_snapshot()
+                            snapshot_df, snapshot_file_info_df, _ = load_cloud_shortage_snapshot(shortage_api_site_filter)
                             if not snapshot_df.empty:
                                 df = snapshot_df
                                 file_info_df = snapshot_file_info_df
-                                updated_at = get_cloud_snapshot_meta_value("data_updated_at", data_live_updated_at)
+                                updated_at = get_cloud_shortage_snapshot_updated_at(
+                                    shortage_api_site_filter,
+                                    data_live_updated_at,
+                                )
                                 source_label = "Cloud 스냅샷 (APS API 실패 fallback)"
                                 sidebar_status_caption = "API 오류: 기존 스냅샷 표시"
-                                api_alert_message = format_api_unavailable_banner_message(live_exc, "기존 스냅샷")
+                                api_alert_title = "오류"
+                                api_alert_message = format_aps_api_error_banner_message(live_exc, "기존 스냅샷")
+                                shortage_locked_site_filter = shortage_api_site_filter
                                 fallback_loaded = True
                         except Exception:
                             fallback_loaded = False
 
                         if not fallback_loaded:
-                            try:
-                                refresh_key = build_data_refresh_key(data_base_dir)
-                                df, file_info_df, _ = load_data(refresh_key, str(data_base_dir))
-                                updated_at = data_live_updated_at
-                                source_label = "로컬 파일 (APS API 실패 fallback)"
-                                sidebar_status_caption = "API 오류: 로컬 파일 기준"
-                                api_alert_message = format_api_unavailable_banner_message(live_exc, "로컬 파일 기준")
-                                fallback_loaded = True
-                            except Exception as fallback_exc:
-                                st.error(f"APS API 수요 기준 생산 부족 현황 계산 실패: {live_exc}")
-                                st.error(f"대체 데이터 로드도 실패했습니다: {fallback_exc}")
-                                st.stop()
+                            df = build_empty_shortage_dashboard_df()
+                            file_info_df = pd.DataFrame(
+                                {
+                                    "재고파일": ["조회 안 함"],
+                                    "수요파일": ["APS API 조회 실패"],
+                                }
+                            )
+                            updated_at = "-"
+                            source_label = "APS API 오류"
+                            sidebar_status_caption = "API 오류: APS 수요 조회 실패"
+                            api_alert_title = "오류"
+                            api_alert_message = format_aps_api_error_banner_message(
+                                live_exc,
+                                "표시 가능한 대체 데이터가 없습니다",
+                            )
+                            shortage_locked_site_filter = shortage_api_site_filter
             else:
                 use_data_cloud_snapshot = cloud_snapshots_available and is_cloud_snapshot_fresh(
                     "data_updated_at", data_live_updated_at
@@ -15223,6 +15406,7 @@ def main() -> None:
             source_label,
             shortage_locked_site_filter,
             api_alert_message,
+            api_alert_title,
         )
     elif selected_top_view == "리드지 현황":
         render_leadji_dashboard(updated_at, df, leadji_info, leadji_stock, leadji_order_df)
