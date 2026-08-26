@@ -90,7 +90,7 @@ PLAN_API_DEFAULT_ROW_LIMIT = 0
 PLAN_API_CACHE_TTL_SECONDS = 300
 PLAN_API_RETRY_ATTEMPTS = int(os.getenv("PLAN_API_RETRY_ATTEMPTS", "1"))
 PLAN_API_RETRY_STATUS_CODES = {429, 500, 502, 503, 504, 520, 522, 524}
-SHORTAGE_SNAPSHOT_FIRST = os.getenv("INTEROJO_SHORTAGE_SNAPSHOT_FIRST", "0").strip().lower() not in {
+SHORTAGE_SNAPSHOT_FIRST = os.getenv("INTEROJO_SHORTAGE_SNAPSHOT_FIRST", "1").strip().lower() not in {
     "0",
     "false",
     "no",
@@ -2458,7 +2458,7 @@ def select_data_source(base_dir: Path, selected_top_view: str = "") -> tuple[Pat
             and not bool(get_session_value("force_live_plan_api_once", False))
         )
         if use_quick_shortage_snapshot:
-            st.caption("빠른 조회: 생산 부족 현황은 저장된 스냅샷을 먼저 표시합니다.")
+            st.caption("빠른 조회: APS 갱신시각이 같으면 저장된 스냅샷을 먼저 표시합니다.")
         else:
             render_plan_api_status()
         if api_configured:
@@ -2469,7 +2469,7 @@ def select_data_source(base_dir: Path, selected_top_view: str = "") -> tuple[Pat
                 st.cache_resource.clear()
                 st.rerun()
             if use_quick_shortage_snapshot:
-                st.caption("최신 API가 필요할 때만 APS API 새로고침을 누르세요.")
+                st.caption("APS API는 하루 2회 갱신 기준입니다. 즉시 재조회가 필요할 때만 APS API 새로고침을 누르세요.")
             elif should_use_aps_wip_api_for_inventory():
                 st.caption(
                     "APS 수요와 WIP/공정재고를 API로 조회합니다. "
@@ -2587,7 +2587,7 @@ def can_use_cloud_shortage_snapshot(data_base_dir: Path) -> bool:
     return (
         is_default_source
         and live_data_override not in {"1", "true", "yes", "on"}
-        and (CLOUD_SNAPSHOT_DIR / "shortage_snapshot.csv.gz").exists()
+        and any(CLOUD_SNAPSHOT_DIR.glob("shortage_snapshot*.csv.gz"))
     )
 
 
@@ -2718,6 +2718,16 @@ def get_cloud_shortage_snapshot_updated_at(site_filter: str = "전체", default:
     if value:
         return value
     return get_cloud_snapshot_meta_value("data_updated_at", default)
+
+
+def is_shortage_snapshot_fresh_for_api(site_filter: str, api_updated_at: str) -> bool:
+    api_dt = parse_updated_at_value(api_updated_at)
+    if api_dt is None:
+        return True
+    snapshot_dt = parse_updated_at_value(get_cloud_shortage_snapshot_updated_at(site_filter, "-"))
+    if snapshot_dt is None:
+        return False
+    return snapshot_dt.timestamp() + 1 >= api_dt.timestamp()
 
 
 def parse_updated_at_value(value: object) -> datetime | None:
@@ -15313,16 +15323,25 @@ def main() -> None:
         if selected_top_view == "생산 부족 현황":
             if is_plan_api_enabled():
                 force_live_shortage_api = consume_session_flag("force_live_plan_api_once")
+                shortage_api_updated_at = get_plan_api_updated_at()
                 quick_snapshot_loaded = False
-                if not force_live_shortage_api and should_use_shortage_snapshot_first(data_base_dir):
+                use_shortage_snapshot_first = (
+                    not force_live_shortage_api
+                    and should_use_shortage_snapshot_first(data_base_dir)
+                    and is_shortage_snapshot_fresh_for_api(shortage_api_site_filter, shortage_api_updated_at)
+                )
+                if use_shortage_snapshot_first:
                     try:
                         snapshot_df, snapshot_file_info_df, _ = load_cloud_shortage_snapshot(shortage_api_site_filter)
                         if not snapshot_df.empty:
                             df = snapshot_df
                             file_info_df = snapshot_file_info_df
-                            updated_at = get_cloud_shortage_snapshot_updated_at(shortage_api_site_filter, data_live_updated_at)
+                            updated_at = get_cloud_shortage_snapshot_updated_at(
+                                shortage_api_site_filter,
+                                shortage_api_updated_at if shortage_api_updated_at != "-" else data_live_updated_at,
+                            )
                             source_label = "Cloud 스냅샷 (빠른 조회)"
-                            sidebar_status_caption = "빠른 조회: Cloud 스냅샷 사용"
+                            sidebar_status_caption = "빠른 조회: APS 갱신 없음, 스냅샷 사용"
                             shortage_locked_site_filter = shortage_api_site_filter
                             quick_snapshot_loaded = True
                     except Exception:
@@ -15336,7 +15355,7 @@ def main() -> None:
                             str(data_base_dir),
                             shortage_api_site_filter,
                         )
-                        updated_at = get_plan_api_updated_at()
+                        updated_at = shortage_api_updated_at if shortage_api_updated_at != "-" else get_plan_api_updated_at()
                         write_cloud_shortage_snapshot(
                             df,
                             file_info_df,
