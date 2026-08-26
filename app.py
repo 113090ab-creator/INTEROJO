@@ -1234,6 +1234,8 @@ def format_plan_api_request_error(error: object, status_code: int | None = None)
     text = clean_text_value(error)
     text = re.sub(r"https?://\S+", "", text).strip()
     text = text.split(" for url:", 1)[0].strip()
+    if re.search(r"(read\s+timed\s+out|timed\s+out|timeout)", text, flags=re.IGNORECASE):
+        return f"API 응답 지연(read timeout={PLAN_API_TIMEOUT_SECONDS}초)"
     return text or "API 응답 오류"
 
 
@@ -1286,20 +1288,37 @@ def summarize_plan_api_operation_errors(errors: list[str]) -> str:
         code = unique_status_codes[0]
         return f"APS API 서버 오류(HTTP {code})로 {op_text} 조회에 실패했습니다."
 
+    timeout_errors = [
+        error
+        for error in cleaned
+        if re.search(r"(응답 지연|read\s+timed\s+out|timed\s+out|timeout)", error, flags=re.IGNORECASE)
+    ]
+    if timeout_errors and len(timeout_errors) == len(cleaned):
+        op_text = f"공정 {', '.join(sorted(set(operations)))}" if operations else f"{len(cleaned)}개 조회"
+        return f"APS API 응답 지연으로 {op_text}가 {PLAN_API_TIMEOUT_SECONDS}초 안에 완료되지 않았습니다."
+
     if len(cleaned) > 2:
         return "; ".join(cleaned[:2]) + f"; 외 {len(cleaned) - 2}건"
     return "; ".join(cleaned)
 
 
-def format_api_fallback_warning(error: object, fallback_label: str) -> str:
+def format_plan_api_error_summary_for_banner(error: object, max_length: int = 180) -> str:
     summary = clean_text_value(error)
     summary = re.sub(r"^APS API 수요 조회 실패:\s*", "", summary)
+    operation_summary = summarize_plan_api_operation_errors([part.strip() for part in summary.split(";")])
+    if operation_summary:
+        summary = operation_summary
     summary = re.sub(r"https?://\S+", "", summary)
     summary = re.sub(r"\s+", " ", summary).strip()
-    if len(summary) > 180:
-        summary = summary[:177].rstrip() + "..."
+    if len(summary) > max_length:
+        summary = summary[: max_length - 3].rstrip() + "..."
     if not summary:
         summary = "API 응답 오류"
+    return summary
+
+
+def format_api_fallback_warning(error: object, fallback_label: str) -> str:
+    summary = format_plan_api_error_summary_for_banner(error)
     return f"APS API 수요 조회가 일시적으로 실패해 {fallback_label}을 표시합니다. 원인: {summary}"
 
 
@@ -1309,15 +1328,7 @@ def format_api_unavailable_banner_message(error: object, fallback_label: str) ->
 
 
 def format_aps_api_error_banner_message(error: object, display_label: str = "") -> str:
-    summary = clean_text_value(error)
-    summary = re.sub(r"^APS API 수요 조회 실패:\s*", "", summary)
-    summary = re.sub(r"https?://\S+", "", summary)
-    summary = re.sub(r"\s+", " ", summary).strip()
-    if len(summary) > 180:
-        summary = summary[:177].rstrip() + "..."
-    if not summary:
-        summary = "API 응답 오류"
-
+    summary = format_plan_api_error_summary_for_banner(error)
     message = "APS API 조회 실패로 최신 수요 데이터를 표시할 수 없습니다."
     display_text = clean_text_value(display_label)
     if display_text:
