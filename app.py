@@ -85,11 +85,17 @@ DATA_SOURCE_DEFAULT_VERSION = "20260821-bom-api-rq-match-v1"
 PLAN_API_BASE_URL_DEFAULT = "https://plan.interojo.net"
 PLAN_API_KEY_ENV = "PLAN_API_KEY"
 PLAN_API_BASE_URL_ENV = "PLAN_API_BASE_URL"
-PLAN_API_TIMEOUT_SECONDS = int(os.getenv("PLAN_API_TIMEOUT_SECONDS", "30"))
+PLAN_API_TIMEOUT_SECONDS = int(os.getenv("PLAN_API_TIMEOUT_SECONDS", "8"))
 PLAN_API_DEFAULT_ROW_LIMIT = 0
 PLAN_API_CACHE_TTL_SECONDS = 300
 PLAN_API_RETRY_ATTEMPTS = int(os.getenv("PLAN_API_RETRY_ATTEMPTS", "1"))
 PLAN_API_RETRY_STATUS_CODES = {429, 500, 502, 503, 504, 520, 522, 524}
+SHORTAGE_SNAPSHOT_FIRST = os.getenv("INTEROJO_SHORTAGE_SNAPSHOT_FIRST", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
 LOCAL_CACHE_DIR = BASE_DIR / ".local_cache"
 PLAN_API_DISK_CACHE_DIR = LOCAL_CACHE_DIR / "plan_api"
 PLAN_API_KEY_LOCAL_CACHE_FILE = LOCAL_CACHE_DIR / "plan_api_key.txt"
@@ -1137,6 +1143,13 @@ def set_session_value(key: str, value: object) -> None:
         st.session_state[key] = value
     except Exception:
         pass
+
+
+def consume_session_flag(key: str) -> bool:
+    value = bool(get_session_value(key, False))
+    if value:
+        set_session_value(key, False)
+    return value
 
 
 def get_plan_api_refresh_nonce() -> int:
@@ -2366,7 +2379,7 @@ def sync_plan_api_data_mode() -> bool:
     return api_configured
 
 
-def select_data_source(base_dir: Path) -> tuple[Path, str, str]:
+def select_data_source(base_dir: Path, selected_top_view: str = "") -> tuple[Path, str, str]:
     st.subheader("데이터 소스")
     api_key_source = get_plan_api_key_source_label()
     if api_key_source:
@@ -2388,17 +2401,34 @@ def select_data_source(base_dir: Path) -> tuple[Path, str, str]:
         disabled=not api_configured,
     )
     if use_api:
-        render_plan_api_status()
+        use_quick_shortage_snapshot = (
+            selected_top_view == "생산 부족 현황"
+            and should_use_shortage_snapshot_first(base_dir)
+            and not bool(get_session_value("force_live_plan_api_once", False))
+        )
+        if use_quick_shortage_snapshot:
+            st.caption("빠른 조회: 생산 부족 현황은 저장된 스냅샷을 먼저 표시합니다.")
+        else:
+            render_plan_api_status()
         if api_configured:
             if st.button("APS API 새로고침", key="refresh_plan_api_data", use_container_width=True):
+                set_session_value("force_live_plan_api_once", True)
                 set_session_value("plan_api_refresh_nonce", get_plan_api_refresh_nonce() + 1)
                 st.cache_data.clear()
                 st.cache_resource.clear()
                 st.rerun()
-            if should_use_aps_wip_api_for_inventory():
-                st.caption("APS 수요와 WIP/공정재고를 API로 조회합니다. WIP API 실패 시 기존 WIP 엑셀 파일로 대체합니다.")
+            if use_quick_shortage_snapshot:
+                st.caption("최신 API가 필요할 때만 APS API 새로고침을 누르세요.")
+            elif should_use_aps_wip_api_for_inventory():
+                st.caption(
+                    "생산 부족 현황 기본 화면은 빠른 표시를 위해 저장된 스냅샷을 먼저 표시합니다. "
+                    "APS API 새로고침을 누르면 최신 API를 조회합니다."
+                )
             else:
                 st.caption("APS 수요는 API로 조회하고, WIP/공정재고는 기존 WIP 엑셀 파일 기준으로 계산합니다.")
+            if use_quick_shortage_snapshot:
+                updated_at = get_cloud_snapshot_meta_value("data_updated_at", get_data_updated_at(base_dir))
+                return base_dir, "Cloud 스냅샷 우선 + APS API 새로고침", updated_at
             api_updated_at = get_plan_api_updated_at()
             updated_at = api_updated_at if api_updated_at != "-" else get_data_updated_at(base_dir)
             source_name = "APS API 수요 + WIP API" if should_use_aps_wip_api_for_inventory() else "APS API 수요 + WIP 엑셀"
@@ -2497,7 +2527,7 @@ def is_streamlit_cloud_runtime() -> bool:
     )
 
 
-def should_use_cloud_snapshots(data_base_dir: Path) -> bool:
+def can_use_cloud_shortage_snapshot(data_base_dir: Path) -> bool:
     try:
         is_default_source = Path(data_base_dir).resolve() == BASE_DIR.resolve()
     except OSError:
@@ -2505,10 +2535,17 @@ def should_use_cloud_snapshots(data_base_dir: Path) -> bool:
     live_data_override = os.environ.get("INTEROJO_USE_LIVE_DATA", "").strip().lower()
     return (
         is_default_source
-        and not is_plan_api_enabled()
         and live_data_override not in {"1", "true", "yes", "on"}
         and (CLOUD_SNAPSHOT_DIR / "shortage_snapshot.csv.gz").exists()
     )
+
+
+def should_use_cloud_snapshots(data_base_dir: Path) -> bool:
+    return can_use_cloud_shortage_snapshot(data_base_dir) and not is_plan_api_enabled()
+
+
+def should_use_shortage_snapshot_first(data_base_dir: Path) -> bool:
+    return SHORTAGE_SNAPSHOT_FIRST and can_use_cloud_shortage_snapshot(data_base_dir)
 
 
 def build_cloud_snapshot_refresh_key(*names: str) -> str:
@@ -14899,6 +14936,7 @@ def main() -> None:
     top_views = ["생산 부족 현황", "리드지 현황", "생산코드별 리드지", "생산유효도 분석"]
     all_item_site_filter = "전체"
     shortage_api_site_filter = "전체"
+    shortage_locked_site_filter: str | None = None
     with st.sidebar:
         st.markdown(
             """
@@ -14936,7 +14974,7 @@ def main() -> None:
             data_live_updated_at = ""
             sidebar_status_caption = "API 모드: APS 수요 2026-08-06부터"
         else:
-            sync_plan_api_data_mode()
+            data_base_dir, source_label, updated_at = select_data_source(BASE_DIR, selected_top_view)
             if selected_top_view == "생산 부족 현황" and is_plan_api_enabled():
                 shortage_api_site_options = [*SITE_GROUP_ORDER, "전체"]
                 shortage_api_site_key = "shortage_api_site_prefilter_v1"
@@ -14962,7 +15000,6 @@ def main() -> None:
                     help="선택한 관만 APS API로 조회합니다. 전체를 선택하면 모든 관을 한 번에 조회합니다.",
                 ) or default_all_item_site_filter
             reference_dates_slot = st.empty()
-            data_base_dir, source_label, updated_at = resolve_data_source_from_state(BASE_DIR)
             cloud_snapshots_available = should_use_cloud_snapshots(data_base_dir)
             data_live_updated_at = get_data_updated_at(data_base_dir)
             if selected_top_view == "전체 품목 현황":
@@ -14973,7 +15010,19 @@ def main() -> None:
                 sidebar_live_updated_at = get_leadji_status_updated_at(data_base_dir)
             else:
                 sidebar_meta_key = "data_updated_at"
-                sidebar_live_updated_at = get_plan_api_updated_at() if is_plan_api_enabled() else data_live_updated_at
+                use_quick_shortage_snapshot = (
+                    selected_top_view == "생산 부족 현황"
+                    and is_plan_api_enabled()
+                    and should_use_shortage_snapshot_first(data_base_dir)
+                    and not bool(get_session_value("force_live_plan_api_once", False))
+                )
+                sidebar_live_updated_at = (
+                    data_live_updated_at
+                    if use_quick_shortage_snapshot
+                    else get_plan_api_updated_at()
+                    if is_plan_api_enabled()
+                    else data_live_updated_at
+                )
 
             if cloud_snapshots_available and is_cloud_snapshot_fresh(sidebar_meta_key, sidebar_live_updated_at):
                 updated_at = get_cloud_snapshot_meta_value(sidebar_meta_key, sidebar_live_updated_at)
@@ -15063,42 +15112,59 @@ def main() -> None:
 
         if selected_top_view == "생산 부족 현황":
             if is_plan_api_enabled():
-                try:
-                    refresh_key = build_api_shortage_refresh_key(data_base_dir, shortage_api_site_filter)
-                    df, file_info_df, _ = load_api_shortage_data(
-                        refresh_key,
-                        str(data_base_dir),
-                        shortage_api_site_filter,
-                    )
-                    updated_at = get_plan_api_updated_at()
-                except Exception as live_exc:
-                    fallback_loaded = False
+                force_live_shortage_api = consume_session_flag("force_live_plan_api_once")
+                quick_snapshot_loaded = False
+                if not force_live_shortage_api and should_use_shortage_snapshot_first(data_base_dir):
                     try:
                         snapshot_df, snapshot_file_info_df, _ = load_cloud_shortage_snapshot()
                         if not snapshot_df.empty:
                             df = snapshot_df
                             file_info_df = snapshot_file_info_df
                             updated_at = get_cloud_snapshot_meta_value("data_updated_at", data_live_updated_at)
-                            source_label = "Cloud 스냅샷 (APS API 실패 fallback)"
-                            sidebar_status_caption = "API 오류: 기존 스냅샷 표시"
-                            api_alert_message = format_api_unavailable_banner_message(live_exc, "기존 스냅샷")
-                            fallback_loaded = True
+                            source_label = "Cloud 스냅샷 (빠른 조회)"
+                            sidebar_status_caption = "빠른 조회: Cloud 스냅샷 사용"
+                            quick_snapshot_loaded = True
                     except Exception:
-                        fallback_loaded = False
+                        quick_snapshot_loaded = False
 
-                    if not fallback_loaded:
+                if not quick_snapshot_loaded:
+                    try:
+                        refresh_key = build_api_shortage_refresh_key(data_base_dir, shortage_api_site_filter)
+                        df, file_info_df, _ = load_api_shortage_data(
+                            refresh_key,
+                            str(data_base_dir),
+                            shortage_api_site_filter,
+                        )
+                        updated_at = get_plan_api_updated_at()
+                        shortage_locked_site_filter = shortage_api_site_filter
+                    except Exception as live_exc:
+                        fallback_loaded = False
                         try:
-                            refresh_key = build_data_refresh_key(data_base_dir)
-                            df, file_info_df, _ = load_data(refresh_key, str(data_base_dir))
-                            updated_at = data_live_updated_at
-                            source_label = "로컬 파일 (APS API 실패 fallback)"
-                            sidebar_status_caption = "API 오류: 로컬 파일 기준"
-                            api_alert_message = format_api_unavailable_banner_message(live_exc, "로컬 파일 기준")
-                            fallback_loaded = True
-                        except Exception as fallback_exc:
-                            st.error(f"APS API 수요 기준 생산 부족 현황 계산 실패: {live_exc}")
-                            st.error(f"대체 데이터 로드도 실패했습니다: {fallback_exc}")
-                            st.stop()
+                            snapshot_df, snapshot_file_info_df, _ = load_cloud_shortage_snapshot()
+                            if not snapshot_df.empty:
+                                df = snapshot_df
+                                file_info_df = snapshot_file_info_df
+                                updated_at = get_cloud_snapshot_meta_value("data_updated_at", data_live_updated_at)
+                                source_label = "Cloud 스냅샷 (APS API 실패 fallback)"
+                                sidebar_status_caption = "API 오류: 기존 스냅샷 표시"
+                                api_alert_message = format_api_unavailable_banner_message(live_exc, "기존 스냅샷")
+                                fallback_loaded = True
+                        except Exception:
+                            fallback_loaded = False
+
+                        if not fallback_loaded:
+                            try:
+                                refresh_key = build_data_refresh_key(data_base_dir)
+                                df, file_info_df, _ = load_data(refresh_key, str(data_base_dir))
+                                updated_at = data_live_updated_at
+                                source_label = "로컬 파일 (APS API 실패 fallback)"
+                                sidebar_status_caption = "API 오류: 로컬 파일 기준"
+                                api_alert_message = format_api_unavailable_banner_message(live_exc, "로컬 파일 기준")
+                                fallback_loaded = True
+                            except Exception as fallback_exc:
+                                st.error(f"APS API 수요 기준 생산 부족 현황 계산 실패: {live_exc}")
+                                st.error(f"대체 데이터 로드도 실패했습니다: {fallback_exc}")
+                                st.stop()
             else:
                 use_data_cloud_snapshot = cloud_snapshots_available and is_cloud_snapshot_fresh(
                     "data_updated_at", data_live_updated_at
@@ -15149,14 +15215,13 @@ def main() -> None:
     if selected_top_view == "전체 품목 현황":
         render_all_items_dashboard(all_items_df, updated_at, all_items_full_builder, all_item_site_filter)
     elif selected_top_view == "생산 부족 현황":
-        locked_site_filter = shortage_api_site_filter if is_plan_api_enabled() else None
         render_shortage_dashboard(
             df,
             updated_at,
             file_info_df,
             data_base_dir,
             source_label,
-            locked_site_filter,
+            shortage_locked_site_filter,
             api_alert_message,
         )
     elif selected_top_view == "리드지 현황":
@@ -15170,10 +15235,9 @@ def main() -> None:
         st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
         st.caption(sidebar_status_caption)
         if selected_top_view != "생산유효도 분석":
-            rendered_data_base_dir, rendered_source_label, _ = select_data_source(BASE_DIR)
-            st.caption(f"적용 데이터: {rendered_source_label}")
-            if rendered_data_base_dir.resolve() != BASE_DIR.resolve():
-                st.caption(f"업로드 작업폴더: {rendered_data_base_dir.name}")
+            st.caption(f"적용 데이터: {source_label}")
+            if data_base_dir.resolve() != BASE_DIR.resolve():
+                st.caption(f"업로드 작업폴더: {data_base_dir.name}")
 
 
 if __name__ == "__main__":
