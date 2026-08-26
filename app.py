@@ -1356,6 +1356,25 @@ def infer_api_unavailable_banner_message(file_info_df: pd.DataFrame | None, sour
     return ""
 
 
+def infer_api_unavailable_banner_title(
+    file_info_df: pd.DataFrame | None,
+    source_label: str = "",
+    message: str = "",
+) -> str:
+    source_parts = [clean_text_value(source_label), clean_text_value(message)]
+    if isinstance(file_info_df, pd.DataFrame) and not file_info_df.empty:
+        first_row = file_info_df.iloc[0]
+        for column in ["수요파일", "재고파일"]:
+            if column in file_info_df.columns:
+                source_parts.append(clean_text_value(first_row.get(column, "")))
+    source_text = " ".join(part for part in source_parts if part)
+    if "APS API 실패 fallback" in source_text or "APS WIP API 미반영" in source_text:
+        return "오류"
+    if "APS API" in source_text and ("조회되지" in source_text or "실패" in source_text or "오류" in source_text):
+        return "오류"
+    return "조회불가"
+
+
 def render_api_unavailable_banner(message: str, title: str = "조회불가") -> None:
     text = clean_text_value(message)
     if not text:
@@ -11201,10 +11220,11 @@ def render_shortage_dashboard(
     enriched_df = add_rq_group_columns(df)
     filtered = apply_filters(enriched_df, updated_at, data_base_dir, source_label, locked_site_filter)
     download_stamp = datetime.now(DISPLAY_TZ).strftime("%Y%m%d_%H%M%S")
-    render_api_unavailable_banner(
-        api_alert_message or infer_api_unavailable_banner_message(file_info_df, source_label),
-        api_alert_title,
-    )
+    banner_message = api_alert_message or infer_api_unavailable_banner_message(file_info_df, source_label)
+    banner_title = api_alert_title
+    if not api_alert_message and api_alert_title == "조회불가":
+        banner_title = infer_api_unavailable_banner_title(file_info_df, source_label, banner_message)
+    render_api_unavailable_banner(banner_message, banner_title)
 
     detail_columns = [
         "거래처",
