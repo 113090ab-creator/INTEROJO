@@ -88,7 +88,7 @@ TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 4000
 DISPLAY_ROW_LIMIT = 200
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260827-wip-api-required-v1"
+APP_CACHE_VERSION = "20260827-wip-snapshot-v1"
 DATA_SOURCE_DEFAULT_VERSION = "20260821-bom-api-rq-match-v1"
 PLAN_API_BASE_URL_DEFAULT = "https://plan.interojo.net"
 PLAN_API_KEY_ENV = "PLAN_API_KEY"
@@ -115,6 +115,12 @@ ALL_ITEM_FLOW_STATUS_DISK_CACHE_DIR = LOCAL_CACHE_DIR / "all_item_flow_status"
 FINISHED_GOODS_STOCK_DISK_CACHE_DIR = LOCAL_CACHE_DIR / "finished_goods_stock"
 APS_PLAN_ENDPOINT = "/api/aps-plan"
 APS_WIP_ENDPOINT = "/api/aps-wip"
+APS_WIP_RAW_DIR = BASE_DIR / "outputs" / "aps_wip_raw"
+WIP_INVENTORY_SNAPSHOT_FILE = "wip_inventory_snapshot.csv.gz"
+WIP_INVENTORY_UPDATED_AT_META_KEY = "wip_inventory_updated_at"
+WIP_INVENTORY_SOURCE_LABEL_META_KEY = "wip_inventory_source_label"
+WIP_INVENTORY_REFRESHED_AT_META_KEY = "wip_inventory_refreshed_at"
+WIP_INVENTORY_COLUMNS = ["품목코드", "창고", "재공코드", "재고량"]
 APS_PLAN_META_ENDPOINT = "/api/aps-plan/meta"
 PRODUCT_NAMES_ENDPOINT = "/api/product-names"
 BOM_EXPLOSION_ENDPOINT = "/api/bom-explosion"
@@ -1419,6 +1425,10 @@ def infer_api_unavailable_banner_title(
         "APS API 실패 fallback" in source_text
         or "APS WIP API 미반영" in source_text
         or "APS WIP API 조회 실패" in source_text
+        or (
+            "APS WIP 정리 스냅샷" in source_text
+            and ("없" in source_text or "오래" in source_text or "표시하지" in source_text)
+        )
     ):
         return "오류"
     if "APS API" in source_text and ("조회되지" in source_text or "실패" in source_text or "오류" in source_text):
@@ -2132,9 +2142,10 @@ def get_wip_updated_at(base_dir: Path) -> str:
     return get_latest_files_updated_at(unique_existing_paths([inv_path]))
 
 
-def format_api_wip_source_label() -> str:
+def format_api_wip_source_label(source_updated_at: str | None = None) -> str:
+    updated_at = source_updated_at if source_updated_at is not None else get_aps_wip_api_updated_at()
     return (
-        f"APS WIP API ({format_reference_timestamp(get_aps_wip_api_updated_at())}; "
+        f"APS WIP API ({format_reference_timestamp(updated_at)}; "
         f"WH_NAME {', '.join(APS_WIP_TARGET_WH_NAMES)})"
     )
 
@@ -2161,7 +2172,7 @@ def should_use_aps_wip_api_for_inventory() -> bool:
 
 def format_active_wip_source_label(base_dir: Path) -> str:
     if should_use_aps_wip_api_for_inventory():
-        return format_api_wip_source_label()
+        return get_cloud_wip_inventory_source_label("APS WIP 정리 스냅샷 없음")
     return format_file_wip_source_label(base_dir)
 
 
@@ -2220,7 +2231,7 @@ def render_sidebar_reference_dates(data_base_dir: Path, source_label: str) -> No
     st.markdown('<div class="sidebar-section-title">반영 기준일자</div>', unsafe_allow_html=True)
     st.caption(f"APS API 수요: {api_label}")
     if should_use_aps_wip_api_for_inventory():
-        snapshot_wip_source = get_cloud_shortage_wip_source_label("전체")
+        snapshot_wip_source = get_cloud_wip_inventory_source_label("") or get_cloud_shortage_wip_source_label("전체")
         if snapshot_wip_source:
             st.caption(f"WIP 적용: {snapshot_wip_source}")
         else:
@@ -2515,8 +2526,8 @@ def select_data_source(base_dir: Path, selected_top_view: str = "") -> tuple[Pat
                 st.caption("APS API는 하루 2회 갱신 기준입니다. 즉시 재조회가 필요할 때만 APS API 새로고침을 누르세요.")
             elif should_use_aps_wip_api_for_inventory():
                 st.caption(
-                    "APS 수요와 WIP/공정재고를 API로 조회합니다. "
-                    "API가 제한 시간 안에 응답하지 않거나 실패하면 기존 스냅샷이 있을 때만 표시하고, 없으면 오류로 안내합니다."
+                    "APS 수요는 API로 조회하고, WIP/공정재고는 예약 작업이 만든 APS WIP 정리 스냅샷을 사용합니다. "
+                    "WIP 정리 스냅샷이 없거나 오래되면 오류로 안내합니다."
                 )
             else:
                 st.caption("APS 수요는 API로 조회하고, WIP/공정재고는 기존 WIP 엑셀 파일 기준으로 계산합니다.")
@@ -2525,7 +2536,11 @@ def select_data_source(base_dir: Path, selected_top_view: str = "") -> tuple[Pat
                 return base_dir, "Cloud 스냅샷 우선 + APS API 새로고침", updated_at
             api_updated_at = get_plan_api_updated_at()
             updated_at = api_updated_at if api_updated_at != "-" else get_data_updated_at(base_dir)
-            source_name = "APS API 수요 + WIP API" if should_use_aps_wip_api_for_inventory() else "APS API 수요 + WIP 엑셀"
+            source_name = (
+                "APS API 수요 + WIP 정리 스냅샷"
+                if should_use_aps_wip_api_for_inventory()
+                else "APS API 수요 + WIP 엑셀"
+            )
             return base_dir, source_name, updated_at
     elif api_configured:
         st.caption("현재 설정: 폴더 저장 파일 기준입니다. 저장된 수요/WIP 엑셀을 사용합니다.")
@@ -2824,11 +2839,98 @@ def get_recorded_aps_plan_updated_at(default: str = "-") -> str:
     return max(parsed_candidates, key=lambda item: item[0].timestamp())[1]
 
 
+def get_recorded_aps_wip_updated_at(default: str = "-") -> str:
+    candidates: list[str] = []
+    status = read_first_json_file(APS_SNAPSHOT_REFRESH_STATUS_PATHS)
+    status_updated_at = clean_text_value(status.get("wip_api_updated_at", ""))
+    if status_updated_at:
+        candidates.append(status_updated_at)
+
+    state = read_first_json_file(APS_SNAPSHOT_REFRESH_STATE_PATHS)
+    completed_slots = state.get("completed_slots")
+    if isinstance(completed_slots, dict):
+        for slot_info in completed_slots.values():
+            if isinstance(slot_info, dict):
+                updated_at = clean_text_value(slot_info.get("wip_api_updated_at", ""))
+                if updated_at:
+                    candidates.append(updated_at)
+
+    parsed_candidates: list[tuple[datetime, str]] = []
+    for value in candidates:
+        parsed = parse_updated_at_value(value)
+        if parsed is not None:
+            parsed_candidates.append((parsed, value))
+    if not parsed_candidates:
+        return default
+    return max(parsed_candidates, key=lambda item: item[0].timestamp())[1]
+
+
+def format_wip_inventory_snapshot_source_label(updated_at: str) -> str:
+    return (
+        f"APS WIP 정리 스냅샷 ({format_reference_timestamp(updated_at)}; "
+        f"WH_NAME {', '.join(APS_WIP_TARGET_WH_NAMES)})"
+    )
+
+
+def get_cloud_wip_inventory_snapshot_updated_at(default: str = "-") -> str:
+    return get_cloud_snapshot_meta_value(WIP_INVENTORY_UPDATED_AT_META_KEY, default)
+
+
+def get_cloud_wip_inventory_source_label(default: str = "") -> str:
+    label = get_cloud_snapshot_meta_value(WIP_INVENTORY_SOURCE_LABEL_META_KEY, "")
+    if label:
+        return label
+    updated_at = get_cloud_wip_inventory_snapshot_updated_at("-")
+    if updated_at != "-":
+        return format_wip_inventory_snapshot_source_label(updated_at)
+    return default
+
+
+def normalize_wip_inventory_snapshot_df(df: pd.DataFrame) -> pd.DataFrame:
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return pd.DataFrame(columns=WIP_INVENTORY_COLUMNS)
+    inventory = df.copy()
+    for column in WIP_INVENTORY_COLUMNS:
+        if column not in inventory.columns:
+            inventory[column] = 0.0 if column == "재고량" else ""
+    inventory["품목코드"] = inventory["품목코드"].map(normalize_item_code_value)
+    inventory["창고"] = inventory["창고"].astype(str).str.strip()
+    inventory["재공코드"] = inventory["재공코드"].astype(str).str.strip()
+    inventory["재고량"] = parse_mixed_numeric(inventory["재고량"]).fillna(0)
+    inventory = inventory[
+        inventory["품목코드"].ne("")
+        & ~inventory["품목코드"].str.lower().isin(INVALID_CATEGORY_VALUES)
+        & inventory["창고"].ne("")
+    ].copy()
+    return inventory[WIP_INVENTORY_COLUMNS]
+
+
+def load_cloud_wip_inventory_snapshot_with_label() -> tuple[pd.DataFrame, str]:
+    inventory = normalize_wip_inventory_snapshot_df(load_cloud_snapshot_csv(WIP_INVENTORY_SNAPSHOT_FILE))
+    return inventory, get_cloud_wip_inventory_source_label("APS WIP 정리 스냅샷 없음")
+
+
+def is_cloud_wip_inventory_snapshot_current(live_updated_at: str) -> bool:
+    return is_cloud_snapshot_fresh(WIP_INVENTORY_UPDATED_AT_META_KEY, live_updated_at)
+
+
+def write_cloud_wip_inventory_snapshot(inventory_df: pd.DataFrame, updated_at: str, source_label: str) -> bool:
+    inventory = normalize_wip_inventory_snapshot_df(inventory_df)
+    ok = write_cloud_snapshot_csv(WIP_INVENTORY_SNAPSHOT_FILE, inventory)
+    ok = write_cloud_snapshot_meta_value(WIP_INVENTORY_UPDATED_AT_META_KEY, updated_at) and ok
+    ok = write_cloud_snapshot_meta_value(WIP_INVENTORY_SOURCE_LABEL_META_KEY, source_label) and ok
+    ok = write_cloud_snapshot_meta_value(
+        WIP_INVENTORY_REFRESHED_AT_META_KEY,
+        datetime.now(DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+    ) and ok
+    return ok
+
+
 def get_cloud_shortage_wip_source_label(site_filter: str = "전체") -> str:
     _, info_name, _ = shortage_snapshot_file_names(site_filter)
     info_df = load_cloud_snapshot_csv(info_name)
     if info_df.empty or "재고파일" not in info_df.columns:
-        return ""
+        return get_cloud_wip_inventory_source_label("")
     return clean_text_value(info_df.iloc[0].get("재고파일", ""))
 
 
@@ -2843,7 +2945,31 @@ def is_wip_api_unverified_stock_source(stock_source_text: object) -> bool:
     return "APS WIP API 미반영" in text or "APS WIP API 조회 실패" in text
 
 
+def build_cloud_wip_inventory_snapshot_unavailable_message() -> str:
+    if not should_use_aps_wip_api_for_inventory():
+        return ""
+    inventory, _ = load_cloud_wip_inventory_snapshot_with_label()
+    snapshot_updated_at = get_cloud_wip_inventory_snapshot_updated_at("-")
+    recorded_wip_updated_at = get_recorded_aps_wip_updated_at(snapshot_updated_at)
+    if inventory.empty:
+        return "APS WIP 정리 스냅샷이 없어 최신 재고 데이터를 표시할 수 없습니다. 예약 갱신 작업이 APS WIP API를 먼저 성공해야 합니다."
+
+    snapshot_dt = parse_updated_at_value(snapshot_updated_at)
+    recorded_dt = parse_updated_at_value(recorded_wip_updated_at)
+    if recorded_dt is not None and (snapshot_dt is None or snapshot_dt.timestamp() + 1 < recorded_dt.timestamp()):
+        return (
+            "APS WIP 정리 스냅샷이 최신 기준보다 오래되어 표시하지 않습니다. "
+            f"스냅샷 기준시각: {format_reference_timestamp(snapshot_updated_at)}, "
+            f"APS WIP 최신 기준시각: {format_reference_timestamp(recorded_wip_updated_at)}."
+        )
+    return ""
+
+
 def build_wip_snapshot_unavailable_message(file_info_df: pd.DataFrame | None) -> str:
+    current_wip_message = build_cloud_wip_inventory_snapshot_unavailable_message()
+    if current_wip_message:
+        return current_wip_message
+
     stock_source = get_file_info_stock_source_text(file_info_df)
     if not is_wip_api_unverified_stock_source(stock_source):
         return ""
@@ -7907,6 +8033,82 @@ def load_api_wip_inventory_df() -> pd.DataFrame:
     return inventory
 
 
+def build_safe_snapshot_stamp(value: object) -> str:
+    parsed = parse_updated_at_value(value)
+    if parsed is not None:
+        return parsed.strftime("%Y%m%d_%H%M%S")
+    return datetime.now(DISPLAY_TZ).strftime("%Y%m%d_%H%M%S")
+
+
+def write_aps_wip_raw_snapshot(raw: pd.DataFrame, source_updated_at: str) -> str:
+    if not isinstance(raw, pd.DataFrame) or raw.empty:
+        return ""
+    snapshot_dir = APS_WIP_RAW_DIR / build_safe_snapshot_stamp(source_updated_at)
+    raw_path = snapshot_dir / "aps_wip_raw.csv.gz"
+    meta_path = snapshot_dir / "metadata.json"
+    try:
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+        raw.to_csv(raw_path, index=False, encoding="utf-8-sig", compression="gzip")
+        metadata = {
+            "source_updated_at": clean_text_value(source_updated_at),
+            "saved_at": datetime.now(DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+            "rows": int(len(raw)),
+            "columns": [str(column) for column in raw.columns],
+            "target_wh_names": list(APS_WIP_TARGET_WH_NAMES),
+        }
+        with meta_path.open("w", encoding="utf-8") as meta_file:
+            json.dump(metadata, meta_file, ensure_ascii=False, indent=2)
+    except Exception:
+        return ""
+    return str(snapshot_dir)
+
+
+def build_wip_inventory_snapshot_from_api(source_updated_at: str | None = None) -> tuple[pd.DataFrame, str, str, str]:
+    if source_updated_at is None:
+        source_updated_at = get_aps_wip_api_updated_at()
+    raw, error = read_aps_wip_warehouse_dataframe(source_updated_at)
+    if error or raw.empty:
+        return pd.DataFrame(columns=WIP_INVENTORY_COLUMNS), "", "", error or "APS WIP API 응답이 비어 있습니다."
+
+    raw_snapshot_dir = write_aps_wip_raw_snapshot(raw, source_updated_at)
+    filtered_raw = filter_api_wip_raw_to_target_wh_names(raw)
+    if filtered_raw.empty:
+        return pd.DataFrame(columns=WIP_INVENTORY_COLUMNS), "", raw_snapshot_dir, "APS WIP API 응답에서 대상 창고 데이터를 찾지 못했습니다."
+
+    inventory = normalize_wip_inventory_snapshot_df(build_inventory_df(filtered_raw))
+    if inventory.empty:
+        return inventory, "", raw_snapshot_dir, "APS WIP API 데이터를 재고 형식으로 변환하지 못했습니다."
+
+    source_label = format_wip_inventory_snapshot_source_label(source_updated_at)
+    return inventory, source_label, raw_snapshot_dir, ""
+
+
+def refresh_cloud_wip_inventory_snapshot(only_if_stale: bool = False) -> dict[str, object]:
+    source_updated_at = get_aps_wip_api_updated_at()
+    if only_if_stale and source_updated_at != "-" and is_cloud_wip_inventory_snapshot_current(source_updated_at):
+        return {
+            "status": "skip-current",
+            "updated_at": source_updated_at,
+            "rows": int(len(load_cloud_wip_inventory_snapshot_with_label()[0])),
+            "raw_dir": "",
+        }
+
+    inventory, source_label, raw_snapshot_dir, error = build_wip_inventory_snapshot_from_api(source_updated_at)
+    if error or inventory.empty:
+        raise RuntimeError(error or "APS WIP 정리 스냅샷 생성 실패")
+
+    if not write_cloud_wip_inventory_snapshot(inventory, source_updated_at, source_label):
+        raise RuntimeError("APS WIP 정리 스냅샷 저장 실패")
+
+    return {
+        "status": "refreshed",
+        "updated_at": source_updated_at,
+        "rows": int(len(inventory)),
+        "raw_dir": raw_snapshot_dir,
+        "source_label": source_label,
+    }
+
+
 def load_api_demand_like_df(site_filter: str = "전체") -> pd.DataFrame:
     raw, error = read_aps_plan_operations_dataframe(APS_PLAN_FLOW_OPERATIONS, site_filter)
     output_columns = [
@@ -8118,14 +8320,27 @@ def load_all_item_inventory_file_source(data_base_dir: Path) -> pd.DataFrame:
 
 def load_all_item_inventory_source_with_label(data_base_dir: Path) -> tuple[pd.DataFrame, str]:
     if should_use_aps_wip_api_for_inventory():
-        api_inv_df, api_error = load_api_wip_inventory_df_with_error()
-        if not api_inv_df.empty:
-            label = format_api_wip_source_label()
-            remember_wip_inventory_source(label)
-            return api_inv_df, label
-        label = format_required_wip_api_error_label(api_error)
-        remember_wip_inventory_source(label, api_error)
-        raise ValueError(f"{label}. WIP 파일 대체는 사용하지 않습니다.")
+        snapshot_df, label = load_cloud_wip_inventory_snapshot_with_label()
+        snapshot_updated_at = get_cloud_wip_inventory_snapshot_updated_at("-")
+        recorded_wip_updated_at = get_recorded_aps_wip_updated_at(snapshot_updated_at)
+        snapshot_dt = parse_updated_at_value(snapshot_updated_at)
+        recorded_dt = parse_updated_at_value(recorded_wip_updated_at)
+        if snapshot_df.empty:
+            error = "저장된 APS WIP 정리 스냅샷이 없습니다."
+            label = format_required_wip_api_error_label(error)
+            remember_wip_inventory_source(label, error)
+            raise ValueError(f"{label} 예약 갱신 작업이 APS WIP API를 먼저 성공해야 합니다.")
+        if recorded_dt is not None and (snapshot_dt is None or snapshot_dt.timestamp() + 1 < recorded_dt.timestamp()):
+            error = (
+                f"APS WIP 정리 스냅샷이 최신 기준보다 오래됐습니다 "
+                f"(스냅샷 {format_reference_timestamp(snapshot_updated_at)} / "
+                f"APS WIP 최신 {format_reference_timestamp(recorded_wip_updated_at)})."
+            )
+            label = format_required_wip_api_error_label(error)
+            remember_wip_inventory_source(label, error)
+            raise ValueError(f"{label} WIP 파일 대체는 사용하지 않습니다.")
+        remember_wip_inventory_source(label)
+        return snapshot_df, label
     try:
         label = format_file_wip_source_label(data_base_dir)
         remember_wip_inventory_source(label)
@@ -15513,7 +15728,12 @@ def main() -> None:
                                 shortage_api_updated_at,
                             )
                             if wip_snapshot_unavailable_message:
-                                quick_snapshot_loaded = False
+                                df = build_empty_shortage_dashboard_df()
+                                file_info_df = snapshot_file_info_df
+                                source_label = "APS WIP 정리 스냅샷 오류"
+                                api_alert_title = "오류"
+                                api_alert_message = wip_snapshot_unavailable_message
+                                sidebar_status_caption = "오류: APS WIP 정리 스냅샷 필요"
                             elif snapshot_hold_message:
                                 df = build_empty_shortage_dashboard_df()
                                 file_info_df = build_shortage_snapshot_hold_file_info(
@@ -15537,7 +15757,7 @@ def main() -> None:
                                 source_label = "Cloud 스냅샷 (빠른 조회)"
                                 sidebar_status_caption = "빠른 조회: 최신 스냅샷 표시"
                             shortage_locked_site_filter = shortage_api_site_filter
-                            quick_snapshot_loaded = not bool(wip_snapshot_unavailable_message)
+                            quick_snapshot_loaded = True
                     except Exception:
                         quick_snapshot_loaded = False
 

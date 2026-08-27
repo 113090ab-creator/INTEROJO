@@ -137,6 +137,7 @@ def mark_slot_completed(
     state: dict[str, object],
     slot_key: str,
     api_updated_at: str,
+    wip_api_updated_at: str,
     results: dict[str, str],
     app_module,
 ) -> None:
@@ -147,6 +148,7 @@ def mark_slot_completed(
     completed_slots[slot_key] = {
         "completed_at": datetime.now(app_module.DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S"),
         "api_updated_at": api_updated_at,
+        "wip_api_updated_at": wip_api_updated_at,
         "results": results,
     }
     if len(completed_slots) > 20:
@@ -179,7 +181,7 @@ def is_api_update_ready_for_slot(
     return api_dt >= slot_dt - timedelta(minutes=max(grace_minutes, 0))
 
 
-def is_snapshot_current(app_module, site_filter: str, api_updated_at: str) -> bool:
+def is_snapshot_current(app_module, site_filter: str, api_updated_at: str, wip_api_updated_at: str = "") -> bool:
     api_dt = parse_updated_at(app_module, api_updated_at)
     if api_dt is None:
         return False
@@ -189,11 +191,31 @@ def is_snapshot_current(app_module, site_filter: str, api_updated_at: str) -> bo
     )
     if snapshot_dt is None:
         return False
-    return snapshot_dt.timestamp() + 1 >= api_dt.timestamp()
+    if snapshot_dt.timestamp() + 1 < api_dt.timestamp():
+        return False
+
+    wip_text = str(wip_api_updated_at or "").strip()
+    if wip_text and wip_text != "-":
+        wip_label = app_module.get_cloud_shortage_wip_source_label(site_filter)
+        if app_module.format_reference_timestamp(wip_text) not in wip_label:
+            return False
+    return True
 
 
-def refresh_site(app_module, site_filter: str, api_updated_at: str, only_if_stale: bool) -> str:
-    if only_if_stale and is_snapshot_current(app_module, site_filter, api_updated_at):
+def refresh_wip_inventory(app_module, only_if_stale: bool) -> tuple[str, str]:
+    result = app_module.refresh_cloud_wip_inventory_snapshot(only_if_stale=only_if_stale)
+    updated_at = str(result.get("updated_at", "-"))
+    status = str(result.get("status", "unknown"))
+    rows = int(result.get("rows", 0) or 0)
+    raw_dir = str(result.get("raw_dir", ""))
+    details = f"{status} rows={rows:,} updated_at={updated_at}"
+    if raw_dir:
+        details = f"{details} raw_dir={raw_dir}"
+    return updated_at, details
+
+
+def refresh_site(app_module, site_filter: str, api_updated_at: str, wip_api_updated_at: str, only_if_stale: bool) -> str:
+    if only_if_stale and is_snapshot_current(app_module, site_filter, api_updated_at, wip_api_updated_at):
         return "skip-current"
 
     refresh_key = app_module.build_api_shortage_refresh_key(app_module.BASE_DIR, site_filter)
@@ -251,6 +273,11 @@ def main() -> int:
         default=DEFAULT_SLOT_LOOKAHEAD_MINUTES,
         help="Start checking an upcoming slot this many minutes before the configured slot time. Default: 5",
     )
+    parser.add_argument(
+        "--wip-only",
+        action="store_true",
+        help="Refresh only the APS WIP raw/normalized inventory snapshots.",
+    )
     args = parser.parse_args()
 
     configure_logging()
@@ -281,6 +308,7 @@ def main() -> int:
         return 2
 
     api_updated_at = app.get_plan_api_updated_at()
+    wip_api_updated_at = "-"
     logging.info("APS API updated_at=%s sites=%s only_if_stale=%s", api_updated_at, args.sites, args.only_if_stale)
     if args.scheduled and slot_key:
         write_status(
@@ -288,6 +316,7 @@ def main() -> int:
                 "checked_at": datetime.now(app.DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S"),
                 "slot_key": slot_key,
                 "api_updated_at": api_updated_at,
+                "wip_api_updated_at": wip_api_updated_at,
                 "status": "checking",
                 "sites": parse_sites(args.sites),
             }
@@ -310,6 +339,7 @@ def main() -> int:
                 "checked_at": datetime.now(app.DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S"),
                 "slot_key": slot_key,
                 "api_updated_at": api_updated_at,
+                "wip_api_updated_at": wip_api_updated_at,
                 "status": "pending_api_update",
                 "sites": parse_sites(args.sites),
             }
@@ -318,9 +348,47 @@ def main() -> int:
 
     exit_code = 0
     results: dict[str, str] = {}
+    try:
+        wip_api_updated_at, wip_result = refresh_wip_inventory(app, args.only_if_stale)
+        results["WIP"] = wip_result
+        logging.info("WIP: %s", wip_result)
+    except Exception as exc:
+        exit_code = 1
+        results["WIP"] = f"failed: {exc}"
+        logging.exception("WIP refresh failed: %s", exc)
+        if args.scheduled and slot_key:
+            write_status(
+                {
+                    "checked_at": datetime.now(app.DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+                    "slot_key": slot_key,
+                    "api_updated_at": api_updated_at,
+                    "wip_api_updated_at": wip_api_updated_at,
+                    "status": "failed",
+                    "sites": parse_sites(args.sites),
+                    "results": results,
+                }
+            )
+        return exit_code
+
+    if args.wip_only:
+        if args.scheduled and exit_code == 0 and slot_key:
+            mark_slot_completed(state, slot_key, api_updated_at, wip_api_updated_at, results, app)
+            write_status(
+                {
+                    "checked_at": datetime.now(app.DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+                    "slot_key": slot_key,
+                    "api_updated_at": api_updated_at,
+                    "wip_api_updated_at": wip_api_updated_at,
+                    "status": "completed",
+                    "sites": [],
+                    "results": results,
+                }
+            )
+        return 0
+
     for site_filter in parse_sites(args.sites):
         try:
-            result = refresh_site(app, site_filter, api_updated_at, args.only_if_stale)
+            result = refresh_site(app, site_filter, api_updated_at, wip_api_updated_at, args.only_if_stale)
             results[site_filter] = result
             logging.info("%s: %s", site_filter, result)
         except Exception as exc:
@@ -328,12 +396,13 @@ def main() -> int:
             results[site_filter] = f"failed: {exc}"
             logging.exception("%s: refresh failed: %s", site_filter, exc)
     if args.scheduled and exit_code == 0 and slot_key:
-        mark_slot_completed(state, slot_key, api_updated_at, results, app)
+        mark_slot_completed(state, slot_key, api_updated_at, wip_api_updated_at, results, app)
         write_status(
             {
                 "checked_at": datetime.now(app.DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S"),
                 "slot_key": slot_key,
                 "api_updated_at": api_updated_at,
+                "wip_api_updated_at": wip_api_updated_at,
                 "status": "completed",
                 "sites": parse_sites(args.sites),
                 "results": results,
@@ -346,6 +415,7 @@ def main() -> int:
                 "checked_at": datetime.now(app.DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S"),
                 "slot_key": slot_key,
                 "api_updated_at": api_updated_at,
+                "wip_api_updated_at": wip_api_updated_at,
                 "status": "failed",
                 "sites": parse_sites(args.sites),
                 "results": results,
