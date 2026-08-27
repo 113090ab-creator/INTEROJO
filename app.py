@@ -2184,19 +2184,22 @@ def format_reference_timestamp(value: str, fallback: str = "확인 불가") -> s
 
 def render_sidebar_reference_dates(data_base_dir: Path, source_label: str) -> None:
     api_configured = is_plan_api_configured()
-    api_updated_at = get_plan_api_updated_at() if api_configured else "-"
+    api_updated_at = get_recorded_aps_plan_updated_at(get_cloud_shortage_snapshot_updated_at("전체", "-"))
     if not api_configured:
         api_label = "미반영 (API 키 없음)"
     elif not is_plan_api_enabled():
-        api_label = f"미반영 (자동조회 꺼짐, 갱신 {format_reference_timestamp(api_updated_at)})"
+        api_label = f"미반영 (자동조회 꺼짐, 저장 기준 {format_reference_timestamp(api_updated_at)})"
     else:
         api_label = f"반영 ({format_reference_timestamp(api_updated_at)})"
 
     st.markdown('<div class="sidebar-section-title">반영 기준일자</div>', unsafe_allow_html=True)
     st.caption(f"APS API 수요: {api_label}")
     if should_use_aps_wip_api_for_inventory():
-        wip_api_updated_at = get_aps_wip_api_updated_at()
-        st.caption(f"APS WIP API: 반영 ({format_reference_timestamp(wip_api_updated_at)}, WH_NAME 4개)")
+        snapshot_wip_source = get_cloud_shortage_wip_source_label("전체")
+        if snapshot_wip_source:
+            st.caption(f"WIP 적용: {snapshot_wip_source}")
+        else:
+            st.caption("WIP 적용: 저장 스냅샷 기준")
         st.caption(f"로컬 WIP 파일: API WIP 없을 때 대체 ({format_reference_timestamp(get_wip_updated_at(data_base_dir))})")
         last_wip_source = clean_text_value(get_session_value("last_wip_inventory_source_label", ""))
         if last_wip_source:
@@ -2794,6 +2797,14 @@ def get_recorded_aps_plan_updated_at(default: str = "-") -> str:
     if not parsed_candidates:
         return default
     return max(parsed_candidates, key=lambda item: item[0].timestamp())[1]
+
+
+def get_cloud_shortage_wip_source_label(site_filter: str = "전체") -> str:
+    _, info_name, _ = shortage_snapshot_file_names(site_filter)
+    info_df = load_cloud_snapshot_csv(info_name)
+    if info_df.empty or "재고파일" not in info_df.columns:
+        return ""
+    return clean_text_value(info_df.iloc[0].get("재고파일", ""))
 
 
 def build_shortage_snapshot_accuracy_error(
