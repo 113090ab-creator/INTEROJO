@@ -8,7 +8,7 @@ import shutil
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -39,6 +39,14 @@ UPLOAD_WORKSPACE_ROOT = BASE_DIR / ".uploaded_workspaces"
 LATEST_UPLOAD_SESSION_FILE = UPLOAD_WORKSPACE_ROOT / "latest_session.txt"
 UPLOAD_SIGNATURE_FILE = "upload_signature.txt"
 CLOUD_SNAPSHOT_DIR = BASE_DIR / "cloud_snapshots"
+APS_SNAPSHOT_REFRESH_STATE_PATHS = (
+    CLOUD_SNAPSHOT_DIR / "aps_snapshot_refresh_state.json",
+    BASE_DIR / "outputs" / "aps_snapshot_refresh_state.json",
+)
+APS_SNAPSHOT_REFRESH_STATUS_PATHS = (
+    CLOUD_SNAPSHOT_DIR / "aps_snapshot_refresh_status.json",
+    BASE_DIR / "outputs" / "aps_snapshot_refresh_status.json",
+)
 DISPLAY_TZ = ZoneInfo("Asia/Seoul")
 ORDER_NO_COL = "수주번호"
 ORDER_RECEIVED_DATE_COL = "접수일"
@@ -97,6 +105,7 @@ SHORTAGE_SNAPSHOT_FIRST = os.getenv("INTEROJO_SHORTAGE_SNAPSHOT_FIRST", "1").str
     "no",
     "off",
 }
+SHORTAGE_SNAPSHOT_REFRESH_GRACE_MINUTES = int(os.getenv("INTEROJO_SHORTAGE_SNAPSHOT_REFRESH_GRACE_MINUTES", "15"))
 LOCAL_CACHE_DIR = BASE_DIR / ".local_cache"
 PLAN_API_DISK_CACHE_DIR = LOCAL_CACHE_DIR / "plan_api"
 PLAN_API_KEY_LOCAL_CACHE_FILE = LOCAL_CACHE_DIR / "plan_api_key.txt"
@@ -1809,13 +1818,14 @@ def summarize_aps_wip_warehouse_errors(errors: list[str]) -> str:
     return "; ".join(cleaned)
 
 
-def read_aps_wip_warehouse_dataframe() -> tuple[pd.DataFrame, str]:
+def read_aps_wip_warehouse_dataframe(source_updated_at: str | None = None) -> tuple[pd.DataFrame, str]:
     if not is_plan_api_enabled():
         return pd.DataFrame(), "API 자동조회가 꺼져 있습니다."
     api_key = get_plan_api_key()
     api_key_hash = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:12]
     base_url = get_plan_api_base_url()
-    source_updated_at = get_aps_wip_api_updated_at()
+    if source_updated_at is None:
+        source_updated_at = get_aps_wip_api_updated_at()
     frames: list[pd.DataFrame] = []
     errors: list[str] = []
 
@@ -2743,6 +2753,49 @@ def is_cloud_snapshot_fresh(meta_key: str, live_updated_at: str) -> bool:
     return cloud_dt.timestamp() + 1 >= live_dt.timestamp()
 
 
+def read_json_file(path: Path) -> dict[str, object]:
+    try:
+        with path.open("r", encoding="utf-8") as json_file:
+            data = json.load(json_file)
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def read_first_json_file(paths: tuple[Path, ...]) -> dict[str, object]:
+    for path in paths:
+        data = read_json_file(path)
+        if data:
+            return data
+    return {}
+
+
+def get_recorded_aps_plan_updated_at(default: str = "-") -> str:
+    candidates: list[str] = []
+    status = read_first_json_file(APS_SNAPSHOT_REFRESH_STATUS_PATHS)
+    status_updated_at = clean_text_value(status.get("api_updated_at", ""))
+    if status_updated_at:
+        candidates.append(status_updated_at)
+
+    state = read_first_json_file(APS_SNAPSHOT_REFRESH_STATE_PATHS)
+    completed_slots = state.get("completed_slots")
+    if isinstance(completed_slots, dict):
+        for slot_info in completed_slots.values():
+            if isinstance(slot_info, dict):
+                updated_at = clean_text_value(slot_info.get("api_updated_at", ""))
+                if updated_at:
+                    candidates.append(updated_at)
+
+    parsed_candidates: list[tuple[datetime, str]] = []
+    for value in candidates:
+        parsed = parse_updated_at_value(value)
+        if parsed is not None:
+            parsed_candidates.append((parsed, value))
+    if not parsed_candidates:
+        return default
+    return max(parsed_candidates, key=lambda item: item[0].timestamp())[1]
+
+
 def build_shortage_snapshot_accuracy_error(
     site_filter: str,
     snapshot_updated_at: str,
@@ -2772,6 +2825,40 @@ def build_shortage_snapshot_accuracy_error(
         f"조회범위: {site_text}, 스냅샷 기준시각: {format_reference_timestamp(snapshot_updated_at)}, "
         f"APS API 최신 기준시각: {format_reference_timestamp(live_updated_at)}. "
         f"원인: {'; '.join(dict.fromkeys(reasons))}."
+    )
+
+
+def is_shortage_snapshot_refresh_grace_period(snapshot_updated_at: str, live_updated_at: str) -> bool:
+    snapshot_dt = parse_updated_at_value(snapshot_updated_at)
+    live_dt = parse_updated_at_value(live_updated_at)
+    if snapshot_dt is None or live_dt is None:
+        return False
+    now = datetime.now(DISPLAY_TZ)
+    return (
+        snapshot_dt.date() == live_dt.date() == now.date()
+        and snapshot_dt.timestamp() + 1 < live_dt.timestamp()
+        and now <= live_dt + timedelta(minutes=SHORTAGE_SNAPSHOT_REFRESH_GRACE_MINUTES)
+    )
+
+
+def build_shortage_snapshot_hold_message(site_filter: str, snapshot_updated_at: str, live_updated_at: str) -> str:
+    accuracy_error = build_shortage_snapshot_accuracy_error(site_filter, snapshot_updated_at, live_updated_at)
+    if not accuracy_error:
+        return ""
+    return f"{accuracy_error} 최신 스냅샷 생성 완료 전까지 기존 스냅샷 표시는 중지합니다."
+
+
+def build_shortage_snapshot_hold_file_info(snapshot_updated_at: str, live_updated_at: str) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "재고파일": ["최신 APS 스냅샷 생성 대기"],
+            "수요파일": [
+                "기존 스냅샷 표시 중지 "
+                f"(스냅샷 {format_reference_timestamp(snapshot_updated_at)} / "
+                f"APS API {format_reference_timestamp(live_updated_at)})"
+            ],
+            "행수(현황표)": [0],
+        }
     )
 
 
@@ -7737,8 +7824,10 @@ def build_first_occurrence_mask(source: pd.DataFrame, key_columns: list[str | No
     return ~key_frame.astype(str).agg("|".join, axis=1).duplicated()
 
 
-def load_api_wip_inventory_df_with_error() -> tuple[pd.DataFrame, str]:
-    raw, error = read_aps_wip_warehouse_dataframe()
+@st.cache_data(show_spinner=False, max_entries=CACHE_MAX_ENTRIES)
+def load_api_wip_inventory_df_with_error_cached(source_updated_at: str, refresh_nonce: int) -> tuple[pd.DataFrame, str]:
+    _ = refresh_nonce
+    raw, error = read_aps_wip_warehouse_dataframe(source_updated_at)
     if error or raw.empty:
         return pd.DataFrame(columns=["품목코드", "창고", "재공코드", "재고량"]), error or "APS WIP API 응답이 비어 있습니다."
     filtered_raw = filter_api_wip_raw_to_target_wh_names(raw)
@@ -7748,6 +7837,11 @@ def load_api_wip_inventory_df_with_error() -> tuple[pd.DataFrame, str]:
     if inventory.empty:
         return inventory, "APS WIP API 데이터를 재고 형식으로 변환하지 못했습니다."
     return inventory, ""
+
+
+def load_api_wip_inventory_df_with_error() -> tuple[pd.DataFrame, str]:
+    source_updated_at = get_aps_wip_api_updated_at()
+    return load_api_wip_inventory_df_with_error_cached(source_updated_at, get_plan_api_refresh_nonce())
 
 
 def load_api_wip_inventory_df() -> pd.DataFrame:
@@ -15247,7 +15341,9 @@ def main() -> None:
             else:
                 if selected_top_view == "생산 부족 현황" and is_plan_api_enabled():
                     sidebar_meta_key = shortage_snapshot_meta_key(shortage_api_site_filter)
-                    sidebar_live_updated_at = get_plan_api_updated_at()
+                    sidebar_live_updated_at = get_recorded_aps_plan_updated_at(
+                        get_cloud_shortage_snapshot_updated_at(shortage_api_site_filter, data_live_updated_at)
+                    )
                 else:
                     sidebar_meta_key = "data_updated_at"
                     sidebar_live_updated_at = data_live_updated_at
@@ -15350,27 +15446,40 @@ def main() -> None:
                 )
                 if use_shortage_snapshot_first:
                     try:
-                        shortage_api_updated_at = get_plan_api_updated_at()
                         snapshot_df, snapshot_file_info_df, _ = load_cloud_shortage_snapshot(shortage_api_site_filter)
                         if not snapshot_df.empty:
-                            df = snapshot_df
-                            file_info_df = snapshot_file_info_df
                             snapshot_updated_at = get_cloud_shortage_snapshot_updated_at(
                                 shortage_api_site_filter,
                                 data_live_updated_at,
                             )
+                            shortage_api_updated_at = get_recorded_aps_plan_updated_at(snapshot_updated_at)
                             updated_at = snapshot_updated_at
-                            source_label = "Cloud 스냅샷 (빠른 조회)"
-                            snapshot_accuracy_error = build_shortage_snapshot_accuracy_error(
+                            snapshot_hold_message = build_shortage_snapshot_hold_message(
                                 shortage_api_site_filter,
                                 snapshot_updated_at,
                                 shortage_api_updated_at,
                             )
-                            if snapshot_accuracy_error:
-                                api_alert_title = "오류"
-                                api_alert_message = snapshot_accuracy_error
-                                sidebar_status_caption = "오류: 오래된 스냅샷 표시"
+                            if snapshot_hold_message:
+                                df = build_empty_shortage_dashboard_df()
+                                file_info_df = build_shortage_snapshot_hold_file_info(
+                                    snapshot_updated_at,
+                                    shortage_api_updated_at,
+                                )
+                                source_label = "APS 스냅샷 갱신중"
+                                api_alert_title = (
+                                    "갱신중"
+                                    if is_shortage_snapshot_refresh_grace_period(
+                                        snapshot_updated_at,
+                                        shortage_api_updated_at,
+                                    )
+                                    else "오류"
+                                )
+                                api_alert_message = snapshot_hold_message
+                                sidebar_status_caption = f"{api_alert_title}: 최신 스냅샷 대기"
                             else:
+                                df = snapshot_df
+                                file_info_df = snapshot_file_info_df
+                                source_label = "Cloud 스냅샷 (빠른 조회)"
                                 sidebar_status_caption = "빠른 조회: 최신 스냅샷 표시"
                             shortage_locked_site_filter = shortage_api_site_filter
                             quick_snapshot_loaded = True
@@ -15400,24 +15509,32 @@ def main() -> None:
                         try:
                             snapshot_df, snapshot_file_info_df, _ = load_cloud_shortage_snapshot(shortage_api_site_filter)
                             if not snapshot_df.empty:
-                                df = snapshot_df
-                                file_info_df = snapshot_file_info_df
                                 snapshot_updated_at = get_cloud_shortage_snapshot_updated_at(
                                     shortage_api_site_filter,
                                     data_live_updated_at,
                                 )
                                 updated_at = snapshot_updated_at
-                                source_label = "Cloud 스냅샷 (APS API 실패 fallback)"
-                                sidebar_status_caption = "API 오류: 기존 스냅샷 표시"
                                 api_alert_title = "오류"
                                 api_alert_message = format_aps_api_error_banner_message(live_exc, "기존 스냅샷")
-                                snapshot_accuracy_error = build_shortage_snapshot_accuracy_error(
+                                snapshot_hold_message = build_shortage_snapshot_hold_message(
                                     shortage_api_site_filter,
                                     snapshot_updated_at,
                                     shortage_api_updated_at,
                                 )
-                                if snapshot_accuracy_error:
-                                    api_alert_message = f"{api_alert_message} {snapshot_accuracy_error}"
+                                if snapshot_hold_message:
+                                    df = build_empty_shortage_dashboard_df()
+                                    file_info_df = build_shortage_snapshot_hold_file_info(
+                                        snapshot_updated_at,
+                                        shortage_api_updated_at,
+                                    )
+                                    source_label = "APS 스냅샷 갱신중"
+                                    api_alert_message = f"{api_alert_message} {snapshot_hold_message}"
+                                    sidebar_status_caption = "오류: 최신 스냅샷 대기"
+                                else:
+                                    df = snapshot_df
+                                    file_info_df = snapshot_file_info_df
+                                    source_label = "Cloud 스냅샷 (APS API 실패 fallback)"
+                                    sidebar_status_caption = "API 오류: 기존 스냅샷 표시"
                                 shortage_locked_site_filter = shortage_api_site_filter
                                 fallback_loaded = True
                         except Exception:

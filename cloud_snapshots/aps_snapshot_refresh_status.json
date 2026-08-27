@@ -1,0 +1,18 @@
+{
+  "checked_at": "2026-08-27 16:07:12",
+  "slot_key": "2026-08-27 16:00",
+  "api_updated_at": "2026-08-27 15:57:23",
+  "status": "completed",
+  "sites": [
+    "C관",
+    "A관",
+    "S관",
+    "전체"
+  ],
+  "results": {
+    "C관": "refreshed rows=6,977 updated_at=2026-08-27 15:57:23",
+    "A관": "refreshed rows=1,673 updated_at=2026-08-27 15:57:23",
+    "S관": "refreshed rows=5,133 updated_at=2026-08-27 15:57:23",
+    "전체": "refreshed rows=13,783 updated_at=2026-08-27 15:57:23"
+  }
+}

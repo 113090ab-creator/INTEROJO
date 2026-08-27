@@ -1,4 +1,5 @@
 import argparse
+import atexit
 import json
 import logging
 import os
@@ -10,9 +11,15 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 LOG_PATH = PROJECT_ROOT / "outputs" / "aps_snapshot_refresh.log"
 STATE_PATH = PROJECT_ROOT / "outputs" / "aps_snapshot_refresh_state.json"
+STATUS_PATH = PROJECT_ROOT / "outputs" / "aps_snapshot_refresh_status.json"
+CLOUD_STATE_PATH = PROJECT_ROOT / "cloud_snapshots" / "aps_snapshot_refresh_state.json"
+CLOUD_STATUS_PATH = PROJECT_ROOT / "cloud_snapshots" / "aps_snapshot_refresh_status.json"
+LOCK_PATH = PROJECT_ROOT / "outputs" / "aps_snapshot_refresh.lock"
 DEFAULT_SITES = ("C관", "A관", "S관", "전체")
 DEFAULT_SLOT_TIMES = ("07:30", "16:00")
 DEFAULT_SLOT_GRACE_MINUTES = 10
+DEFAULT_SLOT_LOOKAHEAD_MINUTES = 5
+LOCK_STALE_MINUTES = 120
 
 
 def configure_logging() -> None:
@@ -42,8 +49,14 @@ def parse_slot_times(value: str) -> list[time]:
     return sorted(slots)
 
 
-def current_slot_key(now: datetime, slots: list[time]) -> str:
+def current_slot_key(now: datetime, slots: list[time], lookahead_minutes: int = 0) -> str:
     candidates = [datetime.combine(now.date(), slot, tzinfo=now.tzinfo) for slot in slots]
+    lookahead_until = now + timedelta(minutes=max(lookahead_minutes, 0))
+    upcoming_candidates = [candidate for candidate in candidates if now < candidate <= lookahead_until]
+    if upcoming_candidates:
+        slot_dt = min(upcoming_candidates)
+        return slot_dt.strftime("%Y-%m-%d %H:%M")
+
     past_candidates = [candidate for candidate in candidates if candidate <= now]
     if past_candidates:
         slot_dt = max(past_candidates)
@@ -69,12 +82,50 @@ def read_state() -> dict[str, object]:
     return state
 
 
+def write_json_atomic(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    with temp_path.open("w", encoding="utf-8") as json_file:
+        json.dump(payload, json_file, ensure_ascii=False, indent=2)
+    temp_path.replace(path)
+
+
 def write_state(state: dict[str, object]) -> None:
-    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = STATE_PATH.with_suffix(STATE_PATH.suffix + ".tmp")
-    with temp_path.open("w", encoding="utf-8") as state_file:
-        json.dump(state, state_file, ensure_ascii=False, indent=2)
-    temp_path.replace(STATE_PATH)
+    write_json_atomic(STATE_PATH, state)
+    write_json_atomic(CLOUD_STATE_PATH, state)
+
+
+def write_status(status: dict[str, object]) -> None:
+    write_json_atomic(STATUS_PATH, status)
+    write_json_atomic(CLOUD_STATUS_PATH, status)
+
+
+def release_refresh_lock() -> None:
+    try:
+        LOCK_PATH.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def acquire_refresh_lock() -> bool:
+    LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(str(LOCK_PATH), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        try:
+            lock_age = datetime.now().timestamp() - LOCK_PATH.stat().st_mtime
+            if lock_age > LOCK_STALE_MINUTES * 60:
+                LOCK_PATH.unlink(missing_ok=True)
+                return acquire_refresh_lock()
+        except Exception:
+            pass
+        logging.info("another APS snapshot refresh is already running; skip this run")
+        return False
+
+    with os.fdopen(fd, "w", encoding="utf-8") as lock_file:
+        lock_file.write(f"pid={os.getpid()} created_at={datetime.now().isoformat()}\n")
+    atexit.register(release_refresh_lock)
+    return True
 
 
 def is_slot_completed(state: dict[str, object], slot_key: str) -> bool:
@@ -194,6 +245,12 @@ def main() -> int:
         default=DEFAULT_SLOT_GRACE_MINUTES,
         help="How many minutes before a slot an APS updated_at is allowed to count for that slot. Default: 10",
     )
+    parser.add_argument(
+        "--slot-lookahead-minutes",
+        type=int,
+        default=DEFAULT_SLOT_LOOKAHEAD_MINUTES,
+        help="Start checking an upcoming slot this many minutes before the configured slot time. Default: 5",
+    )
     args = parser.parse_args()
 
     configure_logging()
@@ -206,11 +263,13 @@ def main() -> int:
             return 2
         state = read_state()
         now = datetime.now().astimezone()
-        slot_key = current_slot_key(now, slots)
+        slot_key = current_slot_key(now, slots, args.slot_lookahead_minutes)
         if is_slot_completed(state, slot_key):
-            logging.info("slot %s already completed; skip without API call", slot_key)
+            logging.debug("slot %s already completed; skip without API call", slot_key)
             return 0
         logging.info("slot %s is pending; attempting snapshot refresh", slot_key)
+        if not acquire_refresh_lock():
+            return 0
 
     os.environ.setdefault("INTEROJO_FORCE_PLAN_API", "1")
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -223,6 +282,16 @@ def main() -> int:
 
     api_updated_at = app.get_plan_api_updated_at()
     logging.info("APS API updated_at=%s sites=%s only_if_stale=%s", api_updated_at, args.sites, args.only_if_stale)
+    if args.scheduled and slot_key:
+        write_status(
+            {
+                "checked_at": datetime.now(app.DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+                "slot_key": slot_key,
+                "api_updated_at": api_updated_at,
+                "status": "checking",
+                "sites": parse_sites(args.sites),
+            }
+        )
     if args.scheduled and slot_key and not is_api_update_ready_for_slot(
         app,
         api_updated_at,
@@ -235,6 +304,15 @@ def main() -> int:
             slot_key,
             api_updated_at,
             args.slot_grace_minutes,
+        )
+        write_status(
+            {
+                "checked_at": datetime.now(app.DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+                "slot_key": slot_key,
+                "api_updated_at": api_updated_at,
+                "status": "pending_api_update",
+                "sites": parse_sites(args.sites),
+            }
         )
         return 0
 
@@ -251,7 +329,28 @@ def main() -> int:
             logging.exception("%s: refresh failed: %s", site_filter, exc)
     if args.scheduled and exit_code == 0 and slot_key:
         mark_slot_completed(state, slot_key, api_updated_at, results, app)
+        write_status(
+            {
+                "checked_at": datetime.now(app.DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+                "slot_key": slot_key,
+                "api_updated_at": api_updated_at,
+                "status": "completed",
+                "sites": parse_sites(args.sites),
+                "results": results,
+            }
+        )
         logging.info("slot %s completed", slot_key)
+    elif args.scheduled and slot_key:
+        write_status(
+            {
+                "checked_at": datetime.now(app.DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+                "slot_key": slot_key,
+                "api_updated_at": api_updated_at,
+                "status": "failed",
+                "sites": parse_sites(args.sites),
+                "results": results,
+            }
+        )
     return exit_code
 
 
