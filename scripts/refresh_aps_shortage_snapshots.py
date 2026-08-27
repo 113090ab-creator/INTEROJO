@@ -67,19 +67,21 @@ def current_slot_key(now: datetime, slots: list[time], lookahead_minutes: int = 
 
 
 def read_state() -> dict[str, object]:
-    if not STATE_PATH.exists():
-        return {"completed_slots": {}}
-    try:
-        with STATE_PATH.open("r", encoding="utf-8") as state_file:
-            state = json.load(state_file)
-    except Exception:
-        return {"completed_slots": {}}
-    if not isinstance(state, dict):
-        return {"completed_slots": {}}
-    completed_slots = state.get("completed_slots")
-    if not isinstance(completed_slots, dict):
-        state["completed_slots"] = {}
-    return state
+    for path in (STATE_PATH, CLOUD_STATE_PATH):
+        if not path.exists():
+            continue
+        try:
+            with path.open("r", encoding="utf-8") as state_file:
+                state = json.load(state_file)
+        except Exception:
+            continue
+        if not isinstance(state, dict):
+            continue
+        completed_slots = state.get("completed_slots")
+        if not isinstance(completed_slots, dict):
+            state["completed_slots"] = {}
+        return state
+    return {"completed_slots": {}}
 
 
 def write_json_atomic(path: Path, payload: dict[str, object]) -> None:
@@ -130,7 +132,12 @@ def acquire_refresh_lock() -> bool:
 
 def is_slot_completed(state: dict[str, object], slot_key: str) -> bool:
     completed_slots = state.get("completed_slots")
-    return isinstance(completed_slots, dict) and slot_key in completed_slots
+    if not isinstance(completed_slots, dict) or slot_key not in completed_slots:
+        return False
+    slot_info = completed_slots.get(slot_key)
+    if not isinstance(slot_info, dict):
+        return False
+    return bool(str(slot_info.get("wip_api_updated_at", "")).strip())
 
 
 def mark_slot_completed(

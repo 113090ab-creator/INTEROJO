@@ -6,10 +6,6 @@ on:
       - main
     paths:
       - "*.xlsx"
-      - "app.py"
-      - "requirements.txt"
-      - "scripts/refresh_cloud_snapshots.py"
-      - ".github/workflows/refresh-cloud-snapshots.yml"
   workflow_dispatch:
 
 permissions:

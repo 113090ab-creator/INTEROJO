@@ -36,6 +36,24 @@ def load_existing_meta(snapshot_dir: Path) -> dict[str, str]:
     return {str(row["key"]): str(row["value"]) for _, row in meta.iterrows()}
 
 
+def build_snapshot_meta_frame(meta_values: dict[str, str]) -> pd.DataFrame:
+    preferred_keys = ["data_updated_at", "all_item_updated_at", "leadji_updated_at"]
+    rows: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    for key in preferred_keys:
+        rows.append({"key": key, "value": meta_values.get(key, "-")})
+        seen.add(key)
+
+    for key, value in meta_values.items():
+        if key in seen:
+            continue
+        rows.append({"key": key, "value": value})
+        seen.add(key)
+
+    return pd.DataFrame(rows)
+
+
 def main() -> None:
     snapshot_dir = REPO_ROOT / "cloud_snapshots"
     snapshot_dir.mkdir(exist_ok=True)
@@ -78,13 +96,7 @@ def main() -> None:
         write_snapshot("leadji_order.csv.gz", leadji_order_df)
         meta_values["leadji_updated_at"] = app.get_leadji_status_updated_at(REPO_ROOT)
 
-    meta = pd.DataFrame(
-        [
-            {"key": "data_updated_at", "value": meta_values.get("data_updated_at", "-")},
-            {"key": "all_item_updated_at", "value": meta_values.get("all_item_updated_at", "-")},
-            {"key": "leadji_updated_at", "value": meta_values.get("leadji_updated_at", "-")},
-        ]
-    )
+    meta = build_snapshot_meta_frame(meta_values)
     meta.to_csv(snapshot_dir / "snapshot_meta.csv", index=False, encoding="utf-8-sig")
     print(meta.to_string(index=False))
 

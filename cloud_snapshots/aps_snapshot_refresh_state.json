@@ -21,13 +21,15 @@
       }
     },
     "2026-08-27 16:00": {
-      "completed_at": "2026-08-27 16:07:12",
+      "completed_at": "2026-08-27 18:45:48",
       "api_updated_at": "2026-08-27 15:57:23",
+      "wip_api_updated_at": "2026-08-27 16:11:43",
       "results": {
-        "C관": "refreshed rows=6,977 updated_at=2026-08-27 15:57:23",
-        "A관": "refreshed rows=1,673 updated_at=2026-08-27 15:57:23",
-        "S관": "refreshed rows=5,133 updated_at=2026-08-27 15:57:23",
-        "전체": "refreshed rows=13,783 updated_at=2026-08-27 15:57:23"
+        "WIP": "skip-current rows=29,727 updated_at=2026-08-27 16:11:43",
+        "C관": "skip-current",
+        "A관": "skip-current",
+        "S관": "skip-current",
+        "전체": "skip-current"
       }
     }
   }
