@@ -2743,6 +2743,38 @@ def is_cloud_snapshot_fresh(meta_key: str, live_updated_at: str) -> bool:
     return cloud_dt.timestamp() + 1 >= live_dt.timestamp()
 
 
+def build_shortage_snapshot_accuracy_error(
+    site_filter: str,
+    snapshot_updated_at: str,
+    live_updated_at: str,
+) -> str:
+    snapshot_dt = parse_updated_at_value(snapshot_updated_at)
+    live_dt = parse_updated_at_value(live_updated_at)
+    reasons: list[str] = []
+    today = datetime.now(DISPLAY_TZ).date()
+
+    if snapshot_dt is None:
+        reasons.append("스냅샷 기준시각을 확인할 수 없습니다")
+    elif snapshot_dt.date() < today:
+        reasons.append("전일 스냅샷입니다")
+
+    if live_dt is None:
+        reasons.append("APS API 최신 기준시각을 확인할 수 없습니다")
+    elif snapshot_dt is not None and snapshot_dt.timestamp() + 1 < live_dt.timestamp():
+        reasons.append("APS API 최신 기준시각보다 오래된 스냅샷입니다")
+
+    if not reasons:
+        return ""
+
+    site_text = normalize_shortage_snapshot_site_filter(site_filter)
+    return (
+        f"현재 화면은 최신 APS 수요 데이터로 검증되지 않았습니다. "
+        f"조회범위: {site_text}, 스냅샷 기준시각: {format_reference_timestamp(snapshot_updated_at)}, "
+        f"APS API 최신 기준시각: {format_reference_timestamp(live_updated_at)}. "
+        f"원인: {'; '.join(dict.fromkeys(reasons))}."
+    )
+
+
 def load_cloud_shortage_snapshot(site_filter: str = "전체") -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     snapshot_name, info_name, process_name = shortage_snapshot_file_names(site_filter)
     if snapshot_name != "shortage_snapshot.csv.gz" and not (CLOUD_SNAPSHOT_DIR / snapshot_name).exists():
@@ -15213,20 +15245,12 @@ def main() -> None:
                 sidebar_meta_key = "leadji_updated_at"
                 sidebar_live_updated_at = get_leadji_status_updated_at(data_base_dir)
             else:
-                sidebar_meta_key = "data_updated_at"
-                use_quick_shortage_snapshot = (
-                    selected_top_view == "생산 부족 현황"
-                    and is_plan_api_enabled()
-                    and should_use_shortage_snapshot_first(data_base_dir)
-                    and not bool(get_session_value("force_live_plan_api_once", False))
-                )
-                sidebar_live_updated_at = (
-                    data_live_updated_at
-                    if use_quick_shortage_snapshot
-                    else get_plan_api_updated_at()
-                    if is_plan_api_enabled()
-                    else data_live_updated_at
-                )
+                if selected_top_view == "생산 부족 현황" and is_plan_api_enabled():
+                    sidebar_meta_key = shortage_snapshot_meta_key(shortage_api_site_filter)
+                    sidebar_live_updated_at = get_plan_api_updated_at()
+                else:
+                    sidebar_meta_key = "data_updated_at"
+                    sidebar_live_updated_at = data_live_updated_at
 
             if cloud_snapshots_available and is_cloud_snapshot_fresh(sidebar_meta_key, sidebar_live_updated_at):
                 updated_at = get_cloud_snapshot_meta_value(sidebar_meta_key, sidebar_live_updated_at)
@@ -15317,6 +15341,7 @@ def main() -> None:
 
         if selected_top_view == "생산 부족 현황":
             if is_plan_api_enabled():
+                shortage_api_updated_at = "-"
                 force_live_shortage_api = consume_session_flag("force_live_plan_api_once")
                 quick_snapshot_loaded = False
                 use_shortage_snapshot_first = (
@@ -15325,16 +15350,28 @@ def main() -> None:
                 )
                 if use_shortage_snapshot_first:
                     try:
+                        shortage_api_updated_at = get_plan_api_updated_at()
                         snapshot_df, snapshot_file_info_df, _ = load_cloud_shortage_snapshot(shortage_api_site_filter)
                         if not snapshot_df.empty:
                             df = snapshot_df
                             file_info_df = snapshot_file_info_df
-                            updated_at = get_cloud_shortage_snapshot_updated_at(
+                            snapshot_updated_at = get_cloud_shortage_snapshot_updated_at(
                                 shortage_api_site_filter,
                                 data_live_updated_at,
                             )
+                            updated_at = snapshot_updated_at
                             source_label = "Cloud 스냅샷 (빠른 조회)"
-                            sidebar_status_caption = "빠른 조회: 스냅샷 즉시 표시"
+                            snapshot_accuracy_error = build_shortage_snapshot_accuracy_error(
+                                shortage_api_site_filter,
+                                snapshot_updated_at,
+                                shortage_api_updated_at,
+                            )
+                            if snapshot_accuracy_error:
+                                api_alert_title = "오류"
+                                api_alert_message = snapshot_accuracy_error
+                                sidebar_status_caption = "오류: 오래된 스냅샷 표시"
+                            else:
+                                sidebar_status_caption = "빠른 조회: 최신 스냅샷 표시"
                             shortage_locked_site_filter = shortage_api_site_filter
                             quick_snapshot_loaded = True
                     except Exception:
@@ -15365,14 +15402,22 @@ def main() -> None:
                             if not snapshot_df.empty:
                                 df = snapshot_df
                                 file_info_df = snapshot_file_info_df
-                                updated_at = get_cloud_shortage_snapshot_updated_at(
+                                snapshot_updated_at = get_cloud_shortage_snapshot_updated_at(
                                     shortage_api_site_filter,
                                     data_live_updated_at,
                                 )
+                                updated_at = snapshot_updated_at
                                 source_label = "Cloud 스냅샷 (APS API 실패 fallback)"
                                 sidebar_status_caption = "API 오류: 기존 스냅샷 표시"
                                 api_alert_title = "오류"
                                 api_alert_message = format_aps_api_error_banner_message(live_exc, "기존 스냅샷")
+                                snapshot_accuracy_error = build_shortage_snapshot_accuracy_error(
+                                    shortage_api_site_filter,
+                                    snapshot_updated_at,
+                                    shortage_api_updated_at,
+                                )
+                                if snapshot_accuracy_error:
+                                    api_alert_message = f"{api_alert_message} {snapshot_accuracy_error}"
                                 shortage_locked_site_filter = shortage_api_site_filter
                                 fallback_loaded = True
                         except Exception:
