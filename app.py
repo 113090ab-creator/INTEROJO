@@ -88,13 +88,14 @@ TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 4000
 DISPLAY_ROW_LIMIT = 200
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260821-bom-api-rq-match-v1"
+APP_CACHE_VERSION = "20260827-wip-api-required-v1"
 DATA_SOURCE_DEFAULT_VERSION = "20260821-bom-api-rq-match-v1"
 PLAN_API_BASE_URL_DEFAULT = "https://plan.interojo.net"
 PLAN_API_KEY_ENV = "PLAN_API_KEY"
 PLAN_API_BASE_URL_ENV = "PLAN_API_BASE_URL"
 PLAN_API_FORCE_ENABLED_ENV = "INTEROJO_FORCE_PLAN_API"
 PLAN_API_TIMEOUT_SECONDS = int(os.getenv("PLAN_API_TIMEOUT_SECONDS", "30"))
+APS_WIP_API_TIMEOUT_SECONDS = int(os.getenv("APS_WIP_API_TIMEOUT_SECONDS", "180"))
 PLAN_API_DEFAULT_ROW_LIMIT = 0
 PLAN_API_CACHE_TTL_SECONDS = 300
 PLAN_API_RETRY_ATTEMPTS = int(os.getenv("PLAN_API_RETRY_ATTEMPTS", "1"))
@@ -1237,7 +1238,12 @@ def is_retryable_plan_api_status(status_code: int | None) -> bool:
     return status_code in PLAN_API_RETRY_STATUS_CODES
 
 
-def format_plan_api_request_error(error: object, status_code: int | None = None) -> str:
+def format_plan_api_request_error(
+    error: object,
+    status_code: int | None = None,
+    timeout_seconds: int | None = None,
+) -> str:
+    request_timeout = timeout_seconds or PLAN_API_TIMEOUT_SECONDS
     if status_code is not None:
         if status_code == 530:
             return "API 서버 오류(HTTP 530)"
@@ -1249,11 +1255,17 @@ def format_plan_api_request_error(error: object, status_code: int | None = None)
     text = re.sub(r"https?://\S+", "", text).strip()
     text = text.split(" for url:", 1)[0].strip()
     if re.search(r"(read\s+timed\s+out|timed\s+out|timeout)", text, flags=re.IGNORECASE):
-        return f"API 응답 지연(read timeout={PLAN_API_TIMEOUT_SECONDS}초)"
+        return f"API 응답 지연(read timeout={request_timeout}초)"
     return text or "API 응답 오류"
 
 
-def request_plan_api_payload(url: str, params: dict[str, object], api_key: str) -> tuple[object | None, str]:
+def request_plan_api_payload(
+    url: str,
+    params: dict[str, object],
+    api_key: str,
+    timeout_seconds: int | None = None,
+) -> tuple[object | None, str]:
+    request_timeout = timeout_seconds or PLAN_API_TIMEOUT_SECONDS
     last_error = ""
     for attempt in range(PLAN_API_RETRY_ATTEMPTS):
         status_code: int | None = None
@@ -1262,7 +1274,7 @@ def request_plan_api_payload(url: str, params: dict[str, object], api_key: str) 
                 url,
                 params=params,
                 headers={"X-API-Key": api_key},
-                timeout=PLAN_API_TIMEOUT_SECONDS,
+                timeout=request_timeout,
             )
             status_code = response.status_code
             if is_retryable_plan_api_status(status_code) and attempt < PLAN_API_RETRY_ATTEMPTS - 1:
@@ -1273,7 +1285,7 @@ def request_plan_api_payload(url: str, params: dict[str, object], api_key: str) 
         except Exception as exc:
             response = getattr(exc, "response", None)
             status_code = getattr(response, "status_code", status_code)
-            last_error = format_plan_api_request_error(exc, status_code)
+            last_error = format_plan_api_request_error(exc, status_code, request_timeout)
             if is_retryable_plan_api_status(status_code) and attempt < PLAN_API_RETRY_ATTEMPTS - 1:
                 time.sleep(0.4 * (attempt + 1))
                 continue
@@ -1375,12 +1387,19 @@ def infer_api_unavailable_banner_message(file_info_df: pd.DataFrame | None, sour
             return "필요한 APS API가 모두 조회되지 않아 로컬 파일 기준으로 표시합니다."
         return "필요한 APS API가 모두 조회되지 않아 대체 데이터를 표시합니다."
 
+    if "APS WIP API 조회 실패" in stock_source_text:
+        detail = re.sub(r"https?://\S+", "", stock_source_text)
+        detail = re.sub(r"\s+", " ", detail).strip()
+        if len(detail) > 180:
+            detail = detail[:177].rstrip() + "..."
+        return f"APS WIP API가 조회되지 않아 최신 재고 데이터를 표시할 수 없습니다. WIP 파일로 대체하지 않았습니다. {detail}"
+
     if "APS WIP API 미반영" in stock_source_text:
         detail = re.sub(r"https?://\S+", "", stock_source_text)
         detail = re.sub(r"\s+", " ", detail).strip()
         if len(detail) > 180:
             detail = detail[:177].rstrip() + "..."
-        return f"필요한 APS WIP API가 조회되지 않아 재고는 파일 기준으로 표시합니다. {detail}"
+        return f"APS WIP API가 조회되지 않아 최신 재고 데이터로 검증되지 않았습니다. WIP 파일 대체값은 최신 재고로 보지 않습니다. {detail}"
     return ""
 
 
@@ -1396,7 +1415,11 @@ def infer_api_unavailable_banner_title(
             if column in file_info_df.columns:
                 source_parts.append(clean_text_value(first_row.get(column, "")))
     source_text = " ".join(part for part in source_parts if part)
-    if "APS API 실패 fallback" in source_text or "APS WIP API 미반영" in source_text:
+    if (
+        "APS API 실패 fallback" in source_text
+        or "APS WIP API 미반영" in source_text
+        or "APS WIP API 조회 실패" in source_text
+    ):
         return "오류"
     if "APS API" in source_text and ("조회되지" in source_text or "실패" in source_text or "오류" in source_text):
         return "오류"
@@ -1464,6 +1487,7 @@ def fetch_plan_api_dataframe_cached(
     api_key_hash: str,
     source_updated_at: str,
     refresh_nonce: int,
+    timeout_seconds: int = PLAN_API_TIMEOUT_SECONDS,
 ) -> tuple[pd.DataFrame, str]:
     _ = api_key_hash, refresh_nonce
     if requests is None:
@@ -1481,7 +1505,7 @@ def fetch_plan_api_dataframe_cached(
         if cached_df is not None:
             return cached_df, ""
 
-    payload, error = request_plan_api_payload(url, params, api_key)
+    payload, error = request_plan_api_payload(url, params, api_key, timeout_seconds)
     if error:
         return pd.DataFrame(), error
 
@@ -1506,6 +1530,7 @@ def fetch_plan_api_dataframe_direct(
     api_key: str,
     api_key_hash: str,
     source_updated_at: str,
+    timeout_seconds: int = PLAN_API_TIMEOUT_SECONDS,
 ) -> tuple[pd.DataFrame, str]:
     if requests is None:
         return pd.DataFrame(), "requests package is not installed."
@@ -1520,7 +1545,7 @@ def fetch_plan_api_dataframe_direct(
         if cached_df is not None:
             return cached_df, ""
 
-    payload, error = request_plan_api_payload(url, params, api_key)
+    payload, error = request_plan_api_payload(url, params, api_key, timeout_seconds)
     if error:
         return pd.DataFrame(), error
 
@@ -1842,6 +1867,7 @@ def read_aps_wip_warehouse_dataframe(source_updated_at: str | None = None) -> tu
             api_key,
             api_key_hash,
             source_updated_at,
+            timeout_seconds=APS_WIP_API_TIMEOUT_SECONDS,
         )
         return warehouse_name, frame, error
 
@@ -2117,12 +2143,11 @@ def format_file_wip_source_label(base_dir: Path) -> str:
     return f"WIP 파일 ({format_reference_timestamp(get_wip_updated_at(base_dir))})"
 
 
-def format_wip_api_fallback_source_label(base_dir: Path, api_error: object) -> str:
+def format_required_wip_api_error_label(api_error: object) -> str:
     error_text = clean_text_value(api_error)
-    if len(error_text) > 120:
-        error_text = error_text[:117].rstrip() + "..."
-    file_label = format_file_wip_source_label(base_dir)
-    return f"{file_label} · APS WIP API 미반영: {error_text or '조회 실패'}"
+    if len(error_text) > 160:
+        error_text = error_text[:157].rstrip() + "..."
+    return f"APS WIP API 조회 실패: {error_text or '조회 실패'}"
 
 
 def remember_wip_inventory_source(label: str, api_error: object = "") -> None:
@@ -2200,7 +2225,7 @@ def render_sidebar_reference_dates(data_base_dir: Path, source_label: str) -> No
             st.caption(f"WIP 적용: {snapshot_wip_source}")
         else:
             st.caption("WIP 적용: 저장 스냅샷 기준")
-        st.caption(f"로컬 WIP 파일: API WIP 없을 때 대체 ({format_reference_timestamp(get_wip_updated_at(data_base_dir))})")
+        st.caption(f"로컬 WIP 파일: API 모드에서는 대체 사용 안 함 ({format_reference_timestamp(get_wip_updated_at(data_base_dir))})")
         last_wip_source = clean_text_value(get_session_value("last_wip_inventory_source_label", ""))
         if last_wip_source:
             st.caption(f"마지막 WIP 적용: {last_wip_source}")
@@ -2805,6 +2830,28 @@ def get_cloud_shortage_wip_source_label(site_filter: str = "전체") -> str:
     if info_df.empty or "재고파일" not in info_df.columns:
         return ""
     return clean_text_value(info_df.iloc[0].get("재고파일", ""))
+
+
+def get_file_info_stock_source_text(file_info_df: pd.DataFrame | None) -> str:
+    if not isinstance(file_info_df, pd.DataFrame) or file_info_df.empty or "재고파일" not in file_info_df.columns:
+        return ""
+    return clean_text_value(file_info_df.iloc[0].get("재고파일", ""))
+
+
+def is_wip_api_unverified_stock_source(stock_source_text: object) -> bool:
+    text = clean_text_value(stock_source_text)
+    return "APS WIP API 미반영" in text or "APS WIP API 조회 실패" in text
+
+
+def build_wip_snapshot_unavailable_message(file_info_df: pd.DataFrame | None) -> str:
+    stock_source = get_file_info_stock_source_text(file_info_df)
+    if not is_wip_api_unverified_stock_source(stock_source):
+        return ""
+    detail = re.sub(r"https?://\S+", "", stock_source)
+    detail = re.sub(r"\s+", " ", detail).strip()
+    if len(detail) > 180:
+        detail = detail[:177].rstrip() + "..."
+    return f"현재 저장 스냅샷은 APS WIP API 재고로 검증되지 않아 표시하지 않습니다. WIP 파일로 대체하지 않았습니다. {detail}"
 
 
 def build_shortage_snapshot_accuracy_error(
@@ -8076,17 +8123,9 @@ def load_all_item_inventory_source_with_label(data_base_dir: Path) -> tuple[pd.D
             label = format_api_wip_source_label()
             remember_wip_inventory_source(label)
             return api_inv_df, label
-        try:
-            label = format_wip_api_fallback_source_label(
-                data_base_dir,
-                api_error,
-            )
-            remember_wip_inventory_source(label, api_error)
-            return load_all_item_inventory_file_source(data_base_dir), label
-        except Exception:
-            label = format_wip_api_fallback_source_label(data_base_dir, api_error)
-            remember_wip_inventory_source(label, api_error)
-            return api_inv_df, label
+        label = format_required_wip_api_error_label(api_error)
+        remember_wip_inventory_source(label, api_error)
+        raise ValueError(f"{label}. WIP 파일 대체는 사용하지 않습니다.")
     try:
         label = format_file_wip_source_label(data_base_dir)
         remember_wip_inventory_source(label)
@@ -15465,12 +15504,17 @@ def main() -> None:
                             )
                             shortage_api_updated_at = get_recorded_aps_plan_updated_at(snapshot_updated_at)
                             updated_at = snapshot_updated_at
+                            wip_snapshot_unavailable_message = build_wip_snapshot_unavailable_message(
+                                snapshot_file_info_df
+                            )
                             snapshot_hold_message = build_shortage_snapshot_hold_message(
                                 shortage_api_site_filter,
                                 snapshot_updated_at,
                                 shortage_api_updated_at,
                             )
-                            if snapshot_hold_message:
+                            if wip_snapshot_unavailable_message:
+                                quick_snapshot_loaded = False
+                            elif snapshot_hold_message:
                                 df = build_empty_shortage_dashboard_df()
                                 file_info_df = build_shortage_snapshot_hold_file_info(
                                     snapshot_updated_at,
@@ -15493,7 +15537,7 @@ def main() -> None:
                                 source_label = "Cloud 스냅샷 (빠른 조회)"
                                 sidebar_status_caption = "빠른 조회: 최신 스냅샷 표시"
                             shortage_locked_site_filter = shortage_api_site_filter
-                            quick_snapshot_loaded = True
+                            quick_snapshot_loaded = not bool(wip_snapshot_unavailable_message)
                     except Exception:
                         quick_snapshot_loaded = False
 
@@ -15527,12 +15571,21 @@ def main() -> None:
                                 updated_at = snapshot_updated_at
                                 api_alert_title = "오류"
                                 api_alert_message = format_aps_api_error_banner_message(live_exc, "기존 스냅샷")
+                                wip_snapshot_unavailable_message = build_wip_snapshot_unavailable_message(
+                                    snapshot_file_info_df
+                                )
                                 snapshot_hold_message = build_shortage_snapshot_hold_message(
                                     shortage_api_site_filter,
                                     snapshot_updated_at,
                                     shortage_api_updated_at,
                                 )
-                                if snapshot_hold_message:
+                                if wip_snapshot_unavailable_message:
+                                    df = build_empty_shortage_dashboard_df()
+                                    file_info_df = snapshot_file_info_df
+                                    source_label = "APS WIP API 오류"
+                                    api_alert_message = f"{api_alert_message} {wip_snapshot_unavailable_message}"
+                                    sidebar_status_caption = "오류: APS WIP API 재고 필요"
+                                elif snapshot_hold_message:
                                     df = build_empty_shortage_dashboard_df()
                                     file_info_df = build_shortage_snapshot_hold_file_info(
                                         snapshot_updated_at,
