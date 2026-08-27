@@ -5784,6 +5784,28 @@ def finalize_multi_pill_selection(key: str, selection: object, all_option: str =
     return tuple(normalized)
 
 
+def render_sidebar_multi_select_filter(
+    label: str,
+    options: list[str],
+    value_map: dict[str, float],
+    key: str,
+    all_option: str = "전체",
+) -> tuple[str, ...]:
+    prepare_multi_pill_state(key, options, all_option)
+    return finalize_multi_pill_selection(
+        key,
+        st.multiselect(
+            label,
+            options=options,
+            key=key,
+            format_func=lambda x: format_pill_label(x, value_map),
+            on_change=sync_multi_pill_state,
+            args=(key, all_option),
+        ),
+        all_option,
+    )
+
+
 def is_specific_pill_selection(selection: tuple[str, ...], all_option: str = "전체") -> bool:
     return bool(selection) and all_option not in selection
 
@@ -9828,33 +9850,17 @@ def apply_filters(
         summary_count_map = {"전체": scoped_total, **summary_sum_map}
 
         st.divider()
-        sheet_pills_key = "flt_sheet_pills"
-        prepare_multi_pill_state(sheet_pills_key, sheet_options)
-        selected_sheet_options = finalize_multi_pill_selection(
-            sheet_pills_key,
-            st.pills(
-                "시트 분류",
-                options=sheet_options,
-                selection_mode="multi",
-                key=sheet_pills_key,
-                format_func=lambda x: format_pill_label(x, sheet_count_map),
-                on_change=sync_multi_pill_state,
-                args=(sheet_pills_key,),
-            ),
+        selected_sheet_options = render_sidebar_multi_select_filter(
+            "시트 분류",
+            sheet_options,
+            sheet_count_map,
+            "flt_sheet_pills",
         )
-        summary_pills_key = "flt_summary_pills"
-        prepare_multi_pill_state(summary_pills_key, summary_options)
-        selected_summary_options = finalize_multi_pill_selection(
-            summary_pills_key,
-            st.pills(
-                "분류별 요약",
-                options=summary_options,
-                selection_mode="multi",
-                key=summary_pills_key,
-                format_func=lambda x: format_pill_label(x, summary_count_map),
-                on_change=sync_multi_pill_state,
-                args=(summary_pills_key,),
-            ),
+        selected_summary_options = render_sidebar_multi_select_filter(
+            "분류별 요약",
+            summary_options,
+            summary_count_map,
+            "flt_summary_pills",
         )
         st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
         if data_base_dir is not None:
