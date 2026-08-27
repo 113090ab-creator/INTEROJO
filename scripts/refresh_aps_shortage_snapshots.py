@@ -12,6 +12,7 @@ LOG_PATH = PROJECT_ROOT / "outputs" / "aps_snapshot_refresh.log"
 STATE_PATH = PROJECT_ROOT / "outputs" / "aps_snapshot_refresh_state.json"
 DEFAULT_SITES = ("C관", "A관", "S관", "전체")
 DEFAULT_SLOT_TIMES = ("07:30", "16:00")
+DEFAULT_SLOT_GRACE_MINUTES = 10
 
 
 def configure_logging() -> None:
@@ -107,6 +108,26 @@ def parse_updated_at(app_module, value: object):
     return app_module.parse_updated_at_value(value)
 
 
+def parse_slot_key_datetime(app_module, slot_key: str):
+    try:
+        return datetime.strptime(slot_key, "%Y-%m-%d %H:%M").replace(tzinfo=app_module.DISPLAY_TZ)
+    except ValueError:
+        return None
+
+
+def is_api_update_ready_for_slot(
+    app_module,
+    api_updated_at: str,
+    slot_key: str,
+    grace_minutes: int,
+) -> bool:
+    api_dt = parse_updated_at(app_module, api_updated_at)
+    slot_dt = parse_slot_key_datetime(app_module, slot_key)
+    if api_dt is None or slot_dt is None:
+        return False
+    return api_dt >= slot_dt - timedelta(minutes=max(grace_minutes, 0))
+
+
 def is_snapshot_current(app_module, site_filter: str, api_updated_at: str) -> bool:
     api_dt = parse_updated_at(app_module, api_updated_at)
     if api_dt is None:
@@ -167,6 +188,12 @@ def main() -> int:
         default=",".join(DEFAULT_SLOT_TIMES),
         help="Comma-separated APS refresh slot times in HH:MM. Default: 07:30,16:00",
     )
+    parser.add_argument(
+        "--slot-grace-minutes",
+        type=int,
+        default=DEFAULT_SLOT_GRACE_MINUTES,
+        help="How many minutes before a slot an APS updated_at is allowed to count for that slot. Default: 10",
+    )
     args = parser.parse_args()
 
     configure_logging()
@@ -196,6 +223,20 @@ def main() -> int:
 
     api_updated_at = app.get_plan_api_updated_at()
     logging.info("APS API updated_at=%s sites=%s only_if_stale=%s", api_updated_at, args.sites, args.only_if_stale)
+    if args.scheduled and slot_key and not is_api_update_ready_for_slot(
+        app,
+        api_updated_at,
+        slot_key,
+        args.slot_grace_minutes,
+    ):
+        logging.warning(
+            "slot %s remains pending: APS API updated_at=%s is older than the slot window "
+            "(grace=%s minutes); retry on next scheduled run",
+            slot_key,
+            api_updated_at,
+            args.slot_grace_minutes,
+        )
+        return 0
 
     exit_code = 0
     results: dict[str, str] = {}
