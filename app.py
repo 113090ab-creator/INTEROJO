@@ -10040,8 +10040,9 @@ def apply_filters(
         site_count_map = {"전체": float(sum(site_sum_map.values())), **site_sum_map}
         locked_site_text = clean_text_value(locked_site_filter)
         if locked_site_text:
-            selected_site_option = "전체" if locked_site_text == "전체" else normalize_site_group(locked_site_text)
-            default_scope_caption.caption(f"API 조회 범위: {selected_site_option} 수요")
+            locked_site_label = "전체" if locked_site_text == "전체" else normalize_site_group(locked_site_text)
+            selected_site_option = "전체"
+            default_scope_caption.caption(f"API 조회 범위: {locked_site_label} 수요")
         else:
             default_site_option = pick_site_filter_default(site_options, "C관")
             default_site_label = (
