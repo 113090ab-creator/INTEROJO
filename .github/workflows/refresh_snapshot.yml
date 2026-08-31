@@ -1,0 +1,61 @@
+name: Refresh APS snapshots
+
+on:
+  workflow_dispatch:
+    inputs:
+      sites:
+        description: "Comma-separated site filters"
+        required: false
+        default: "C관,A관,S관,전체"
+  schedule:
+    # KST weekdays 16:00-16:30 = UTC weekdays 07:00-07:30.
+    # APS 오후 갱신이 늦어질 수 있어 5분 간격으로 재시도하고, 이미 최신이면 건너뜁니다.
+    - cron: "0,5,10,15,20,25,30 7 * * 1-5"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: refresh-private-aps-snapshots
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    env:
+      INTEROJO_FORCE_PLAN_API: "1"
+      INTEROJO_DISABLE_LOCAL_SECRET_DISCOVERY: "1"
+      PLAN_API_KEY: ${{ secrets.PLAN_API_KEY }}
+      PLAN_API_BASE_URL: ${{ secrets.PLAN_API_BASE_URL }}
+      PLAN_API_TIMEOUT_SECONDS: "30"
+      APS_WIP_API_TIMEOUT_SECONDS: "180"
+      PLAN_API_RETRY_ATTEMPTS: "2"
+      SNAPSHOT_STORAGE_BACKEND: "s3"
+      SNAPSHOT_S3_BUCKET: ${{ secrets.SNAPSHOT_S3_BUCKET }}
+      SNAPSHOT_S3_PREFIX: ${{ secrets.SNAPSHOT_S3_PREFIX }}
+      SNAPSHOT_S3_REGION: ${{ secrets.SNAPSHOT_S3_REGION }}
+      SNAPSHOT_S3_ENDPOINT_URL: ${{ secrets.SNAPSHOT_S3_ENDPOINT_URL }}
+      SNAPSHOT_S3_ACCESS_KEY_ID: ${{ secrets.SNAPSHOT_S3_ACCESS_KEY_ID }}
+      SNAPSHOT_S3_SECRET_ACCESS_KEY: ${{ secrets.SNAPSHOT_S3_SECRET_ACCESS_KEY }}
+      SNAPSHOT_STORAGE_TIMEOUT_SECONDS: "30"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Refresh private APS snapshots
+        run: >-
+          python scripts/refresh_snapshot.py
+          --require-remote-storage
+          --only-if-stale
+          --sites "${{ github.event.inputs.sites || 'C관,A관,S관,전체' }}"
