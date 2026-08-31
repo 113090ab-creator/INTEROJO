@@ -2815,6 +2815,10 @@ def read_first_json_file(paths: tuple[Path, ...]) -> dict[str, object]:
 
 def get_recorded_aps_plan_updated_at(default: str = "-") -> str:
     candidates: list[str] = []
+    default_updated_at = clean_text_value(default)
+    if default_updated_at:
+        candidates.append(default_updated_at)
+
     status = read_first_json_file(APS_SNAPSHOT_REFRESH_STATUS_PATHS)
     status_updated_at = clean_text_value(status.get("api_updated_at", ""))
     if status_updated_at:
@@ -2841,6 +2845,10 @@ def get_recorded_aps_plan_updated_at(default: str = "-") -> str:
 
 def get_recorded_aps_wip_updated_at(default: str = "-") -> str:
     candidates: list[str] = []
+    default_updated_at = clean_text_value(default)
+    if default_updated_at:
+        candidates.append(default_updated_at)
+
     status = read_first_json_file(APS_SNAPSHOT_REFRESH_STATUS_PATHS)
     status_updated_at = clean_text_value(status.get("wip_api_updated_at", ""))
     if status_updated_at:
