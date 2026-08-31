@@ -1,11 +1,6 @@
 name: Refresh cloud snapshots
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "*.xlsx"
   workflow_dispatch:
 
 permissions:
