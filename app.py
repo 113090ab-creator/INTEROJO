@@ -4231,6 +4231,37 @@ def count_latin1_mojibake_markers(text: str) -> int:
 
 
 LATIN1_MOJIBAKE_MARKER_PATTERN = r"[\u00a1-\u00ff]"
+MOJIBAKE_REPAIR_COLUMN_KEYWORDS = (
+    "제품",
+    "품명",
+    "거래처",
+    "고객",
+    "분류",
+    "요약",
+    "창고",
+    "공정",
+    "파일",
+    "사유",
+    "상태",
+    "판단",
+    "비고",
+    "이니셜",
+    "리드지",
+    "name",
+    "product",
+    "customer",
+    "category",
+    "summary",
+    "warehouse",
+    "reason",
+    "status",
+    "note",
+)
+
+
+def should_repair_korean_mojibake_column(column: object) -> bool:
+    column_text = str(column).strip().lower()
+    return any(keyword in column_text for keyword in MOJIBAKE_REPAIR_COLUMN_KEYWORDS)
 
 
 def repair_korean_mojibake_text(value: object) -> str:
@@ -4286,6 +4317,8 @@ def repair_korean_mojibake_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 
     result = df.copy()
     for column in result.select_dtypes(include=["object", "string"]).columns:
+        if not should_repair_korean_mojibake_column(column):
+            continue
         text = result[column].astype(str).str.strip()
         marker_mask = text.str.contains(LATIN1_MOJIBAKE_MARKER_PATTERN, regex=True, na=False)
         if marker_mask.any():
