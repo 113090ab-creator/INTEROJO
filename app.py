@@ -88,7 +88,7 @@ TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 4000
 DISPLAY_ROW_LIMIT = 200
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260827-wip-snapshot-v1"
+APP_CACHE_VERSION = "20260831-mojibake-repair-v1"
 DATA_SOURCE_DEFAULT_VERSION = "20260821-bom-api-rq-match-v1"
 PLAN_API_BASE_URL_DEFAULT = "https://plan.interojo.net"
 PLAN_API_KEY_ENV = "PLAN_API_KEY"
@@ -2707,7 +2707,7 @@ def read_cloud_snapshot_csv(name: str, refresh_key: str) -> pd.DataFrame:
     path = CLOUD_SNAPSHOT_DIR / name
     if not path.exists():
         return pd.DataFrame()
-    return pd.read_csv(path, encoding="utf-8-sig", compression="infer")
+    return repair_korean_mojibake_dataframe(pd.read_csv(path, encoding="utf-8-sig", compression="infer"))
 
 
 def load_cloud_snapshot_csv(name: str) -> pd.DataFrame:
@@ -2723,6 +2723,7 @@ def write_cloud_snapshot_csv(name: str, df: pd.DataFrame) -> bool:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         compression = "gzip" if path.name.endswith(".gz") else None
+        df = repair_korean_mojibake_dataframe(df)
         df.to_csv(temp_path, index=False, encoding="utf-8-sig", compression=compression)
         temp_path.replace(path)
         return True
@@ -4221,6 +4222,77 @@ def extract_power_key_from_code(item_code: str) -> str:
     return "|".join(format_power_value(match) for match in matches)
 
 
+def count_hangul_chars(text: str) -> int:
+    return sum(1 for char in text if "\uac00" <= char <= "\ud7a3")
+
+
+def count_latin1_mojibake_markers(text: str) -> int:
+    return sum(1 for char in text if "\u00a1" <= char <= "\u00ff")
+
+
+LATIN1_MOJIBAKE_MARKER_PATTERN = r"[\u00a1-\u00ff]"
+
+
+def repair_korean_mojibake_text(value: object) -> str:
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+
+    text = str(value).strip()
+    if not text or count_latin1_mojibake_markers(text) == 0:
+        return text
+
+    original_hangul_count = count_hangul_chars(text)
+    best_text = text
+    best_score = (original_hangul_count * 4) - count_latin1_mojibake_markers(text) - (text.count("�") * 10)
+
+    for source_encoding in ("cp1252", "latin1"):
+        try:
+            candidate = text.encode(source_encoding).decode("cp949")
+        except UnicodeError:
+            continue
+
+        candidate_hangul_count = count_hangul_chars(candidate)
+        if candidate_hangul_count <= original_hangul_count:
+            continue
+
+        candidate_score = (
+            (candidate_hangul_count * 4)
+            - count_latin1_mojibake_markers(candidate)
+            - (candidate.count("�") * 10)
+        )
+        if candidate_score > best_score:
+            best_text = candidate
+            best_score = candidate_score
+
+    return best_text
+
+
+def repair_korean_mojibake_series(series: pd.Series) -> pd.Series:
+    text = series.astype(str).str.strip()
+    marker_mask = text.str.contains(LATIN1_MOJIBAKE_MARKER_PATTERN, regex=True, na=False)
+    if not marker_mask.any():
+        return text
+    text = text.copy()
+    text.loc[marker_mask] = text.loc[marker_mask].map(repair_korean_mojibake_text)
+    return text
+
+
+def repair_korean_mojibake_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return df
+
+    result = df.copy()
+    for column in result.select_dtypes(include=["object", "string"]).columns:
+        text = result[column].astype(str).str.strip()
+        marker_mask = text.str.contains(LATIN1_MOJIBAKE_MARKER_PATTERN, regex=True, na=False)
+        if marker_mask.any():
+            result.loc[marker_mask, column] = text.loc[marker_mask].map(repair_korean_mojibake_text)
+    return result
+
+
 def clean_text_value(value: object) -> str:
     try:
         if pd.isna(value):
@@ -4229,6 +4301,8 @@ def clean_text_value(value: object) -> str:
         pass
 
     text = str(value).strip()
+    if text and text.lower() not in INVALID_CATEGORY_VALUES:
+        text = repair_korean_mojibake_text(text)
     return "" if text.lower() in INVALID_CATEGORY_VALUES else text
 
 
@@ -7979,8 +8053,8 @@ def normalize_to_master_p_code(value: object) -> str:
 
 def api_text_series(source: pd.DataFrame, column_name: str | None, default: str = "") -> pd.Series:
     if column_name and column_name in source.columns:
-        return source[column_name].astype(str).str.strip()
-    return pd.Series(default, index=source.index, dtype="object")
+        return repair_korean_mojibake_series(source[column_name])
+    return repair_korean_mojibake_series(pd.Series(default, index=source.index, dtype="object"))
 
 
 def api_numeric_series(source: pd.DataFrame, column_name: str | None, default: float = 0.0) -> pd.Series:
