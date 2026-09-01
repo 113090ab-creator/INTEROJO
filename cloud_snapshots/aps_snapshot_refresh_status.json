@@ -1,15 +1,20 @@
 {
-  "checked_at": "2026-09-01 10:24:11",
+  "checked_at": "2026-09-01 17:58:37",
+  "slot_key": "2026-09-01 16:00",
+  "api_updated_at": "2026-09-01 16:04:37",
+  "wip_api_updated_at": "2026-09-01 16:25:27",
   "status": "completed",
-  "api_updated_at": "2026-09-01 08:00:18",
-  "wip_api_updated_at": "2026-09-01 08:16:35",
-  "storage": "로컬 cloud_snapshots 폴더",
   "sites": [
     "C관",
     "A관",
     "S관",
     "전체"
   ],
-  "skipped": true,
-  "reason": "stored snapshots are already current"
+  "results": {
+    "WIP": "refreshed rows=29,845 updated_at=2026-09-01 16:25:27 raw_dir=C:\\Users\\유현아\\Documents\\GitHub\\INTEROJO\\outputs\\aps_wip_raw\\20260901_162527",
+    "C관": "refreshed rows=5,157 updated_at=2026-09-01 16:04:37",
+    "A관": "refreshed rows=1,491 updated_at=2026-09-01 16:04:37",
+    "S관": "refreshed rows=8,088 updated_at=2026-09-01 16:04:37",
+    "전체": "refreshed rows=14,736 updated_at=2026-09-01 16:04:37"
+  }
 }
