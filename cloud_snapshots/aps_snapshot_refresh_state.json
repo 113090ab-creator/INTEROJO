@@ -115,6 +115,30 @@
         "S관": "refreshed rows=5,278 updated_at=2026-08-31 07:56:18",
         "전체": "refreshed rows=12,540 updated_at=2026-08-31 07:56:18"
       }
+    },
+    "2026-08-31 16:00": {
+      "completed_at": "2026-08-31 18:10:12",
+      "api_updated_at": "2026-08-31 15:57:29",
+      "wip_api_updated_at": "2026-08-31 16:21:31",
+      "results": {
+        "WIP": "refreshed rows=29,648 updated_at=2026-08-31 16:21:31 raw_dir=C:\\Users\\유현아\\Documents\\GitHub\\INTEROJO\\outputs\\aps_wip_raw\\20260831_162131",
+        "C관": "refreshed rows=5,485 updated_at=2026-08-31 15:57:29",
+        "A관": "refreshed rows=1,357 updated_at=2026-08-31 15:57:29",
+        "S관": "refreshed rows=5,215 updated_at=2026-08-31 15:57:29",
+        "전체": "refreshed rows=12,057 updated_at=2026-08-31 15:57:29"
+      }
+    },
+    "2026-09-01 07:30": {
+      "completed_at": "2026-09-01 08:19:54",
+      "api_updated_at": "2026-09-01 08:00:18",
+      "wip_api_updated_at": "2026-09-01 08:16:35",
+      "results": {
+        "WIP": "refreshed rows=29,682 updated_at=2026-09-01 08:16:35 raw_dir=C:\\Users\\유현아\\Documents\\GitHub\\INTEROJO\\outputs\\aps_wip_raw\\20260901_081635",
+        "C관": "refreshed rows=5,237 updated_at=2026-09-01 08:00:18",
+        "A관": "refreshed rows=1,611 updated_at=2026-09-01 08:00:18",
+        "S관": "refreshed rows=5,303 updated_at=2026-09-01 08:00:18",
+        "전체": "refreshed rows=12,151 updated_at=2026-09-01 08:00:18"
+      }
     }
   }
 }

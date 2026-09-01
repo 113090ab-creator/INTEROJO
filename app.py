@@ -20,6 +20,8 @@ import streamlit as st
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
+import snapshot_storage
+
 try:
     import requests
 except ImportError:  # pragma: no cover - handled as a runtime configuration issue
@@ -94,6 +96,7 @@ PLAN_API_BASE_URL_DEFAULT = "https://plan.interojo.net"
 PLAN_API_KEY_ENV = "PLAN_API_KEY"
 PLAN_API_BASE_URL_ENV = "PLAN_API_BASE_URL"
 PLAN_API_FORCE_ENABLED_ENV = "INTEROJO_FORCE_PLAN_API"
+LOCAL_SECRET_DISCOVERY_DISABLED_ENV = "INTEROJO_DISABLE_LOCAL_SECRET_DISCOVERY"
 PLAN_API_TIMEOUT_SECONDS = int(os.getenv("PLAN_API_TIMEOUT_SECONDS", "30"))
 APS_WIP_API_TIMEOUT_SECONDS = int(os.getenv("APS_WIP_API_TIMEOUT_SECONDS", "180"))
 PLAN_API_DEFAULT_ROW_LIMIT = 0
@@ -980,6 +983,10 @@ def get_latest_files_updated_at_cached(refresh_key: str, path_strs: tuple[str, .
     return latest_dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def is_local_secret_discovery_disabled() -> bool:
+    return os.environ.get(LOCAL_SECRET_DISCOVERY_DISABLED_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def get_streamlit_or_env_secret(name: str, default: str = "") -> str:
     try:
         value = st.secrets.get(name, "")
@@ -987,9 +994,12 @@ def get_streamlit_or_env_secret(name: str, default: str = "") -> str:
         value = ""
     if value is None or str(value).strip() == "":
         value = os.environ.get(name, default)
-    if value is None or str(value).strip() == "":
+    if (value is None or str(value).strip() == "") and not is_local_secret_discovery_disabled():
         value = read_local_streamlit_secret(name, default)
     return str(value).strip()
+
+
+snapshot_storage.configure_secret_resolver(get_streamlit_or_env_secret)
 
 
 def get_plan_api_base_url() -> str:
@@ -1016,6 +1026,8 @@ def get_local_secret_file_candidates() -> list[Path]:
 
 
 def read_local_streamlit_secret(name: str, default: str = "") -> str:
+    if is_local_secret_discovery_disabled():
+        return default
     pattern = re.compile(rf"^\s*{re.escape(name)}\s*=\s*(.+?)\s*$")
     for path in get_local_secret_file_candidates():
         if not path.exists():
@@ -1111,6 +1123,8 @@ def find_local_plan_api_key_file() -> Path | None:
 
 
 def read_local_plan_api_key() -> str:
+    if is_local_secret_discovery_disabled():
+        return ""
     path = find_local_plan_api_key_file()
     if path is None:
         return ""
@@ -2230,6 +2244,10 @@ def render_sidebar_reference_dates(data_base_dir: Path, source_label: str) -> No
 
     st.markdown('<div class="sidebar-section-title">반영 기준일자</div>', unsafe_allow_html=True)
     st.caption(f"APS API 수요: {api_label}")
+    try:
+        st.caption(f"스냅샷 저장소: {snapshot_storage.describe_snapshot_storage()}")
+    except Exception:
+        st.caption("스냅샷 저장소: 설정 확인 필요")
     if should_use_aps_wip_api_for_inventory():
         snapshot_wip_source = get_cloud_wip_inventory_source_label("") or get_cloud_shortage_wip_source_label("전체")
         if snapshot_wip_source:
@@ -2642,10 +2660,14 @@ def can_use_cloud_shortage_snapshot(data_base_dir: Path) -> bool:
     except OSError:
         is_default_source = False
     live_data_override = os.environ.get("INTEROJO_USE_LIVE_DATA", "").strip().lower()
+    try:
+        has_shortage_snapshot = snapshot_storage.snapshot_exists(CLOUD_SNAPSHOT_DIR, "shortage_snapshot.csv.gz")
+    except Exception:
+        has_shortage_snapshot = False
     return (
         is_default_source
         and live_data_override not in {"1", "true", "yes", "on"}
-        and any(CLOUD_SNAPSHOT_DIR.glob("shortage_snapshot*.csv.gz"))
+        and has_shortage_snapshot
     )
 
 
@@ -2692,22 +2714,18 @@ def shortage_snapshot_meta_key(site_filter: str = "전체") -> str:
 def build_cloud_snapshot_refresh_key(*names: str) -> str:
     parts: list[str] = []
     for name in names:
-        path = CLOUD_SNAPSHOT_DIR / name
-        try:
-            stat = path.stat()
-            parts.append(f"{name}:{stat.st_size}:{stat.st_mtime_ns}")
-        except OSError:
-            parts.append(f"{name}:missing")
+        parts.append(snapshot_storage.snapshot_signature(CLOUD_SNAPSHOT_DIR, name))
     return "|".join(parts)
 
 
 @st.cache_data(show_spinner=False)
 def read_cloud_snapshot_csv(name: str, refresh_key: str) -> pd.DataFrame:
     _ = refresh_key
-    path = CLOUD_SNAPSHOT_DIR / name
-    if not path.exists():
+    if not snapshot_storage.snapshot_exists(CLOUD_SNAPSHOT_DIR, name):
         return pd.DataFrame()
-    return repair_korean_mojibake_dataframe(pd.read_csv(path, encoding="utf-8-sig", compression="infer"))
+    data = snapshot_storage.read_snapshot_bytes(CLOUD_SNAPSHOT_DIR, name)
+    compression = "gzip" if name.endswith(".gz") else None
+    return repair_korean_mojibake_dataframe(pd.read_csv(BytesIO(data), encoding="utf-8-sig", compression=compression))
 
 
 def load_cloud_snapshot_csv(name: str) -> pd.DataFrame:
@@ -2718,20 +2736,22 @@ def load_cloud_snapshot_csv(name: str) -> pd.DataFrame:
 def write_cloud_snapshot_csv(name: str, df: pd.DataFrame) -> bool:
     if not isinstance(df, pd.DataFrame):
         return False
-    path = CLOUD_SNAPSHOT_DIR / name
-    temp_path = path.with_suffix(path.suffix + f".{uuid.uuid4().hex}.tmp")
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        compression = "gzip" if path.name.endswith(".gz") else None
         df = repair_korean_mojibake_dataframe(df)
-        df.to_csv(temp_path, index=False, encoding="utf-8-sig", compression=compression)
-        temp_path.replace(path)
+        if name.endswith(".gz"):
+            buffer = BytesIO()
+            df.to_csv(
+                buffer,
+                index=False,
+                encoding="utf-8-sig",
+                compression={"method": "gzip", "mtime": 0},
+            )
+            data = buffer.getvalue()
+        else:
+            data = df.to_csv(index=False).encode("utf-8-sig")
+        snapshot_storage.write_snapshot_bytes_atomic(CLOUD_SNAPSHOT_DIR, name, data)
         return True
     except Exception:
-        try:
-            temp_path.unlink(missing_ok=True)
-        except Exception:
-            pass
         return False
 
 
@@ -2749,14 +2769,7 @@ def write_cloud_snapshot_meta_value(key: str, value: str) -> bool:
     clean_key = clean_text_value(key)
     if not clean_key:
         return False
-    meta_path = CLOUD_SNAPSHOT_DIR / "snapshot_meta.csv"
-    if meta_path.exists():
-        try:
-            meta = pd.read_csv(meta_path, encoding="utf-8-sig")
-        except Exception:
-            meta = pd.DataFrame(columns=["key", "value"])
-    else:
-        meta = pd.DataFrame(columns=["key", "value"])
+    meta = load_cloud_snapshot_csv("snapshot_meta.csv")
     if not {"key", "value"}.issubset(meta.columns):
         meta = pd.DataFrame(columns=["key", "value"])
     meta = meta[["key", "value"]].copy()
@@ -2799,8 +2812,15 @@ def is_cloud_snapshot_fresh(meta_key: str, live_updated_at: str) -> bool:
 
 def read_json_file(path: Path) -> dict[str, object]:
     try:
-        with path.open("r", encoding="utf-8") as json_file:
-            data = json.load(json_file)
+        try:
+            snapshot_name = path.relative_to(CLOUD_SNAPSHOT_DIR).as_posix()
+        except ValueError:
+            snapshot_name = ""
+        if snapshot_name:
+            data = snapshot_storage.read_json_snapshot(CLOUD_SNAPSHOT_DIR, snapshot_name)
+        else:
+            with path.open("r", encoding="utf-8") as json_file:
+                data = json.load(json_file)
     except Exception:
         return {}
     return data if isinstance(data, dict) else {}
@@ -2812,6 +2832,40 @@ def read_first_json_file(paths: tuple[Path, ...]) -> dict[str, object]:
         if data:
             return data
     return {}
+
+
+def get_snapshot_refresh_status() -> dict[str, object]:
+    return read_first_json_file(APS_SNAPSHOT_REFRESH_STATUS_PATHS)
+
+
+def summarize_snapshot_refresh_failure(status: dict[str, object]) -> str:
+    reason = clean_text_value(status.get("reason", ""))
+    if reason:
+        return reason
+
+    results = status.get("results")
+    if isinstance(results, dict):
+        failed = []
+        for key, value in results.items():
+            text = clean_text_value(value)
+            if "fail" in text.lower() or "오류" in text or "실패" in text:
+                failed.append(f"{key}: {text}")
+        if failed:
+            return "; ".join(failed)
+    return "자동 스냅샷 갱신 작업이 완료되지 않았습니다."
+
+
+def build_snapshot_refresh_failure_message() -> str:
+    status = get_snapshot_refresh_status()
+    status_text = clean_text_value(status.get("status", "")).lower()
+    if status_text not in {"failed", "api_failed", "validation_failed", "storage_failed"}:
+        return ""
+
+    checked_at = format_reference_timestamp(clean_text_value(status.get("checked_at", "")))
+    reason = summarize_snapshot_refresh_failure(status)
+    if len(reason) > 220:
+        reason = reason[:217].rstrip() + "..."
+    return f"마지막 갱신 실패: {checked_at}. 기존 정상 스냅샷을 표시합니다. 원인: {reason}"
 
 
 def get_recorded_aps_plan_updated_at(default: str = "-") -> str:
@@ -3057,7 +3111,11 @@ def build_shortage_snapshot_hold_file_info(snapshot_updated_at: str, live_update
 
 def load_cloud_shortage_snapshot(site_filter: str = "전체") -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     snapshot_name, info_name, process_name = shortage_snapshot_file_names(site_filter)
-    if snapshot_name != "shortage_snapshot.csv.gz" and not (CLOUD_SNAPSHOT_DIR / snapshot_name).exists():
+    try:
+        specific_snapshot_exists = snapshot_storage.snapshot_exists(CLOUD_SNAPSHOT_DIR, snapshot_name)
+    except Exception:
+        specific_snapshot_exists = False
+    if snapshot_name != "shortage_snapshot.csv.gz" and not specific_snapshot_exists:
         snapshot_name, info_name, process_name = shortage_snapshot_file_names("전체")
     return (
         load_cloud_snapshot_csv(snapshot_name),
@@ -15751,6 +15809,8 @@ def main() -> None:
                     st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
                     render_sidebar_reference_dates(data_base_dir, source_label)
 
+    snapshot_refresh_failure_message = build_snapshot_refresh_failure_message()
+
     try:
         df = pd.DataFrame()
         file_info_df = pd.DataFrame()
@@ -15850,7 +15910,7 @@ def main() -> None:
                                 api_alert_title = "오류"
                                 api_alert_message = wip_snapshot_unavailable_message
                                 sidebar_status_caption = "오류: APS WIP 정리 스냅샷 필요"
-                            elif snapshot_hold_message:
+                            elif snapshot_hold_message and not snapshot_refresh_failure_message:
                                 df = build_empty_shortage_dashboard_df()
                                 file_info_df = build_shortage_snapshot_hold_file_info(
                                     snapshot_updated_at,
@@ -15871,7 +15931,11 @@ def main() -> None:
                                 df = snapshot_df
                                 file_info_df = snapshot_file_info_df
                                 source_label = "Cloud 스냅샷 (빠른 조회)"
-                                sidebar_status_caption = "빠른 조회: 최신 스냅샷 표시"
+                                sidebar_status_caption = (
+                                    "자동 갱신 실패: 기존 정상 스냅샷 표시"
+                                    if snapshot_hold_message
+                                    else "빠른 조회: 최신 스냅샷 표시"
+                                )
                             shortage_locked_site_filter = shortage_api_site_filter
                             quick_snapshot_loaded = True
                     except Exception:
@@ -15921,7 +15985,7 @@ def main() -> None:
                                     source_label = "APS WIP API 오류"
                                     api_alert_message = f"{api_alert_message} {wip_snapshot_unavailable_message}"
                                     sidebar_status_caption = "오류: APS WIP API 재고 필요"
-                                elif snapshot_hold_message:
+                                elif snapshot_hold_message and not snapshot_refresh_failure_message:
                                     df = build_empty_shortage_dashboard_df()
                                     file_info_df = build_shortage_snapshot_hold_file_info(
                                         snapshot_updated_at,
@@ -15934,7 +15998,11 @@ def main() -> None:
                                     df = snapshot_df
                                     file_info_df = snapshot_file_info_df
                                     source_label = "Cloud 스냅샷 (APS API 실패 fallback)"
-                                    sidebar_status_caption = "API 오류: 기존 스냅샷 표시"
+                                    sidebar_status_caption = (
+                                        "자동 갱신 실패: 기존 정상 스냅샷 표시"
+                                        if snapshot_hold_message
+                                        else "API 오류: 기존 스냅샷 표시"
+                                    )
                                 shortage_locked_site_filter = shortage_api_site_filter
                                 fallback_loaded = True
                         except Exception:
@@ -16004,6 +16072,14 @@ def main() -> None:
         st.error(f"데이터 로드 실패: {exc}")
         st.stop()
 
+    if selected_top_view == "생산 부족 현황" and snapshot_refresh_failure_message:
+        api_alert_title = "오류"
+        api_alert_message = (
+            f"{snapshot_refresh_failure_message} {api_alert_message}"
+            if api_alert_message
+            else snapshot_refresh_failure_message
+        )
+
     if selected_top_view == "전체 품목 현황":
         render_all_items_dashboard(all_items_df, updated_at, all_items_full_builder, all_item_site_filter)
     elif selected_top_view == "생산 부족 현황":
@@ -16027,6 +16103,8 @@ def main() -> None:
     with st.sidebar:
         st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
         st.caption(sidebar_status_caption)
+        if snapshot_refresh_failure_message:
+            st.error(snapshot_refresh_failure_message)
         if selected_top_view != "생산유효도 분석":
             st.caption(f"적용 데이터: {source_label}")
             if data_base_dir.resolve() != BASE_DIR.resolve():
