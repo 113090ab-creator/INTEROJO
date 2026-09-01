@@ -8,10 +8,10 @@ on:
         required: false
         default: "C관,A관,S관,전체"
   schedule:
-    # KST weekdays 16:02-16:32 = UTC weekdays 07:02-07:32.
-    # GitHub schedule runs can be delayed or dropped around busy clock boundaries,
-    # so use off-hour minutes while still checking the APS afternoon refresh window.
-    - cron: "2,7,12,17,22,27,32 7 * * 1-5"
+    # KST weekdays 16:30-17:00 = UTC weekdays 07:30-08:00.
+    # APS 오후 갱신 완료 후 5분 간격으로 재시도하고, 이미 최신이면 건너뜁니다.
+    - cron: "30,35,40,45,50,55 7 * * 1-5"
+    - cron: "0 8 * * 1-5"
 
 permissions:
   contents: write
