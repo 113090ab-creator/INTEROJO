@@ -228,15 +228,3 @@ __marimo__/
 outputs/
 .local_cache/
 *.inspect.ndjson
-
-# Production data and generated snapshots.
-# This repository is public; keep real APS/WIP snapshots outside Git.
-cloud_snapshots/*
-!cloud_snapshots/.gitkeep
-.uploaded_workspaces/
-effective_production_sources/data/aps_plan_snapshots/
-*.xlsx
-*.xls
-*.xlsm
-dashboard_base_preview.csv
-leadji_qty_gap_check_*.csv
