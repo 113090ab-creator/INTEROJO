@@ -993,7 +993,8 @@ def get_streamlit_or_env_secret(name: str, default: str = "") -> str:
     except Exception:
         value = ""
     if value is None or str(value).strip() == "":
-        value = os.environ.get(name, default)
+        env_value = os.environ.get(name, "")
+        value = env_value if str(env_value).strip() else default
     if (value is None or str(value).strip() == "") and not is_local_secret_discovery_disabled():
         value = read_local_streamlit_secret(name, default)
     return str(value).strip()

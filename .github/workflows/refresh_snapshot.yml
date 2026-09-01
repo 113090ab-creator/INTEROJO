@@ -26,7 +26,7 @@ jobs:
       INTEROJO_FORCE_PLAN_API: "1"
       INTEROJO_DISABLE_LOCAL_SECRET_DISCOVERY: "1"
       PLAN_API_KEY: ${{ secrets.PLAN_API_KEY }}
-      PLAN_API_BASE_URL: ${{ secrets.PLAN_API_BASE_URL }}
+      PLAN_API_BASE_URL: ${{ secrets.PLAN_API_BASE_URL || 'https://plan.interojo.net' }}
       PLAN_API_TIMEOUT_SECONDS: "30"
       APS_WIP_API_TIMEOUT_SECONDS: "180"
       PLAN_API_RETRY_ATTEMPTS: "2"
