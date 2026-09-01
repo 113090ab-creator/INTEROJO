@@ -1,12 +1,15 @@
 {
-  "checked_at": "2026-09-01 10:20:59",
-  "status": "failed",
-  "reason": "APS PLAN API 기준시각을 확인하지 못했습니다.",
+  "checked_at": "2026-09-01 10:24:11",
+  "status": "completed",
+  "api_updated_at": "2026-09-01 08:00:18",
+  "wip_api_updated_at": "2026-09-01 08:16:35",
+  "storage": "로컬 cloud_snapshots 폴더",
   "sites": [
     "C관",
     "A관",
     "S관",
     "전체"
   ],
-  "storage": "local-or-remote"
+  "skipped": true,
+  "reason": "stored snapshots are already current"
 }
