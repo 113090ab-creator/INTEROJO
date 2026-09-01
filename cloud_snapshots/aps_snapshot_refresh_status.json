@@ -1,20 +1,12 @@
 {
-  "checked_at": "2026-09-01 08:19:54",
-  "slot_key": "2026-09-01 07:30",
-  "api_updated_at": "2026-09-01 08:00:18",
-  "wip_api_updated_at": "2026-09-01 08:16:35",
-  "status": "completed",
+  "checked_at": "2026-09-01 10:20:59",
+  "status": "failed",
+  "reason": "APS PLAN API 기준시각을 확인하지 못했습니다.",
   "sites": [
     "C관",
     "A관",
     "S관",
     "전체"
   ],
-  "results": {
-    "WIP": "refreshed rows=29,682 updated_at=2026-09-01 08:16:35 raw_dir=C:\\Users\\유현아\\Documents\\GitHub\\INTEROJO\\outputs\\aps_wip_raw\\20260901_081635",
-    "C관": "refreshed rows=5,237 updated_at=2026-09-01 08:00:18",
-    "A관": "refreshed rows=1,611 updated_at=2026-09-01 08:00:18",
-    "S관": "refreshed rows=5,303 updated_at=2026-09-01 08:00:18",
-    "전체": "refreshed rows=12,151 updated_at=2026-09-01 08:00:18"
-  }
+  "storage": "local-or-remote"
 }
