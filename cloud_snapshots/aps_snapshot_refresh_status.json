@@ -1,20 +1,12 @@
 {
-  "checked_at": "2026-09-01 17:58:37",
-  "slot_key": "2026-09-01 16:00",
-  "api_updated_at": "2026-09-01 16:04:37",
-  "wip_api_updated_at": "2026-09-01 16:25:27",
-  "status": "completed",
+  "checked_at": "2026-09-02 21:14:11",
+  "status": "failed",
+  "reason": "APS WIP API 조회 실패: APS WIP 정리 스냅샷이 최신 기준보다 오래됐습니다 (스냅샷 2026-09-01 16:25:27 / APS WIP 최신 2026-09-02 16:14:43). WIP 파일 대체는 사용하지 않습니다.",
   "sites": [
     "C관",
     "A관",
     "S관",
     "전체"
   ],
-  "results": {
-    "WIP": "refreshed rows=29,845 updated_at=2026-09-01 16:25:27 raw_dir=C:\\Users\\유현아\\Documents\\GitHub\\INTEROJO\\outputs\\aps_wip_raw\\20260901_162527",
-    "C관": "refreshed rows=5,157 updated_at=2026-09-01 16:04:37",
-    "A관": "refreshed rows=1,491 updated_at=2026-09-01 16:04:37",
-    "S관": "refreshed rows=8,088 updated_at=2026-09-01 16:04:37",
-    "전체": "refreshed rows=14,736 updated_at=2026-09-01 16:04:37"
-  }
+  "storage": "local-or-remote"
 }
