@@ -8,6 +8,9 @@ on:
         required: false
         default: "C관,A관,S관,전체"
   schedule:
+    # KST weekdays 08:20-08:50 = UTC previous-day 23:20-23:50.
+    # Morning WIP usually arrives after 08:10, so start after the data is likely ready.
+    - cron: "20,25,30,35,40,45,50 23 * * 0-4"
     # KST weekdays 16:30-17:00 = UTC weekdays 07:30-08:00.
     # APS 오후 갱신 완료 후 5분 간격으로 재시도하고, 이미 최신이면 건너뜁니다.
     - cron: "30,35,40,45,50,55 7 * * 1-5"
