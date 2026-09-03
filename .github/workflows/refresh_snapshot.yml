@@ -10,11 +10,10 @@ on:
   schedule:
     # KST weekdays 08:20-08:50 = UTC previous-day 23:20-23:50.
     # Morning WIP usually arrives after 08:10, so start after the data is likely ready.
-    - cron: "20,25,30,35,40,45,50 23 * * 0-4"
+    - cron: "20 23 * * 0-4"
     # KST weekdays 16:30-17:00 = UTC weekdays 07:30-08:00.
     # APS 오후 갱신 완료 후 5분 간격으로 재시도하고, 이미 최신이면 건너뜁니다.
-    - cron: "30,35,40,45,50,55 7 * * 1-5"
-    - cron: "0 8 * * 1-5"
+    - cron: "30 7 * * 1-5"
 
 permissions:
   contents: write
@@ -26,6 +25,7 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     env:
       INTEROJO_FORCE_PLAN_API: "1"
       INTEROJO_DISABLE_LOCAL_SECRET_DISCOVERY: "1"
@@ -38,6 +38,12 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Sync latest snapshots
+        run: git pull --ff-only origin main
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -52,10 +58,24 @@ jobs:
       - name: Refresh APS snapshots
         id: refresh
         continue-on-error: true
-        run: >-
-          python scripts/refresh_snapshot.py
-          --only-if-stale
-          --sites "${{ github.event.inputs.sites || 'C관,A관,S관,전체' }}"
+        shell: bash
+        run: |
+          status=1
+          for attempt in 1 2 3 4 5 6 7; do
+            echo "APS snapshot refresh attempt ${attempt}/7"
+            python scripts/refresh_snapshot.py \
+              --only-if-stale \
+              --sites "${{ github.event.inputs.sites || 'C관,A관,S관,전체' }}"
+            status=$?
+            if [ "$status" -eq 0 ]; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 7 ]; then
+              echo "APS snapshot refresh failed; retrying in 5 minutes."
+              sleep 300
+            fi
+          done
+          exit "$status"
 
       - name: Commit refreshed snapshots and status
         if: always()
@@ -68,7 +88,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add cloud_snapshots
           git commit -m "Refresh APS snapshots"
-          git push
+          git push origin HEAD:main
 
       - name: Fail when refresh failed
         if: steps.refresh.outcome == 'failure'
