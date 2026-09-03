@@ -151,6 +151,42 @@
         "S관": "refreshed rows=8,088 updated_at=2026-09-01 16:04:37",
         "전체": "refreshed rows=14,736 updated_at=2026-09-01 16:04:37"
       }
+    },
+    "2026-09-02 07:30": {
+      "completed_at": "2026-09-02 08:18:10",
+      "api_updated_at": "2026-09-02 08:02:08",
+      "wip_api_updated_at": "2026-09-02 08:15:33",
+      "results": {
+        "WIP": "refreshed rows=30,054 updated_at=2026-09-02 08:15:33 raw_dir=C:\\Users\\유현아\\Documents\\GitHub\\INTEROJO\\outputs\\aps_wip_raw\\20260902_081533",
+        "C관": "refreshed rows=4,948 updated_at=2026-09-02 08:02:08",
+        "A관": "refreshed rows=1,652 updated_at=2026-09-02 08:02:08",
+        "S관": "refreshed rows=7,823 updated_at=2026-09-02 08:02:08",
+        "전체": "refreshed rows=14,423 updated_at=2026-09-02 08:02:08"
+      }
+    },
+    "2026-09-02 16:00": {
+      "completed_at": "2026-09-02 16:17:19",
+      "api_updated_at": "2026-09-02 16:02:45",
+      "wip_api_updated_at": "2026-09-02 16:14:43",
+      "results": {
+        "WIP": "refreshed rows=30,004 updated_at=2026-09-02 16:14:43 raw_dir=C:\\Users\\유현아\\Documents\\GitHub\\INTEROJO\\outputs\\aps_wip_raw\\20260902_161443",
+        "C관": "refreshed rows=4,843 updated_at=2026-09-02 16:02:45",
+        "A관": "refreshed rows=1,621 updated_at=2026-09-02 16:02:45",
+        "S관": "refreshed rows=8,812 updated_at=2026-09-02 16:02:45",
+        "전체": "refreshed rows=15,276 updated_at=2026-09-02 16:02:45"
+      }
+    },
+    "2026-09-03 07:30": {
+      "completed_at": "2026-09-03 08:20:09",
+      "api_updated_at": "2026-09-03 08:03:42",
+      "wip_api_updated_at": "2026-09-03 08:17:27",
+      "results": {
+        "WIP": "refreshed rows=30,103 updated_at=2026-09-03 08:17:27 raw_dir=C:\\Users\\유현아\\Documents\\GitHub\\INTEROJO\\outputs\\aps_wip_raw\\20260903_081727",
+        "C관": "refreshed rows=4,646 updated_at=2026-09-03 08:03:42",
+        "A관": "refreshed rows=1,481 updated_at=2026-09-03 08:03:42",
+        "S관": "refreshed rows=8,839 updated_at=2026-09-03 08:03:42",
+        "전체": "refreshed rows=14,966 updated_at=2026-09-03 08:03:42"
+      }
     }
   }
 }
