@@ -11,14 +11,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
+from typing import Callable
 from zoneinfo import ZoneInfo
 
-import openpyxl
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from openpyxl.styles import Alignment, Font, PatternFill
-from openpyxl.utils import get_column_letter
 
 import snapshot_storage
 
@@ -41,13 +39,16 @@ UPLOAD_WORKSPACE_ROOT = BASE_DIR / ".uploaded_workspaces"
 LATEST_UPLOAD_SESSION_FILE = UPLOAD_WORKSPACE_ROOT / "latest_session.txt"
 UPLOAD_SIGNATURE_FILE = "upload_signature.txt"
 CLOUD_SNAPSHOT_DIR = BASE_DIR / "cloud_snapshots"
+CLOUD_SNAPSHOT_META_NAME = "snapshot_meta.csv"
+CLOUD_SNAPSHOT_REFRESH_STATE_NAME = "aps_snapshot_refresh_state.json"
+CLOUD_SNAPSHOT_REFRESH_STATUS_NAME = "aps_snapshot_refresh_status.json"
 APS_SNAPSHOT_REFRESH_STATE_PATHS = (
-    CLOUD_SNAPSHOT_DIR / "aps_snapshot_refresh_state.json",
-    BASE_DIR / "outputs" / "aps_snapshot_refresh_state.json",
+    CLOUD_SNAPSHOT_DIR / CLOUD_SNAPSHOT_REFRESH_STATE_NAME,
+    BASE_DIR / "outputs" / CLOUD_SNAPSHOT_REFRESH_STATE_NAME,
 )
 APS_SNAPSHOT_REFRESH_STATUS_PATHS = (
-    CLOUD_SNAPSHOT_DIR / "aps_snapshot_refresh_status.json",
-    BASE_DIR / "outputs" / "aps_snapshot_refresh_status.json",
+    CLOUD_SNAPSHOT_DIR / CLOUD_SNAPSHOT_REFRESH_STATUS_NAME,
+    BASE_DIR / "outputs" / CLOUD_SNAPSHOT_REFRESH_STATUS_NAME,
 )
 STREAMLIT_CLOUD_RUNTIME = (
     bool(os.environ.get("STREAMLIT_CLOUD"))
@@ -817,9 +818,22 @@ def find_demand_update_file(base_dir: Path) -> Path | None:
     return None
 
 
+def load_openpyxl_workbook(*args, **kwargs):
+    import openpyxl
+
+    return openpyxl.load_workbook(*args, **kwargs)
+
+
+def get_openpyxl_format_helpers():
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    return Alignment, Font, PatternFill, get_column_letter
+
+
 def workbook_has_sheet(path: Path, sheet_name: str) -> bool:
     try:
-        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        wb = load_openpyxl_workbook(path, read_only=True, data_only=True)
     except Exception:
         return False
     try:
@@ -862,7 +876,7 @@ def find_all_item_master_file(base_dir: Path) -> Path | None:
 
 def workbook_has_any_sheet(path: Path, sheet_names: tuple[str, ...]) -> bool:
     try:
-        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        wb = load_openpyxl_workbook(path, read_only=True, data_only=True)
     except Exception:
         return False
     try:
@@ -965,7 +979,7 @@ def build_files_refresh_key(paths: list[Path]) -> str:
 
 def get_file_updated_datetime(path: Path) -> datetime:
     try:
-        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        wb = load_openpyxl_workbook(path, read_only=True, data_only=True)
         modified = wb.properties.modified
         wb.close()
         if isinstance(modified, datetime):
@@ -2296,6 +2310,47 @@ def render_sidebar_reference_dates(data_base_dir: Path, source_label: str) -> No
     st.caption(f"적용 데이터: {source_label}")
 
 
+def is_cloud_snapshot_source_label(source_label: str) -> bool:
+    source_text = clean_text_value(source_label)
+    return "스냅샷" in source_text
+
+
+def get_cloud_snapshot_status_label(snapshot_failure_message: str = "") -> str:
+    if clean_text_value(snapshot_failure_message):
+        return "마지막 갱신 실패"
+    status = get_snapshot_refresh_status()
+    status_text = clean_text_value(status.get("status", "")).lower()
+    if status_text == "completed":
+        return "최신"
+    if status_text == "pending":
+        return "갱신 대기"
+    if status_text:
+        return status_text
+    return "스냅샷"
+
+
+def render_cloud_snapshot_sidebar_summary(
+    demand_updated_at: str,
+    sidebar_status_caption: str,
+    source_label: str,
+    snapshot_failure_message: str = "",
+) -> None:
+    st.markdown('<div class="sidebar-section-title">데이터 기준</div>', unsafe_allow_html=True)
+    st.caption(f"수요 : {format_reference_timestamp(demand_updated_at)}")
+    st.caption(f"WIP : {format_reference_timestamp(get_cloud_wip_inventory_snapshot_updated_at('-'))}")
+    st.caption(f"상태 : {get_cloud_snapshot_status_label(snapshot_failure_message)}")
+    if snapshot_failure_message:
+        st.error(snapshot_failure_message)
+    if DEBUG_PERFORMANCE:
+        with st.expander("상세 기준 정보", expanded=False):
+            st.caption(sidebar_status_caption)
+            st.caption(f"적용 데이터: {source_label}")
+            try:
+                st.caption(f"스냅샷 저장소: {snapshot_storage.describe_snapshot_storage()}")
+            except Exception:
+                st.caption("스냅샷 저장소: 설정 확인 필요")
+
+
 def get_all_item_updated_at(base_dir: Path) -> str:
     try:
         inv_path, dem_path = find_excel_files(base_dir)
@@ -2550,20 +2605,20 @@ def select_data_source(base_dir: Path, selected_top_view: str = "") -> tuple[Pat
         )
 
     api_configured = sync_plan_api_data_mode()
+    use_quick_shortage_snapshot = (
+        selected_top_view == "생산 부족 현황"
+        and should_use_shortage_snapshot_first(base_dir)
+        and not bool(get_session_value("force_live_plan_api_once", False))
+    )
     use_api = st.toggle(
         "APS API 자동조회 사용",
         key="use_plan_api_data_mode",
         disabled=not api_configured,
     )
     if use_api:
-        use_quick_shortage_snapshot = (
-            selected_top_view == "생산 부족 현황"
-            and should_use_shortage_snapshot_first(base_dir)
-            and not bool(get_session_value("force_live_plan_api_once", False))
-        )
-        if use_quick_shortage_snapshot:
+        if use_quick_shortage_snapshot and DEBUG_PERFORMANCE:
             st.caption("빠른 조회: 저장된 스냅샷을 즉시 표시합니다.")
-        else:
+        elif not use_quick_shortage_snapshot:
             render_plan_api_status()
         if api_configured:
             if st.button("APS API 새로고침", key="refresh_plan_api_data", use_container_width=True):
@@ -2573,7 +2628,8 @@ def select_data_source(base_dir: Path, selected_top_view: str = "") -> tuple[Pat
                 st.cache_resource.clear()
                 st.rerun()
             if use_quick_shortage_snapshot:
-                st.caption("APS API는 하루 2회 갱신 기준입니다. 즉시 재조회가 필요할 때만 APS API 새로고침을 누르세요.")
+                if DEBUG_PERFORMANCE:
+                    st.caption("APS API는 하루 2회 갱신 기준입니다. 즉시 재조회가 필요할 때만 APS API 새로고침을 누르세요.")
             elif should_use_aps_wip_api_for_inventory():
                 st.caption(
                     "APS 수요는 API로 조회하고, WIP/공정재고는 예약 작업이 만든 APS WIP 정리 스냅샷을 사용합니다. "
@@ -2582,7 +2638,7 @@ def select_data_source(base_dir: Path, selected_top_view: str = "") -> tuple[Pat
             else:
                 st.caption("APS 수요는 API로 조회하고, WIP/공정재고는 기존 WIP 엑셀 파일 기준으로 계산합니다.")
             if use_quick_shortage_snapshot:
-                updated_at = get_cloud_snapshot_meta_value("data_updated_at", get_data_updated_at(base_dir))
+                updated_at = get_cloud_snapshot_meta_value("data_updated_at", "-")
                 return base_dir, "Cloud 스냅샷 우선 + APS API 새로고침", updated_at
             api_updated_at = get_plan_api_updated_at()
             updated_at = api_updated_at if api_updated_at != "-" else get_data_updated_at(base_dir)
@@ -2592,6 +2648,11 @@ def select_data_source(base_dir: Path, selected_top_view: str = "") -> tuple[Pat
                 else "APS API 수요 + WIP 엑셀"
             )
             return base_dir, source_name, updated_at
+    elif use_quick_shortage_snapshot:
+        if DEBUG_PERFORMANCE:
+            st.caption("Cloud 스냅샷 모드: 저장된 스냅샷을 즉시 표시합니다.")
+        updated_at = get_cloud_snapshot_meta_value("data_updated_at", "-")
+        return base_dir, "Cloud 스냅샷 (저장 데이터)", updated_at
     elif api_configured:
         st.caption("현재 설정: 폴더 저장 파일 기준입니다. 저장된 수요/WIP 엑셀을 사용합니다.")
     elif not api_configured:
@@ -2769,6 +2830,81 @@ def load_cloud_snapshot_csv(name: str) -> pd.DataFrame:
     return read_cloud_snapshot_csv(name, refresh_key)
 
 
+def resolve_lazy_default_value(default: str | Callable[[], str]) -> str:
+    if callable(default):
+        try:
+            return clean_text_value(default()) or "-"
+        except Exception:
+            return "-"
+    return clean_text_value(default) or "-"
+
+
+def build_cloud_snapshot_context_refresh_key() -> str:
+    return build_cloud_snapshot_refresh_key(
+        CLOUD_SNAPSHOT_META_NAME,
+        CLOUD_SNAPSHOT_REFRESH_STATUS_NAME,
+        CLOUD_SNAPSHOT_REFRESH_STATE_NAME,
+    )
+
+
+def parse_cloud_snapshot_meta_bytes(data: bytes) -> dict[str, str]:
+    try:
+        meta = pd.read_csv(BytesIO(data), encoding="utf-8-sig")
+    except Exception:
+        return {}
+    if meta.empty or not {"key", "value"}.issubset(meta.columns):
+        return {}
+    return {
+        clean_text_value(row.get("key", "")): clean_text_value(row.get("value", ""))
+        for row in meta.to_dict("records")
+        if clean_text_value(row.get("key", ""))
+    }
+
+
+def parse_cloud_snapshot_json_bytes(data: bytes) -> dict[str, object]:
+    try:
+        parsed = json.loads(data.decode("utf-8-sig"))
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+@st.cache_data(show_spinner=False)
+def read_cloud_snapshot_context_cached(refresh_key: str) -> dict[str, object]:
+    _ = refresh_key
+    with PerfTimer("snapshot_context"):
+        context: dict[str, object] = {"meta": {}, "status": {}, "state": {}}
+        try:
+            context["meta"] = parse_cloud_snapshot_meta_bytes(
+                snapshot_storage.read_snapshot_bytes(CLOUD_SNAPSHOT_DIR, CLOUD_SNAPSHOT_META_NAME)
+            )
+        except Exception:
+            context["meta"] = {}
+        try:
+            context["status"] = parse_cloud_snapshot_json_bytes(
+                snapshot_storage.read_snapshot_bytes(CLOUD_SNAPSHOT_DIR, CLOUD_SNAPSHOT_REFRESH_STATUS_NAME)
+            )
+        except Exception:
+            context["status"] = {}
+        try:
+            context["state"] = parse_cloud_snapshot_json_bytes(
+                snapshot_storage.read_snapshot_bytes(CLOUD_SNAPSHOT_DIR, CLOUD_SNAPSHOT_REFRESH_STATE_NAME)
+            )
+        except Exception:
+            context["state"] = {}
+        return context
+
+
+def get_cloud_snapshot_context() -> dict[str, object]:
+    refresh_key = build_cloud_snapshot_context_refresh_key()
+    return read_cloud_snapshot_context_cached(refresh_key)
+
+
+def get_cloud_snapshot_meta_map() -> dict[str, str]:
+    meta = get_cloud_snapshot_context().get("meta", {})
+    return meta if isinstance(meta, dict) else {}
+
+
 def write_cloud_snapshot_csv(name: str, df: pd.DataFrame) -> bool:
     if not isinstance(df, pd.DataFrame):
         return False
@@ -2791,21 +2927,18 @@ def write_cloud_snapshot_csv(name: str, df: pd.DataFrame) -> bool:
         return False
 
 
-def get_cloud_snapshot_meta_value(key: str, default: str = "-") -> str:
-    meta = load_cloud_snapshot_csv("snapshot_meta.csv")
-    if meta.empty or not {"key", "value"}.issubset(meta.columns):
-        return default
-    values = meta.loc[meta["key"].astype(str) == key, "value"]
-    if values.empty:
-        return default
-    return str(values.iloc[0])
+def get_cloud_snapshot_meta_value(key: str, default: str | Callable[[], str] = "-") -> str:
+    value = get_cloud_snapshot_meta_map().get(clean_text_value(key), "")
+    if value:
+        return value
+    return resolve_lazy_default_value(default)
 
 
 def write_cloud_snapshot_meta_value(key: str, value: str) -> bool:
     clean_key = clean_text_value(key)
     if not clean_key:
         return False
-    meta = load_cloud_snapshot_csv("snapshot_meta.csv")
+    meta = load_cloud_snapshot_csv(CLOUD_SNAPSHOT_META_NAME)
     if not {"key", "value"}.issubset(meta.columns):
         meta = pd.DataFrame(columns=["key", "value"])
     meta = meta[["key", "value"]].copy()
@@ -2817,7 +2950,7 @@ def write_cloud_snapshot_meta_value(key: str, value: str) -> bool:
             [meta, pd.DataFrame([{"key": clean_key, "value": clean_text_value(value)}])],
             ignore_index=True,
         )
-    return write_cloud_snapshot_csv("snapshot_meta.csv", meta)
+    return write_cloud_snapshot_csv(CLOUD_SNAPSHOT_META_NAME, meta)
 
 
 def get_cloud_shortage_snapshot_updated_at(site_filter: str = "전체", default: str = "-") -> str:
@@ -2871,6 +3004,9 @@ def read_first_json_file(paths: tuple[Path, ...]) -> dict[str, object]:
 
 
 def get_snapshot_refresh_status() -> dict[str, object]:
+    status = get_cloud_snapshot_context().get("status", {})
+    if isinstance(status, dict) and status:
+        return status
     return read_first_json_file(APS_SNAPSHOT_REFRESH_STATUS_PATHS)
 
 
@@ -2910,12 +3046,19 @@ def get_recorded_aps_plan_updated_at(default: str = "-") -> str:
     if default_updated_at:
         candidates.append(default_updated_at)
 
-    status = read_first_json_file(APS_SNAPSHOT_REFRESH_STATUS_PATHS)
+    context = get_cloud_snapshot_context()
+    status = context.get("status", {})
+    status = status if isinstance(status, dict) else {}
+    if not status:
+        status = read_first_json_file(APS_SNAPSHOT_REFRESH_STATUS_PATHS)
     status_updated_at = clean_text_value(status.get("api_updated_at", ""))
     if status_updated_at:
         candidates.append(status_updated_at)
 
-    state = read_first_json_file(APS_SNAPSHOT_REFRESH_STATE_PATHS)
+    state = context.get("state", {})
+    state = state if isinstance(state, dict) else {}
+    if not state:
+        state = read_first_json_file(APS_SNAPSHOT_REFRESH_STATE_PATHS)
     completed_slots = state.get("completed_slots")
     if isinstance(completed_slots, dict):
         for slot_info in completed_slots.values():
@@ -2940,12 +3083,19 @@ def get_recorded_aps_wip_updated_at(default: str = "-") -> str:
     if default_updated_at:
         candidates.append(default_updated_at)
 
-    status = read_first_json_file(APS_SNAPSHOT_REFRESH_STATUS_PATHS)
+    context = get_cloud_snapshot_context()
+    status = context.get("status", {})
+    status = status if isinstance(status, dict) else {}
+    if not status:
+        status = read_first_json_file(APS_SNAPSHOT_REFRESH_STATUS_PATHS)
     status_updated_at = clean_text_value(status.get("wip_api_updated_at", ""))
     if status_updated_at:
         candidates.append(status_updated_at)
 
-    state = read_first_json_file(APS_SNAPSHOT_REFRESH_STATE_PATHS)
+    state = context.get("state", {})
+    state = state if isinstance(state, dict) else {}
+    if not state:
+        state = read_first_json_file(APS_SNAPSHOT_REFRESH_STATE_PATHS)
     completed_slots = state.get("completed_slots")
     if isinstance(completed_slots, dict):
         for slot_info in completed_slots.values():
@@ -3047,10 +3197,9 @@ def is_wip_api_unverified_stock_source(stock_source_text: object) -> bool:
 def build_cloud_wip_inventory_snapshot_unavailable_message() -> str:
     if not should_use_aps_wip_api_for_inventory():
         return ""
-    inventory, _ = load_cloud_wip_inventory_snapshot_with_label()
     snapshot_updated_at = get_cloud_wip_inventory_snapshot_updated_at("-")
     recorded_wip_updated_at = get_recorded_aps_wip_updated_at(snapshot_updated_at)
-    if inventory.empty:
+    if snapshot_updated_at == "-":
         return "APS WIP 정리 스냅샷이 없어 최신 재고 데이터를 표시할 수 없습니다. 예약 갱신 작업이 APS WIP API를 먼저 성공해야 합니다."
 
     snapshot_dt = parse_updated_at_value(snapshot_updated_at)
@@ -3474,7 +3623,7 @@ def extract_demand_header_info(dem_path: Path) -> tuple[
     dict[str, str], dict[str, int], list[int], list[int], dict[str, int], dict[int, str]
 ]:
     try:
-        wb = openpyxl.load_workbook(dem_path, read_only=True, data_only=True)
+        wb = load_openpyxl_workbook(dem_path, read_only=True, data_only=True)
     except Exception:
         return {}, {}, [], [], {}, {}
     try:
@@ -3705,7 +3854,7 @@ def read_inventory_excel_subset(inv_path: Path) -> pd.DataFrame:
         return cached.copy()
 
     try:
-        wb = openpyxl.load_workbook(inv_path, read_only=True, data_only=True)
+        wb = load_openpyxl_workbook(inv_path, read_only=True, data_only=True)
     except Exception:
         return pd.DataFrame()
 
@@ -3774,7 +3923,7 @@ def read_demand_excel_subset(dem_path: Path, usecols: list[int]) -> pd.DataFrame
     if not usecols:
         return pd.DataFrame()
     try:
-        wb = openpyxl.load_workbook(dem_path, read_only=True, data_only=True)
+        wb = load_openpyxl_workbook(dem_path, read_only=True, data_only=True)
     except Exception:
         return pd.DataFrame()
     try:
@@ -4148,7 +4297,7 @@ def read_rework_item_keys_from_production_status_file(
     meta = build_empty_rework_meta()
     meta["source_path"] = str(source_path)
     try:
-        wb = openpyxl.load_workbook(source_path, read_only=True, data_only=True)
+        wb = load_openpyxl_workbook(source_path, read_only=True, data_only=True)
     except Exception:
         return {}, meta
 
@@ -4227,7 +4376,7 @@ def read_rework_item_keys_from_demand_file(dem_path: Path) -> tuple[dict[tuple[s
             return production_qty_map, production_meta
 
     try:
-        wb = openpyxl.load_workbook(dem_path, read_only=True, data_only=True)
+        wb = load_openpyxl_workbook(dem_path, read_only=True, data_only=True)
     except Exception:
         return {}, empty_meta
 
@@ -5481,7 +5630,7 @@ def load_bom_maps_streaming(
         pass
 
     try:
-        wb = openpyxl.load_workbook(ref_path_str, read_only=True, data_only=True)
+        wb = load_openpyxl_workbook(ref_path_str, read_only=True, data_only=True)
     except Exception:
         return bom_r_base_map, bom_q_base_map, bom_r_exact_map, bom_q_exact_map
 
@@ -6465,6 +6614,7 @@ def unique_excel_sheet_name(value: object, used_names: set[str], fallback: str =
 
 
 def format_excel_worksheet(ws, df: pd.DataFrame) -> None:
+    Alignment, Font, PatternFill, get_column_letter = get_openpyxl_format_helpers()
     header_fill = PatternFill("solid", fgColor="E5E7EB")
     header_font = Font(bold=True, color="111827")
     for cell in ws[1]:
@@ -9245,7 +9395,7 @@ def read_finished_goods_stock_summary_fast(stock_path: Path, output_columns: lis
 
     wb = None
     try:
-        wb = openpyxl.load_workbook(stock_path, read_only=True, data_only=True)
+        wb = load_openpyxl_workbook(stock_path, read_only=True, data_only=True)
         normalized_to_original = {normalize_excel_sheet_name(name): name for name in wb.sheetnames}
         sheet_name = None
         for hint in FINISHED_GOODS_STOCK_SHEET_HINTS:
@@ -10252,6 +10402,7 @@ def apply_filters(
     data_base_dir: Path | None = None,
     source_label: str = "",
     locked_site_filter: str | None = None,
+    show_reference_dates: bool = True,
 ) -> pd.DataFrame:
     with st.sidebar:
         st.markdown('<div class="sidebar-section-title">필터</div>', unsafe_allow_html=True)
@@ -10344,7 +10495,7 @@ def apply_filters(
             ),
         )
         st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
-        if data_base_dir is not None:
+        if data_base_dir is not None and show_reference_dates:
             render_sidebar_reference_dates(data_base_dir, source_label)
 
     return filter_data(
@@ -11863,7 +12014,14 @@ def render_shortage_dashboard(
     with PerfTimer("shortage_add_rq_group", rows=len(df)):
         enriched_df = add_rq_group_columns(df)
     with PerfTimer("shortage_apply_filters", rows=len(enriched_df)):
-        filtered = apply_filters(enriched_df, updated_at, data_base_dir, source_label, locked_site_filter)
+        filtered = apply_filters(
+            enriched_df,
+            updated_at,
+            data_base_dir,
+            source_label,
+            locked_site_filter,
+            show_reference_dates=not is_cloud_snapshot_source_label(source_label),
+        )
     download_stamp = datetime.now(DISPLAY_TZ).strftime("%Y%m%d_%H%M%S")
     banner_message = api_alert_message or infer_api_unavailable_banner_message(file_info_df, source_label)
     banner_title = api_alert_title
@@ -15834,7 +15992,16 @@ def main() -> None:
                 ) or default_all_item_site_filter
             reference_dates_slot = st.empty()
             cloud_snapshots_available = should_use_cloud_snapshots(data_base_dir)
-            data_live_updated_at = get_data_updated_at(data_base_dir)
+            shortage_cloud_snapshot_first_available = (
+                selected_top_view == "생산 부족 현황"
+                and should_use_shortage_snapshot_first(data_base_dir)
+                and not bool(get_session_value("force_live_plan_api_once", False))
+            )
+            if shortage_cloud_snapshot_first_available:
+                cloud_snapshots_available = True
+                data_live_updated_at = get_cloud_shortage_snapshot_updated_at(shortage_api_site_filter, "-")
+            else:
+                data_live_updated_at = get_data_updated_at(data_base_dir)
             if selected_top_view == "전체 품목 현황":
                 sidebar_meta_key = "all_item_updated_at"
                 sidebar_live_updated_at = get_aps_or_file_updated_at(get_all_item_updated_at(data_base_dir))
@@ -16174,13 +16341,21 @@ def main() -> None:
 
     with st.sidebar:
         st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
-        st.caption(sidebar_status_caption)
-        if snapshot_refresh_failure_message:
-            st.error(snapshot_refresh_failure_message)
-        if selected_top_view != "생산유효도 분석":
-            st.caption(f"적용 데이터: {source_label}")
-            if data_base_dir.resolve() != BASE_DIR.resolve():
-                st.caption(f"업로드 작업폴더: {data_base_dir.name}")
+        if selected_top_view == "생산 부족 현황" and "스냅샷" in clean_text_value(source_label):
+            render_cloud_snapshot_sidebar_summary(
+                updated_at,
+                sidebar_status_caption,
+                source_label,
+                snapshot_refresh_failure_message,
+            )
+        else:
+            st.caption(sidebar_status_caption)
+            if snapshot_refresh_failure_message:
+                st.error(snapshot_refresh_failure_message)
+            if selected_top_view != "생산유효도 분석":
+                st.caption(f"적용 데이터: {source_label}")
+                if data_base_dir.resolve() != BASE_DIR.resolve():
+                    st.caption(f"업로드 작업폴더: {data_base_dir.name}")
     if DEBUG_PERFORMANCE:
         print(f"[PERF] main_total: {time.perf_counter() - main_start:.3f} sec view={selected_top_view}", flush=True)
 
