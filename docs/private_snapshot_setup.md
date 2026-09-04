@@ -9,6 +9,7 @@
 - 대상 저장소: `113090ab-creator/INTEROJO`
 - GitHub Actions 실행: 평일 한국시간 08:20, 16:30에 시작하고 실패 시 실행 내부에서 5분 간격으로 최대 30분 재시도
 - UTC cron: `20 23 * * 0-4`, `30 7 * * 1-5`
+- `Refresh APS snapshots` 예약이 GitHub 쪽에서 누락될 경우를 대비해 기존 `Keep Streamlit Alive` workflow도 평일 09:00, 17:00 KST에 백업 갱신을 시도함
 - 이미 같은 APS 기준시각의 스냅샷이 있으면 다시 쓰지 않음
 - API 실패, 0건, 필수 컬럼 누락, 저장 실패 시 기존 정상 스냅샷을 덮어쓰지 않음
 

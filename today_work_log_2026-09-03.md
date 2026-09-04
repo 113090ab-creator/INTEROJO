@@ -107,5 +107,22 @@
 - 정확한 당일 반영을 즉시 확인해야 할 때는 GitHub `Actions > Refresh APS snapshots > Run workflow`를 수동 실행
 - 수동으로 스냅샷을 커밋하면 Actions가 만든 스냅샷 커밋과 충돌할 수 있으므로, 가능하면 수동 실행 workflow를 사용하는 것이 안전함
 
+## 10) 2026-09-04 추가 확인 및 보완
+- `2026-09-04 09:01 KST` 기준 `Refresh APS snapshots`의 아침 예약 실행 기록이 GitHub Actions에 생성되지 않았음
+- 같은 기간 `Keep Streamlit Alive` workflow는 최근까지 정상 schedule 실행 기록이 있어 저장소 전체 Actions 중지는 아닌 것으로 판단
+- 로컬 예약/실행 로그에서는 `2026-09-04 08:17:27`에 아침 APS 스냅샷 생성이 성공했음
+- 생성된 아침 스냅샷:
+  - APS PLAN 기준시각: `2026-09-04 08:00:15`
+  - APS WIP 기준시각: `2026-09-04 08:14:45`
+  - WIP: `30,122`건
+  - C관: `4,381`건
+  - A관: `1,361`건
+  - S관: `7,822`건
+  - 전체: `13,564`건
+- 해당 스냅샷을 `cloud_snapshots`에 커밋하고 원격 `main`에 푸시함
+- `Refresh APS snapshots` 예약 누락에 대비해, 이미 작동 이력이 있는 `Keep Streamlit Alive` workflow에도 백업 APS 갱신 job을 추가함
+- 백업 갱신은 평일 `09:00`, `17:00 KST`에만 실행되며, `01:00 KST` keepalive에서는 스냅샷 갱신을 건너뜀
+- 백업 갱신도 실행 내부에서 최대 7회, 5분 간격으로 재시도함
+
 ---
 저장 위치: `C:\Users\유현아\Documents\GitHub\INTEROJO\today_work_log_2026-09-03.md`

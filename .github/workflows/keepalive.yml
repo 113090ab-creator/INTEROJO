@@ -7,7 +7,7 @@ on:
     - cron: "0 0,8,16 * * *"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   ping:
@@ -16,3 +16,96 @@ jobs:
       - name: Ping Streamlit app
         run: |
           curl --silent --show-error --fail --max-time 30 --output /dev/null "${{ secrets.STREAMLIT_URL }}"
+
+  refresh-aps-snapshots:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      group: refresh-aps-snapshots
+      cancel-in-progress: false
+    env:
+      INTEROJO_FORCE_PLAN_API: "1"
+      INTEROJO_DISABLE_LOCAL_SECRET_DISCOVERY: "1"
+      PLAN_API_KEY: ${{ secrets.PLAN_API_KEY }}
+      PLAN_API_BASE_URL: ${{ secrets.PLAN_API_BASE_URL || 'https://plan.interojo.net' }}
+      PLAN_API_TIMEOUT_SECONDS: "30"
+      APS_WIP_API_TIMEOUT_SECONDS: "180"
+      PLAN_API_RETRY_ATTEMPTS: "2"
+    steps:
+      - name: Decide APS refresh window
+        id: window
+        shell: bash
+        run: |
+          kst_day="$(TZ=Asia/Seoul date +%u)"
+          kst_hour="$(TZ=Asia/Seoul date +%H)"
+          should_refresh="false"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            should_refresh="true"
+          elif [[ "$kst_day" =~ ^[1-5]$ && ( "$kst_hour" == "09" || "$kst_hour" == "17" ) ]]; then
+            should_refresh="true"
+          fi
+          echo "should_refresh=$should_refresh" >> "$GITHUB_OUTPUT"
+          echo "KST day=$kst_day hour=$kst_hour should_refresh=$should_refresh"
+
+      - name: Check out repository
+        if: steps.window.outputs.should_refresh == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Sync latest snapshots
+        if: steps.window.outputs.should_refresh == 'true'
+        run: git pull --ff-only origin main
+
+      - name: Set up Python
+        if: steps.window.outputs.should_refresh == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        if: steps.window.outputs.should_refresh == 'true'
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Refresh APS snapshots
+        if: steps.window.outputs.should_refresh == 'true'
+        id: refresh
+        continue-on-error: true
+        shell: bash
+        run: |
+          status=1
+          for attempt in 1 2 3 4 5 6 7; do
+            echo "APS snapshot refresh attempt ${attempt}/7"
+            python scripts/refresh_snapshot.py \
+              --only-if-stale \
+              --sites "C관,A관,S관,전체"
+            status=$?
+            if [ "$status" -eq 0 ]; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 7 ]; then
+              echo "APS snapshot refresh failed; retrying in 5 minutes."
+              sleep 300
+            fi
+          done
+          exit "$status"
+
+      - name: Commit refreshed snapshots and status
+        if: ${{ always() && steps.window.outputs.should_refresh == 'true' }}
+        run: |
+          if git diff --quiet -- cloud_snapshots; then
+            echo "No APS snapshot changes to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add cloud_snapshots
+          git commit -m "Refresh APS snapshots"
+          git push origin HEAD:main
+
+      - name: Fail when refresh failed
+        if: ${{ steps.window.outputs.should_refresh == 'true' && steps.refresh.outcome == 'failure' }}
+        run: exit 1
