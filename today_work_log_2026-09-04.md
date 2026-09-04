@@ -62,5 +62,19 @@
 - 그래도 오늘처럼 로컬에만 스냅샷이 생기고 GitHub에 올라가지 않으면 Streamlit은 원격의 전일 스냅샷을 보게 됨
 - 정확한 당일 반영이 급하면 GitHub `Actions > Refresh APS snapshots > Run workflow` 수동 실행으로 원격 스냅샷을 갱신함
 
+## 7) WIP 지연 패턴 반영
+- APS PLAN보다 APS WIP가 늦게 들어오는 패턴을 전제로 갱신 로직을 보강함
+- 새 PLAN 기준시각이 확인돼도 WIP 기준시각이 PLAN보다 오래되면 스냅샷 생성을 중단하고 대기 상태로 기록하도록 변경함
+- 이 상태에서는 기존 WIP와 새 PLAN이 섞인 스냅샷을 절대 저장하지 않음
+- Streamlit 화면의 최신 스냅샷 대기 허용 시간을 15분에서 60분으로 늘림
+- GitHub Actions 전용 갱신과 keepalive 백업 갱신 모두 5분 간격 최대 13회, 약 60분까지 재시도하도록 변경함
+- 기존 상태 JSON에 남아 있던 로컬 `raw_dir` 경로 표시는 제거함
+- 검증:
+  - `python -m py_compile app.py scripts\refresh_snapshot.py scripts\refresh_aps_shortage_snapshots.py snapshot_storage.py`
+  - `python scripts\refresh_snapshot.py --validate-existing --sites C관,A관,S관,전체`
+  - `python -m json.tool cloud_snapshots\aps_snapshot_refresh_status.json`
+  - `python -m json.tool cloud_snapshots\aps_snapshot_refresh_state.json`
+  - `git diff --check`
+
 ---
 저장 위치: `C:\Users\유현아\Documents\GitHub\INTEROJO\today_work_log_2026-09-04.md`

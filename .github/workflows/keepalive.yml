@@ -19,7 +19,7 @@ jobs:
 
   refresh-aps-snapshots:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 120
     concurrency:
       group: refresh-aps-snapshots
       cancel-in-progress: false
@@ -31,6 +31,8 @@ jobs:
       PLAN_API_TIMEOUT_SECONDS: "30"
       APS_WIP_API_TIMEOUT_SECONDS: "180"
       PLAN_API_RETRY_ATTEMPTS: "2"
+      SNAPSHOT_REFRESH_MAX_ATTEMPTS: "13"
+      SNAPSHOT_REFRESH_RETRY_SECONDS: "300"
     steps:
       - name: Decide APS refresh window
         id: window
@@ -77,8 +79,8 @@ jobs:
         shell: bash
         run: |
           status=1
-          for attempt in 1 2 3 4 5 6 7; do
-            echo "APS snapshot refresh attempt ${attempt}/7"
+          for attempt in $(seq 1 "$SNAPSHOT_REFRESH_MAX_ATTEMPTS"); do
+            echo "APS snapshot refresh attempt ${attempt}/${SNAPSHOT_REFRESH_MAX_ATTEMPTS}"
             python scripts/refresh_snapshot.py \
               --only-if-stale \
               --sites "C관,A관,S관,전체"
@@ -86,9 +88,9 @@ jobs:
             if [ "$status" -eq 0 ]; then
               exit 0
             fi
-            if [ "$attempt" -lt 7 ]; then
-              echo "APS snapshot refresh failed; retrying in 5 minutes."
-              sleep 300
+            if [ "$attempt" -lt "$SNAPSHOT_REFRESH_MAX_ATTEMPTS" ]; then
+              echo "APS snapshot refresh failed or pending; retrying in ${SNAPSHOT_REFRESH_RETRY_SECONDS} seconds."
+              sleep "$SNAPSHOT_REFRESH_RETRY_SECONDS"
             fi
           done
           exit "$status"

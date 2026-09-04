@@ -33,6 +33,10 @@ class SnapshotRefreshError(RuntimeError):
     pass
 
 
+class SnapshotPendingError(SnapshotRefreshError):
+    pass
+
+
 def configure_logging() -> None:
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
@@ -78,6 +82,20 @@ def validate_wip_snapshot(app, inventory: pd.DataFrame) -> None:
 def validate_shortage_snapshot(site: str, df: pd.DataFrame, file_info_df: pd.DataFrame) -> None:
     validate_dataframe(f"{site} 생산부족", df, SHORTAGE_REQUIRED_COLUMNS)
     validate_dataframe(f"{site} 파일정보", file_info_df, FILE_INFO_REQUIRED_COLUMNS)
+
+
+def ensure_wip_ready_for_plan(app, plan_updated_at: str, wip_updated_at: str) -> None:
+    plan_dt = app.parse_updated_at_value(plan_updated_at)
+    wip_dt = app.parse_updated_at_value(wip_updated_at)
+    if plan_dt is None:
+        raise SnapshotRefreshError("APS PLAN API 기준시각을 확인하지 못했습니다.")
+    if wip_dt is None:
+        raise SnapshotPendingError("APS WIP API 기준시각을 확인하지 못했습니다. WIP 데이터 갱신 대기 중입니다.")
+    if wip_dt.timestamp() + 1 < plan_dt.timestamp():
+        raise SnapshotPendingError(
+            "APS WIP API 기준시각이 APS PLAN 기준시각보다 오래되었습니다. "
+            f"PLAN={plan_updated_at}, WIP={wip_updated_at}. WIP 데이터 갱신 대기 중입니다."
+        )
 
 
 def write_status(app, status: str, **payload: object) -> None:
@@ -174,6 +192,7 @@ def refresh_snapshots(
         storage=storage_label,
         sites=sites,
     )
+    ensure_wip_ready_for_plan(app, api_updated_at, wip_api_updated_at)
 
     if only_if_stale and snapshots_current_for_updated_at(app, sites, api_updated_at, wip_api_updated_at):
         logging.info("snapshots already current for APS PLAN updated_at=%s; skipping write", api_updated_at)
@@ -273,6 +292,20 @@ def main() -> int:
             validate_existing_snapshots(app, sites)
             return 0
         return refresh_snapshots(app, sites, args.require_remote_storage, args.dry_run, args.only_if_stale)
+    except SnapshotPendingError as exc:
+        reason = clean_log_text(exc)
+        logging.warning("snapshot refresh pending: %s", reason)
+        try:
+            write_status(
+                app,
+                "pending",
+                reason=reason,
+                sites=sites,
+                storage="remote" if args.require_remote_storage else "local-or-remote",
+            )
+        except Exception:
+            pass
+        return 1
     except Exception as exc:
         reason = clean_log_text(exc)
         logging.exception("snapshot refresh failed: %s", reason)

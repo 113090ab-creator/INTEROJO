@@ -209,16 +209,27 @@ def is_snapshot_current(app_module, site_filter: str, api_updated_at: str, wip_a
     return True
 
 
+def is_wip_ready_for_plan(app_module, plan_updated_at: str, wip_updated_at: str) -> bool:
+    plan_dt = parse_updated_at(app_module, plan_updated_at)
+    wip_dt = parse_updated_at(app_module, wip_updated_at)
+    if plan_dt is None or wip_dt is None:
+        return False
+    return wip_dt.timestamp() + 1 >= plan_dt.timestamp()
+
+
+def format_wip_pending_message(plan_updated_at: str, wip_updated_at: str) -> str:
+    return (
+        "APS WIP API 기준시각이 APS PLAN 기준시각보다 오래되어 WIP 데이터 갱신을 기다립니다. "
+        f"PLAN={plan_updated_at}, WIP={wip_updated_at}"
+    )
+
+
 def refresh_wip_inventory(app_module, only_if_stale: bool) -> tuple[str, str]:
     result = app_module.refresh_cloud_wip_inventory_snapshot(only_if_stale=only_if_stale)
     updated_at = str(result.get("updated_at", "-"))
     status = str(result.get("status", "unknown"))
     rows = int(result.get("rows", 0) or 0)
-    raw_dir = str(result.get("raw_dir", ""))
-    details = f"{status} rows={rows:,} updated_at={updated_at}"
-    if raw_dir:
-        details = f"{details} raw_dir={raw_dir}"
-    return updated_at, details
+    return updated_at, f"{status} rows={rows:,} updated_at={updated_at}"
 
 
 def refresh_site(app_module, site_filter: str, api_updated_at: str, wip_api_updated_at: str, only_if_stale: bool) -> str:
@@ -359,6 +370,23 @@ def main() -> int:
         wip_api_updated_at, wip_result = refresh_wip_inventory(app, args.only_if_stale)
         results["WIP"] = wip_result
         logging.info("WIP: %s", wip_result)
+        if not is_wip_ready_for_plan(app, api_updated_at, wip_api_updated_at):
+            exit_code = 1
+            results["WIP"] = format_wip_pending_message(api_updated_at, wip_api_updated_at)
+            logging.warning(results["WIP"])
+            if args.scheduled and slot_key:
+                write_status(
+                    {
+                        "checked_at": datetime.now(app.DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+                        "slot_key": slot_key,
+                        "api_updated_at": api_updated_at,
+                        "wip_api_updated_at": wip_api_updated_at,
+                        "status": "pending_wip_update",
+                        "sites": parse_sites(args.sites),
+                        "results": results,
+                    }
+                )
+            return exit_code
     except Exception as exc:
         exit_code = 1
         results["WIP"] = f"failed: {exc}"
