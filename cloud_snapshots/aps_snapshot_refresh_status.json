@@ -1,20 +1,15 @@
 {
-  "checked_at": "2026-09-04 08:17:27",
-  "slot_key": "2026-09-04 07:30",
+  "checked_at": "2026-09-04 10:03:08",
+  "status": "completed",
   "api_updated_at": "2026-09-04 08:00:15",
   "wip_api_updated_at": "2026-09-04 08:14:45",
-  "status": "completed",
+  "storage": "로컬 cloud_snapshots 폴더",
   "sites": [
     "C관",
     "A관",
     "S관",
     "전체"
   ],
-  "results": {
-    "WIP": "refreshed rows=30,122 updated_at=2026-09-04 08:14:45",
-    "C관": "refreshed rows=4,381 updated_at=2026-09-04 08:00:15",
-    "A관": "refreshed rows=1,361 updated_at=2026-09-04 08:00:15",
-    "S관": "refreshed rows=7,822 updated_at=2026-09-04 08:00:15",
-    "전체": "refreshed rows=13,564 updated_at=2026-09-04 08:00:15"
-  }
+  "skipped": true,
+  "reason": "stored snapshots are already current"
 }
