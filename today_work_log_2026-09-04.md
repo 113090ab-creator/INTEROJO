@@ -78,3 +78,37 @@
 
 ---
 저장 위치: `C:\Users\유현아\Documents\GitHub\INTEROJO\today_work_log_2026-09-04.md`
+
+## 8) 추가 안정화 작업
+- Streamlit Cloud에서 앱이 배포 시점의 `cloud_snapshots`만 읽는 문제가 있어, 운영 환경에서는 GitHub `main`의 최신 `cloud_snapshots`를 직접 읽도록 보강함
+- 로컬 PC가 꺼져 있어도 GitHub Actions가 스냅샷을 만들고 `main`에 push하면, 사용자는 Streamlit 브라우저 새로고침만으로 최신 스냅샷을 읽을 수 있는 구조로 변경함
+- GitHub 스냅샷 읽기는 read-only로만 동작하게 했고, 스냅샷 생성/쓰기 경로는 기존 GitHub Actions commit/push 방식을 유지함
+- GitHub Actions 전용 갱신과 keepalive 백업 갱신을 토요일/일요일에도 실행하도록 변경함
+- 예약 갱신 로그에 변경 파일, commit SHA, push 성공 여부, 스냅샷 행 수와 파일 크기 리포트를 출력하도록 추가함
+- WIP 스냅샷이 이미 최신이면 WIP API 재조회 없이 기존 정상 WIP 스냅샷을 재사용하도록 변경함
+- 각 관별 생산부족 스냅샷이 이미 최신이면 해당 관 재계산을 건너뛰도록 변경함
+- 신규 스냅샷 행 수가 기존 정상 스냅샷 대비 50% 미만으로 급감하면 실패 처리하고 기존 정상 스냅샷을 유지하도록 보호장치를 추가함
+
+## 9) 성능 측정 메모
+- CSV gzip 로딩 측정:
+  - WIP `30,130`건: `0.0303초`
+  - C관 생산부족 `5,093`건: `0.0255초`
+  - A관 생산부족 `1,306`건: `0.0086초`
+  - S관 생산부족 `7,112`건: `0.0400초`
+  - 전체 생산부족 `13,511`건: `0.0690초`
+  - 전체 품목 현황 `110,882`건: `0.3995초`
+- Parquet은 읽기는 빠르지만 현재 파일 기준 CSV gzip보다 파일 크기가 커졌음
+- GitHub에서 파일을 내려받는 운영 구조에서는 즉시 Parquet 전환보다 불필요한 원격 확인 요청 제거와 반복 계산 건너뛰기가 우선이라고 판단함
+- `DEBUG_PERFORMANCE=1`일 때만 `[PERF]` 로그가 출력되도록 추가함
+
+## 10) 추가 검증
+- 문법 검증:
+  - `python -m py_compile app.py snapshot_storage.py scripts\refresh_snapshot.py scripts\refresh_aps_shortage_snapshots.py scripts\report_snapshot_status.py`
+- 기존 스냅샷 검증:
+  - `python scripts\refresh_snapshot.py --validate-existing --sites C관,A관,S관,전체`
+- GitHub 원격 스냅샷 읽기 검증:
+  - `SNAPSHOT_STORAGE_BACKEND=github`
+  - `SNAPSHOT_GITHUB_REPOSITORY=113090ab-creator/INTEROJO`
+  - `SNAPSHOT_GITHUB_BRANCH=main`
+  - `SNAPSHOT_GITHUB_PREFIX=cloud_snapshots`
+  - `snapshot_meta.csv` 원격 읽기 성공

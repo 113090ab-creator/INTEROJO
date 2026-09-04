@@ -3,7 +3,7 @@ name: Keep Streamlit Alive
 on:
   workflow_dispatch: {}
   schedule:
-    # Every 8 hours
+    # Every 8 hours. KST 09:00 and 17:00 runs are also used as APS refresh backups.
     - cron: "0 0,8,16 * * *"
 
 permissions:
@@ -43,7 +43,7 @@ jobs:
           should_refresh="false"
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             should_refresh="true"
-          elif [[ "$kst_day" =~ ^[1-5]$ && ( "$kst_hour" == "09" || "$kst_hour" == "17" ) ]]; then
+          elif [[ "$kst_hour" == "09" || "$kst_hour" == "17" ]]; then
             should_refresh="true"
           fi
           echo "should_refresh=$should_refresh" >> "$GITHUB_OUTPUT"
@@ -97,16 +97,26 @@ jobs:
 
       - name: Commit refreshed snapshots and status
         if: ${{ always() && steps.window.outputs.should_refresh == 'true' }}
+        shell: bash
         run: |
+          set -euo pipefail
+          echo "Snapshot git status before commit:"
+          git status --short -- cloud_snapshots || true
           if git diff --quiet -- cloud_snapshots; then
             echo "No APS snapshot changes to commit."
+            python scripts/report_snapshot_status.py || true
             exit 0
           fi
+          echo "Changed snapshot files:"
+          git diff --name-only -- cloud_snapshots
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add cloud_snapshots
           git commit -m "Refresh APS snapshots"
+          echo "Created commit: $(git rev-parse --short HEAD)"
           git push origin HEAD:main
+          echo "Pushed refreshed snapshots to main."
+          python scripts/report_snapshot_status.py || true
 
       - name: Fail when refresh failed
         if: ${{ steps.window.outputs.should_refresh == 'true' && steps.refresh.outcome == 'failure' }}

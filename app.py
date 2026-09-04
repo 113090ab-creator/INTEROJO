@@ -49,6 +49,17 @@ APS_SNAPSHOT_REFRESH_STATUS_PATHS = (
     CLOUD_SNAPSHOT_DIR / "aps_snapshot_refresh_status.json",
     BASE_DIR / "outputs" / "aps_snapshot_refresh_status.json",
 )
+STREAMLIT_CLOUD_RUNTIME = (
+    bool(os.environ.get("STREAMLIT_CLOUD"))
+    or bool(os.environ.get("STREAMLIT_SHARING_MODE"))
+    or Path("/mount/src").exists()
+)
+SNAPSHOT_GITHUB_REPOSITORY_DEFAULT = "113090ab-creator/INTEROJO"
+if STREAMLIT_CLOUD_RUNTIME and not os.environ.get(snapshot_storage.SNAPSHOT_STORAGE_BACKEND_ENV):
+    os.environ.setdefault(snapshot_storage.SNAPSHOT_STORAGE_BACKEND_ENV, "github")
+    os.environ.setdefault(snapshot_storage.SNAPSHOT_GITHUB_REPOSITORY_ENV, SNAPSHOT_GITHUB_REPOSITORY_DEFAULT)
+    os.environ.setdefault(snapshot_storage.SNAPSHOT_GITHUB_BRANCH_ENV, "main")
+    os.environ.setdefault(snapshot_storage.SNAPSHOT_GITHUB_PREFIX_ENV, "cloud_snapshots")
 DISPLAY_TZ = ZoneInfo("Asia/Seoul")
 ORDER_NO_COL = "수주번호"
 ORDER_RECEIVED_DATE_COL = "접수일"
@@ -92,6 +103,7 @@ DISPLAY_ROW_LIMIT = 200
 CACHE_MAX_ENTRIES = 64
 APP_CACHE_VERSION = "20260831-mojibake-repair-v1"
 DATA_SOURCE_DEFAULT_VERSION = "20260821-bom-api-rq-match-v1"
+DEBUG_PERFORMANCE = os.getenv("DEBUG_PERFORMANCE", "").strip().lower() in {"1", "true", "yes", "on"}
 PLAN_API_BASE_URL_DEFAULT = "https://plan.interojo.net"
 PLAN_API_KEY_ENV = "PLAN_API_KEY"
 PLAN_API_BASE_URL_ENV = "PLAN_API_BASE_URL"
@@ -981,6 +993,25 @@ def get_latest_files_updated_at_cached(refresh_key: str, path_strs: tuple[str, .
         return "-"
     latest_dt = max(get_file_updated_datetime(path) for path in existing_paths)
     return latest_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+class PerfTimer:
+    def __init__(self, name: str, **context: object) -> None:
+        self.name = name
+        self.context = context
+        self.start = 0.0
+
+    def __enter__(self):
+        self.start = time.perf_counter()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if not DEBUG_PERFORMANCE:
+            return
+        elapsed = time.perf_counter() - self.start
+        context_text = " ".join(f"{key}={value}" for key, value in self.context.items() if value not in ("", None))
+        suffix = f" {context_text}" if context_text else ""
+        print(f"[PERF] {self.name}: {elapsed:.3f} sec{suffix}", flush=True)
 
 
 def is_local_secret_discovery_disabled() -> bool:
@@ -2648,11 +2679,7 @@ def resolve_data_source_from_state(base_dir: Path) -> tuple[Path, str, str]:
 
 
 def is_streamlit_cloud_runtime() -> bool:
-    return (
-        bool(os.environ.get("STREAMLIT_CLOUD"))
-        or bool(os.environ.get("STREAMLIT_SHARING_MODE"))
-        or Path("/mount/src").exists()
-    )
+    return STREAMLIT_CLOUD_RUNTIME
 
 
 def can_use_cloud_shortage_snapshot(data_base_dir: Path) -> bool:
@@ -2722,11 +2749,19 @@ def build_cloud_snapshot_refresh_key(*names: str) -> str:
 @st.cache_data(show_spinner=False)
 def read_cloud_snapshot_csv(name: str, refresh_key: str) -> pd.DataFrame:
     _ = refresh_key
-    if not snapshot_storage.snapshot_exists(CLOUD_SNAPSHOT_DIR, name):
-        return pd.DataFrame()
-    data = snapshot_storage.read_snapshot_bytes(CLOUD_SNAPSHOT_DIR, name)
-    compression = "gzip" if name.endswith(".gz") else None
-    return repair_korean_mojibake_dataframe(pd.read_csv(BytesIO(data), encoding="utf-8-sig", compression=compression))
+    with PerfTimer("snapshot_load", file=name):
+        try:
+            data = snapshot_storage.read_snapshot_bytes(CLOUD_SNAPSHOT_DIR, name)
+        except FileNotFoundError:
+            return pd.DataFrame()
+        except Exception:
+            if not (CLOUD_SNAPSHOT_DIR / name).exists():
+                return pd.DataFrame()
+            raise
+        compression = "gzip" if name.endswith(".gz") else None
+        return repair_korean_mojibake_dataframe(
+            pd.read_csv(BytesIO(data), encoding="utf-8-sig", compression=compression)
+        )
 
 
 def load_cloud_snapshot_csv(name: str) -> pd.DataFrame:
@@ -3108,6 +3143,29 @@ def build_shortage_snapshot_hold_file_info(snapshot_updated_at: str, live_update
             "행수(현황표)": [0],
         }
     )
+
+
+def render_snapshot_status_caption(updated_at: str) -> None:
+    status = get_snapshot_refresh_status()
+    status_text = clean_text_value(status.get("status", ""))
+    if status_text == "completed":
+        display_status = "최신"
+    elif status_text == "pending":
+        display_status = "갱신 대기"
+    elif status_text:
+        display_status = f"갱신 상태: {status_text}"
+    else:
+        display_status = "저장 스냅샷"
+
+    parts = [f"데이터 기준: {format_reference_timestamp(updated_at)}"]
+    checked_at = clean_text_value(status.get("checked_at", ""))
+    if checked_at:
+        parts.append(f"Snapshot 생성: {format_reference_timestamp(checked_at)}")
+    wip_updated_at = clean_text_value(status.get("wip_api_updated_at", ""))
+    if wip_updated_at:
+        parts.append(f"WIP 기준: {format_reference_timestamp(wip_updated_at)}")
+    parts.append(f"상태: {display_status}")
+    st.caption(" · ".join(parts))
 
 
 def load_cloud_shortage_snapshot(site_filter: str = "전체") -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -11802,14 +11860,17 @@ def render_shortage_dashboard(
     api_alert_message: str = "",
     api_alert_title: str = "조회불가",
 ) -> None:
-    enriched_df = add_rq_group_columns(df)
-    filtered = apply_filters(enriched_df, updated_at, data_base_dir, source_label, locked_site_filter)
+    with PerfTimer("shortage_add_rq_group", rows=len(df)):
+        enriched_df = add_rq_group_columns(df)
+    with PerfTimer("shortage_apply_filters", rows=len(enriched_df)):
+        filtered = apply_filters(enriched_df, updated_at, data_base_dir, source_label, locked_site_filter)
     download_stamp = datetime.now(DISPLAY_TZ).strftime("%Y%m%d_%H%M%S")
     banner_message = api_alert_message or infer_api_unavailable_banner_message(file_info_df, source_label)
     banner_title = api_alert_title
     if not api_alert_message and api_alert_title == "조회불가":
         banner_title = infer_api_unavailable_banner_title(file_info_df, source_label, banner_message)
     render_api_unavailable_banner(banner_message, banner_title)
+    render_snapshot_status_caption(updated_at)
 
     detail_columns = [
         "거래처",
@@ -15693,6 +15754,7 @@ def render_effective_production_dashboard() -> None:
 
 
 def main() -> None:
+    main_start = time.perf_counter()
     inject_dashboard_theme()
     st.markdown(
         """
@@ -15707,6 +15769,7 @@ def main() -> None:
     all_item_site_filter = "전체"
     shortage_api_site_filter = "전체"
     shortage_locked_site_filter: str | None = None
+    sidebar_start = time.perf_counter()
     with st.sidebar:
         st.markdown(
             """
@@ -15809,9 +15872,12 @@ def main() -> None:
                 if selected_top_view != "생산 부족 현황":
                     st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
                     render_sidebar_reference_dates(data_base_dir, source_label)
+    if DEBUG_PERFORMANCE:
+        print(f"[PERF] sidebar_setup: {time.perf_counter() - sidebar_start:.3f} sec view={selected_top_view}", flush=True)
 
     snapshot_refresh_failure_message = build_snapshot_refresh_failure_message()
 
+    data_load_start = time.perf_counter()
     try:
         df = pd.DataFrame()
         file_info_df = pd.DataFrame()
@@ -16072,6 +16138,8 @@ def main() -> None:
     except Exception as exc:
         st.error(f"데이터 로드 실패: {exc}")
         st.stop()
+    if DEBUG_PERFORMANCE:
+        print(f"[PERF] data_load_total: {time.perf_counter() - data_load_start:.3f} sec view={selected_top_view}", flush=True)
 
     if selected_top_view == "생산 부족 현황" and snapshot_refresh_failure_message:
         api_alert_title = "오류"
@@ -16081,6 +16149,7 @@ def main() -> None:
             else snapshot_refresh_failure_message
         )
 
+    render_start = time.perf_counter()
     if selected_top_view == "전체 품목 현황":
         render_all_items_dashboard(all_items_df, updated_at, all_items_full_builder, all_item_site_filter)
     elif selected_top_view == "생산 부족 현황":
@@ -16100,6 +16169,8 @@ def main() -> None:
         render_leadji_pcode5_dashboard(updated_at, df, leadji_info, leadji_stock)
     elif selected_top_view == "생산유효도 분석":
         render_effective_production_dashboard()
+    if DEBUG_PERFORMANCE:
+        print(f"[PERF] render_total: {time.perf_counter() - render_start:.3f} sec view={selected_top_view}", flush=True)
 
     with st.sidebar:
         st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
@@ -16110,6 +16181,8 @@ def main() -> None:
             st.caption(f"적용 데이터: {source_label}")
             if data_base_dir.resolve() != BASE_DIR.resolve():
                 st.caption(f"업로드 작업폴더: {data_base_dir.name}")
+    if DEBUG_PERFORMANCE:
+        print(f"[PERF] main_total: {time.perf_counter() - main_start:.3f} sec view={selected_top_view}", flush=True)
 
 
 if __name__ == "__main__":

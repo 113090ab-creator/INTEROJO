@@ -15,6 +15,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 LOG_PATH = PROJECT_ROOT / "outputs" / "refresh_snapshot.log"
 STATUS_SNAPSHOT_NAME = "aps_snapshot_refresh_status.json"
 DEFAULT_SITES = ("C관", "A관", "S관", "전체")
+try:
+    MIN_ROW_COUNT_RATIO = float(os.getenv("SNAPSHOT_MIN_ROW_COUNT_RATIO", "0.5"))
+except ValueError:
+    MIN_ROW_COUNT_RATIO = 0.5
 SHORTAGE_REQUIRED_COLUMNS = {
     "거래처",
     "이니셜",
@@ -34,7 +38,10 @@ class SnapshotRefreshError(RuntimeError):
 
 
 class SnapshotPendingError(SnapshotRefreshError):
-    pass
+    def __init__(self, message: str, plan_updated_at: str = "", wip_updated_at: str = "") -> None:
+        super().__init__(message)
+        self.plan_updated_at = plan_updated_at
+        self.wip_updated_at = wip_updated_at
 
 
 def configure_logging() -> None:
@@ -84,17 +91,34 @@ def validate_shortage_snapshot(site: str, df: pd.DataFrame, file_info_df: pd.Dat
     validate_dataframe(f"{site} 파일정보", file_info_df, FILE_INFO_REQUIRED_COLUMNS)
 
 
+def validate_row_count_guard(name: str, new_rows: int, existing_rows: int) -> None:
+    if MIN_ROW_COUNT_RATIO <= 0 or existing_rows <= 0:
+        return
+    minimum_rows = int(existing_rows * MIN_ROW_COUNT_RATIO)
+    if new_rows < minimum_rows:
+        raise SnapshotRefreshError(
+            f"{name}: 행수가 기존 정상 스냅샷 대비 급감했습니다. "
+            f"new={new_rows:,}, existing={existing_rows:,}, minimum={minimum_rows:,}."
+        )
+
+
 def ensure_wip_ready_for_plan(app, plan_updated_at: str, wip_updated_at: str) -> None:
     plan_dt = app.parse_updated_at_value(plan_updated_at)
     wip_dt = app.parse_updated_at_value(wip_updated_at)
     if plan_dt is None:
         raise SnapshotRefreshError("APS PLAN API 기준시각을 확인하지 못했습니다.")
     if wip_dt is None:
-        raise SnapshotPendingError("APS WIP API 기준시각을 확인하지 못했습니다. WIP 데이터 갱신 대기 중입니다.")
+        raise SnapshotPendingError(
+            "APS WIP API 기준시각을 확인하지 못했습니다. WIP 데이터 갱신 대기 중입니다.",
+            plan_updated_at,
+            wip_updated_at,
+        )
     if wip_dt.timestamp() + 1 < plan_dt.timestamp():
         raise SnapshotPendingError(
             "APS WIP API 기준시각이 APS PLAN 기준시각보다 오래되었습니다. "
-            f"PLAN={plan_updated_at}, WIP={wip_updated_at}. WIP 데이터 갱신 대기 중입니다."
+            f"PLAN={plan_updated_at}, WIP={wip_updated_at}. WIP 데이터 갱신 대기 중입니다.",
+            plan_updated_at,
+            wip_updated_at,
         )
 
 
@@ -208,23 +232,45 @@ def refresh_snapshots(
         )
         return 0
 
-    inventory, source_label, raw_snapshot_dir, wip_error = app.build_wip_inventory_snapshot_from_api(wip_api_updated_at)
-    if wip_error:
-        raise SnapshotRefreshError(f"APS WIP API 조회 실패: {clean_log_text(wip_error)}")
-    validate_wip_snapshot(app, inventory)
-    logging.info(
-        "prepared WIP snapshot rows=%s source=%s raw_dir=%s",
-        f"{len(inventory):,}",
-        clean_log_text(source_label),
-        clean_log_text(raw_snapshot_dir),
+    wip_already_current = (
+        only_if_stale
+        and wip_api_updated_at != "-"
+        and app.is_cloud_wip_inventory_snapshot_current(wip_api_updated_at)
     )
+    existing_inventory, existing_source_label = app.load_cloud_wip_inventory_snapshot_with_label()
+    if wip_already_current:
+        inventory = existing_inventory
+        source_label = existing_source_label
+        validate_wip_snapshot(app, inventory)
+        logging.info("WIP snapshot already current; skipped WIP API fetch rows=%s", f"{len(inventory):,}")
+    else:
+        inventory, source_label, raw_snapshot_dir, wip_error = app.build_wip_inventory_snapshot_from_api(wip_api_updated_at)
+        if wip_error:
+            raise SnapshotRefreshError(f"APS WIP API 조회 실패: {clean_log_text(wip_error)}")
+        validate_wip_snapshot(app, inventory)
+        validate_row_count_guard("WIP", len(inventory), len(existing_inventory))
+        logging.info(
+            "prepared WIP snapshot rows=%s source=%s raw_dir=%s",
+            f"{len(inventory):,}",
+            clean_log_text(source_label),
+            clean_log_text(raw_snapshot_dir),
+        )
 
+    skipped_site_results: dict[str, str] = {}
     prepared_sites: list[tuple[str, pd.DataFrame, pd.DataFrame, pd.DataFrame]] = []
     for site in sites:
+        if only_if_stale and app.is_cloud_snapshot_fresh(app.shortage_snapshot_meta_key(site), api_updated_at):
+            existing_df, existing_file_info_df, _ = app.load_cloud_shortage_snapshot(site)
+            if not existing_df.empty and not existing_file_info_df.empty:
+                skipped_site_results[site] = "skip-current"
+                logging.info("shortage snapshot already current site=%s; skipped refresh", site)
+                continue
         refresh_key = app.build_api_shortage_refresh_key(app.BASE_DIR, site)
         refresh_key = f"{refresh_key}:github-actions:{datetime.now(app.DISPLAY_TZ).isoformat()}"
         df, file_info_df, process_map_df = app.load_api_shortage_data(refresh_key, str(app.BASE_DIR), site)
         validate_shortage_snapshot(site, df, file_info_df)
+        existing_df, _, _ = app.load_cloud_shortage_snapshot(site)
+        validate_row_count_guard(f"{site} 생산부족", len(df), len(existing_df))
         prepared_sites.append((site, df, file_info_df, process_map_df))
         logging.info("prepared shortage snapshot site=%s rows=%s", site, f"{len(df):,}")
 
@@ -242,11 +288,14 @@ def refresh_snapshots(
         )
         return 0
 
-    if not app.write_cloud_wip_inventory_snapshot(inventory, wip_api_updated_at, source_label):
-        raise SnapshotRefreshError("WIP 스냅샷 저장 실패")
-    logging.info("wrote WIP snapshot path=%s", snapshot_storage.display_snapshot_uri(app.WIP_INVENTORY_SNAPSHOT_FILE))
-
-    results: dict[str, str] = {"WIP": f"refreshed rows={len(inventory):,} updated_at={wip_api_updated_at}"}
+    if wip_already_current:
+        results: dict[str, str] = {"WIP": f"skip-current rows={len(inventory):,} updated_at={wip_api_updated_at}"}
+    else:
+        if not app.write_cloud_wip_inventory_snapshot(inventory, wip_api_updated_at, source_label):
+            raise SnapshotRefreshError("WIP 스냅샷 저장 실패")
+        logging.info("wrote WIP snapshot path=%s", snapshot_storage.display_snapshot_uri(app.WIP_INVENTORY_SNAPSHOT_FILE))
+        results = {"WIP": f"refreshed rows={len(inventory):,} updated_at={wip_api_updated_at}"}
+    results.update(skipped_site_results)
     for site, df, file_info_df, process_map_df in prepared_sites:
         if not app.write_cloud_shortage_snapshot(df, file_info_df, process_map_df, api_updated_at, site):
             raise SnapshotRefreshError(f"{site}: 생산부족 스냅샷 저장 실패")
@@ -300,6 +349,8 @@ def main() -> int:
                 app,
                 "pending",
                 reason=reason,
+                api_updated_at=getattr(exc, "plan_updated_at", ""),
+                wip_api_updated_at=getattr(exc, "wip_updated_at", ""),
                 sites=sites,
                 storage="remote" if args.require_remote_storage else "local-or-remote",
             )

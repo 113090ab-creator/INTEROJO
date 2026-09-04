@@ -8,12 +8,12 @@ on:
         required: false
         default: "C관,A관,S관,전체"
   schedule:
-    # KST weekdays 08:20-08:50 = UTC previous-day 23:20-23:50.
+    # KST every day 08:20 = UTC previous-day 23:20.
     # Morning WIP usually arrives after 08:10, so start after the data is likely ready.
-    - cron: "20 23 * * 0-4"
-    # KST weekdays 16:30-17:00 = UTC weekdays 07:30-08:00.
+    - cron: "20 23 * * *"
+    # KST every day 16:30 = UTC same-day 07:30.
     # APS 오후 갱신 완료 후 5분 간격으로 재시도하고, 이미 최신이면 건너뜁니다.
-    - cron: "30 7 * * 1-5"
+    - cron: "30 7 * * *"
 
 permissions:
   contents: write
@@ -81,16 +81,26 @@ jobs:
 
       - name: Commit refreshed snapshots and status
         if: always()
+        shell: bash
         run: |
+          set -euo pipefail
+          echo "Snapshot git status before commit:"
+          git status --short -- cloud_snapshots || true
           if git diff --quiet -- cloud_snapshots; then
             echo "No APS snapshot changes to commit."
+            python scripts/report_snapshot_status.py || true
             exit 0
           fi
+          echo "Changed snapshot files:"
+          git diff --name-only -- cloud_snapshots
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add cloud_snapshots
           git commit -m "Refresh APS snapshots"
+          echo "Created commit: $(git rev-parse --short HEAD)"
           git push origin HEAD:main
+          echo "Pushed refreshed snapshots to main."
+          python scripts/report_snapshot_status.py || true
 
       - name: Fail when refresh failed
         if: steps.refresh.outcome == 'failure'
