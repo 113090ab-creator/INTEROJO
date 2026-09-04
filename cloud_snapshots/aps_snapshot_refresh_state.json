@@ -199,6 +199,18 @@
         "S관": "refreshed rows=7,421 updated_at=2026-09-03 16:03:26",
         "전체": "refreshed rows=13,447 updated_at=2026-09-03 16:03:26"
       }
+    },
+    "2026-09-04 07:30": {
+      "completed_at": "2026-09-04 08:17:27",
+      "api_updated_at": "2026-09-04 08:00:15",
+      "wip_api_updated_at": "2026-09-04 08:14:45",
+      "results": {
+        "WIP": "refreshed rows=30,122 updated_at=2026-09-04 08:14:45 raw_dir=C:\\Users\\유현아\\Documents\\GitHub\\INTEROJO\\outputs\\aps_wip_raw\\20260904_081445",
+        "C관": "refreshed rows=4,381 updated_at=2026-09-04 08:00:15",
+        "A관": "refreshed rows=1,361 updated_at=2026-09-04 08:00:15",
+        "S관": "refreshed rows=7,822 updated_at=2026-09-04 08:00:15",
+        "전체": "refreshed rows=13,564 updated_at=2026-09-04 08:00:15"
+      }
     }
   }
 }
