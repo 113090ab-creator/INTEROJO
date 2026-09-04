@@ -112,3 +112,57 @@
   - `SNAPSHOT_GITHUB_BRANCH=main`
   - `SNAPSHOT_GITHUB_PREFIX=cloud_snapshots`
   - `snapshot_meta.csv` 원격 읽기 성공
+
+## 11) Streamlit 최초 접속 성능 개선
+- 목표:
+  - Cloud Snapshot 모드에서 최초 접속 시 로컬 Excel 파일을 열지 않도록 개선
+  - 기존 화면, 필터, 계산식, 데이터 결과는 유지
+  - GitHub Actions, API 갱신 로직, snapshot 생성 로직은 수정하지 않음
+- 확인된 주요 병목:
+  - `select_data_source()`에서 `get_data_updated_at()` fallback이 즉시 실행되어 로컬 Excel 기준일자를 읽음
+  - `render_sidebar_reference_dates()`가 생산 부족 현황 + Cloud Snapshot 화면에서도 로컬 WIP/수요 파일 기준일자를 읽음
+  - `snapshot_meta.csv`, `aps_snapshot_refresh_status.json`, `aps_snapshot_refresh_state.json`을 여러 경로에서 반복 조회함
+  - WIP 최신 여부 판단 시 전체 WIP snapshot을 먼저 읽는 경로가 있었음
+  - `openpyxl`이 앱 import 시점에 전역 로드됨
+- 조치:
+  - `get_cloud_snapshot_meta_value()` fallback을 lazy 구조로 변경
+  - `snapshot_context`를 추가해 Cloud metadata/status/state를 한 번 읽고 재사용
+  - Cloud Snapshot 생산 부족 화면에서는 사이드바에 간단한 현장용 기준 정보만 표시:
+    - 수요 기준시각
+    - WIP 기준시각
+    - 상태
+  - 상세 기준 정보와 저장소 정보는 `DEBUG_PERFORMANCE=1`일 때만 표시
+  - WIP 최신 여부는 metadata/status 기준으로 먼저 판단하고, 전체 WIP snapshot은 실제 계산에 필요할 때만 읽도록 변경
+  - `openpyxl` 전역 import를 제거하고 Excel fallback/다운로드 기능 사용 시점에만 lazy import하도록 변경
+- 수정 전/후 측정:
+
+```text
+                     변경 전     변경 후
+Warm First Load       74.33초     1.97초
+Snapshot load          2.39초     0.27초
+Sidebar               40.47초     0.54초
+Page calculation      30.06초     0.10초
+Render                30.80초     0.69초
+TOTAL                 74.33초     1.97초
+```
+
+- 추가 측정:
+  - 첫 실행 GitHub HTTP 요청 횟수: `17회 -> 7회`
+  - 로컬 Excel open 횟수: `5회 -> 0회`
+  - 49MB `1Day_2026Y,해외수주,포장,출고관리_0829_정재훈.xlsx` 최초 접속 open 여부: `YES -> NO`
+- 최종 검증:
+  - `python -m py_compile app.py snapshot_storage.py`
+  - `git diff --check`
+  - 로컬 Streamlit 실행:
+    - `STREAMLIT_CLOUD=1`
+    - `DEBUG_PERFORMANCE=1`
+    - `streamlit run app.py --server.port 8502 --server.headless true --server.fileWatcherType none --browser.gatherUsageStats false`
+  - 실제 Streamlit 로그:
+    - `snapshot_context: 0.120 sec`
+    - `sidebar_setup: 0.542 sec`
+    - `data_load_total: 0.267 sec`
+    - `shortage_apply_filters: 0.099 sec`
+    - `render_total: 0.689 sec`
+    - `main_total: 1.968 sec`
+- 반영 커밋:
+  - `f10da9a86715805938c8fe52ed51f470ad232b84 Improve Streamlit cloud snapshot first load`
