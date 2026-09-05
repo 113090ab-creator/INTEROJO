@@ -8,12 +8,10 @@ on:
         required: false
         default: "C관,A관,S관,전체"
   schedule:
-    # KST every day 08:20 = UTC previous-day 23:20.
-    # Morning WIP usually arrives after 08:10, so start after the data is likely ready.
-    - cron: "20 23 * * *"
-    # KST every day 16:30 = UTC same-day 07:30.
-    # APS 오후 갱신 완료 후 5분 간격으로 재시도하고, 이미 최신이면 건너뜁니다.
-    - cron: "30 7 * * *"
+    # KST 08:00-09:55. Each run is short: check readiness, publish only when PLAN/WIP slots match.
+    - cron: "*/5 23,0 * * *"
+    # KST 16:00-17:55. Avoid holding a runner with long sleep while PLAN/WIP delivery is staggered.
+    - cron: "*/5 7,8 * * *"
 
 permissions:
   contents: write
@@ -34,8 +32,7 @@ jobs:
       PLAN_API_TIMEOUT_SECONDS: "30"
       APS_WIP_API_TIMEOUT_SECONDS: "180"
       PLAN_API_RETRY_ATTEMPTS: "2"
-      SNAPSHOT_REFRESH_MAX_ATTEMPTS: "13"
-      SNAPSHOT_REFRESH_RETRY_SECONDS: "300"
+      SNAPSHOT_WAIT_DELAY_MINUTES: "60"
 
     steps:
       - name: Check out repository
@@ -62,28 +59,16 @@ jobs:
         continue-on-error: true
         shell: bash
         run: |
-          status=1
-          for attempt in $(seq 1 "$SNAPSHOT_REFRESH_MAX_ATTEMPTS"); do
-            echo "APS snapshot refresh attempt ${attempt}/${SNAPSHOT_REFRESH_MAX_ATTEMPTS}"
-            python scripts/refresh_snapshot.py \
-              --only-if-stale \
-              --sites "${{ github.event.inputs.sites || 'C관,A관,S관,전체' }}"
-            status=$?
-            if [ "$status" -eq 0 ]; then
-              exit 0
-            fi
-            if [ "$attempt" -lt "$SNAPSHOT_REFRESH_MAX_ATTEMPTS" ]; then
-              echo "APS snapshot refresh failed or pending; retrying in ${SNAPSHOT_REFRESH_RETRY_SECONDS} seconds."
-              sleep "$SNAPSHOT_REFRESH_RETRY_SECONDS"
-            fi
-          done
-          exit "$status"
+          python scripts/refresh_snapshot.py \
+            --only-if-stale \
+            --sites "${{ github.event.inputs.sites || 'C관,A관,S관,전체' }}"
 
       - name: Commit refreshed snapshots and status
         if: always()
         shell: bash
         run: |
           set -euo pipefail
+          refresh_outcome="${{ steps.refresh.outcome }}"
           echo "Snapshot git status before commit:"
           git status --short -- cloud_snapshots || true
           if git diff --quiet -- cloud_snapshots; then
@@ -95,7 +80,17 @@ jobs:
           git diff --name-only -- cloud_snapshots
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add cloud_snapshots
+          if [ "$refresh_outcome" = "failure" ]; then
+            echo "Refresh failed; committing status only and leaving any partial data files unpublished."
+            git add cloud_snapshots/aps_snapshot_refresh_status.json
+          else
+            git add cloud_snapshots
+          fi
+          if git diff --cached --quiet; then
+            echo "No staged APS snapshot changes to commit."
+            python scripts/report_snapshot_status.py || true
+            exit 0
+          fi
           git commit -m "Refresh APS snapshots"
           echo "Created commit: $(git rev-parse --short HEAD)"
           git push origin HEAD:main

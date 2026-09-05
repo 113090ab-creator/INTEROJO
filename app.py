@@ -42,6 +42,9 @@ CLOUD_SNAPSHOT_DIR = BASE_DIR / "cloud_snapshots"
 CLOUD_SNAPSHOT_META_NAME = "snapshot_meta.csv"
 CLOUD_SNAPSHOT_REFRESH_STATE_NAME = "aps_snapshot_refresh_state.json"
 CLOUD_SNAPSHOT_REFRESH_STATUS_NAME = "aps_snapshot_refresh_status.json"
+CURRENT_SNAPSHOT_SET_NAME = "current_snapshot_set.json"
+SNAPSHOT_SETS_DIR_NAME = "sets"
+SNAPSHOT_SET_MANIFEST_NAME = "manifest.json"
 APS_SNAPSHOT_REFRESH_STATE_PATHS = (
     CLOUD_SNAPSHOT_DIR / CLOUD_SNAPSHOT_REFRESH_STATE_NAME,
     BASE_DIR / "outputs" / CLOUD_SNAPSHOT_REFRESH_STATE_NAME,
@@ -50,6 +53,16 @@ APS_SNAPSHOT_REFRESH_STATUS_PATHS = (
     CLOUD_SNAPSHOT_DIR / CLOUD_SNAPSHOT_REFRESH_STATUS_NAME,
     BASE_DIR / "outputs" / CLOUD_SNAPSHOT_REFRESH_STATUS_NAME,
 )
+REFRESH_STATUS_CHECKING = "CHECKING"
+REFRESH_STATUS_WAITING_FOR_PLAN = "WAITING_FOR_PLAN"
+REFRESH_STATUS_WAITING_FOR_WIP = "WAITING_FOR_WIP"
+REFRESH_STATUS_READY = "READY"
+REFRESH_STATUS_BUILDING = "BUILDING"
+REFRESH_STATUS_VALIDATING = "VALIDATING"
+REFRESH_STATUS_PUBLISHING = "PUBLISHING"
+REFRESH_STATUS_PUBLISHED = "PUBLISHED"
+REFRESH_STATUS_DELAYED = "DELAYED"
+REFRESH_STATUS_FAILED = "FAILED"
 STREAMLIT_CLOUD_RUNTIME = (
     bool(os.environ.get("STREAMLIT_CLOUD"))
     or bool(os.environ.get("STREAMLIT_SHARING_MODE"))
@@ -2839,11 +2852,25 @@ def resolve_lazy_default_value(default: str | Callable[[], str]) -> str:
     return clean_text_value(default) or "-"
 
 
+def normalize_snapshot_set_id(value: object) -> str:
+    text = re.sub(r"[^A-Za-z0-9_.-]+", "_", clean_text_value(value)).strip("._-")
+    return text
+
+
+def snapshot_set_file_name(set_id: object, name: str) -> str:
+    clean_set_id = normalize_snapshot_set_id(set_id)
+    if not clean_set_id:
+        raise ValueError("snapshot set_id is empty")
+    snapshot_name = snapshot_storage.normalize_snapshot_name(name)
+    return f"{SNAPSHOT_SETS_DIR_NAME}/{clean_set_id}/{snapshot_name}"
+
+
 def build_cloud_snapshot_context_refresh_key() -> str:
     return build_cloud_snapshot_refresh_key(
         CLOUD_SNAPSHOT_META_NAME,
         CLOUD_SNAPSHOT_REFRESH_STATUS_NAME,
         CLOUD_SNAPSHOT_REFRESH_STATE_NAME,
+        CURRENT_SNAPSHOT_SET_NAME,
     )
 
 
@@ -2873,7 +2900,7 @@ def parse_cloud_snapshot_json_bytes(data: bytes) -> dict[str, object]:
 def read_cloud_snapshot_context_cached(refresh_key: str) -> dict[str, object]:
     _ = refresh_key
     with PerfTimer("snapshot_context"):
-        context: dict[str, object] = {"meta": {}, "status": {}, "state": {}}
+        context: dict[str, object] = {"meta": {}, "status": {}, "state": {}, "current_set": {}, "current_set_manifest": {}}
         try:
             context["meta"] = parse_cloud_snapshot_meta_bytes(
                 snapshot_storage.read_snapshot_bytes(CLOUD_SNAPSHOT_DIR, CLOUD_SNAPSHOT_META_NAME)
@@ -2892,6 +2919,22 @@ def read_cloud_snapshot_context_cached(refresh_key: str) -> dict[str, object]:
             )
         except Exception:
             context["state"] = {}
+        try:
+            current_set = parse_cloud_snapshot_json_bytes(
+                snapshot_storage.read_snapshot_bytes(CLOUD_SNAPSHOT_DIR, CURRENT_SNAPSHOT_SET_NAME)
+            )
+            context["current_set"] = current_set
+            set_id = clean_text_value(current_set.get("set_id", ""))
+            if set_id:
+                context["current_set_manifest"] = parse_cloud_snapshot_json_bytes(
+                    snapshot_storage.read_snapshot_bytes(
+                        CLOUD_SNAPSHOT_DIR,
+                        snapshot_set_file_name(set_id, SNAPSHOT_SET_MANIFEST_NAME),
+                    )
+                )
+        except Exception:
+            context["current_set"] = {}
+            context["current_set_manifest"] = {}
         return context
 
 
@@ -2928,6 +2971,9 @@ def write_cloud_snapshot_csv(name: str, df: pd.DataFrame) -> bool:
 
 
 def get_cloud_snapshot_meta_value(key: str, default: str | Callable[[], str] = "-") -> str:
+    set_value = get_validated_snapshot_set_meta_value(key)
+    if set_value:
+        return set_value
     value = get_cloud_snapshot_meta_map().get(clean_text_value(key), "")
     if value:
         return value
@@ -2969,6 +3015,128 @@ def parse_updated_at_value(value: object) -> datetime | None:
         return datetime.strptime(text[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=DISPLAY_TZ)
     except ValueError:
         return None
+
+
+def resolve_aps_snapshot_slot(value: object) -> str:
+    parsed = parse_updated_at_value(value)
+    if parsed is None:
+        return ""
+    period = "AM" if parsed.hour < 12 else "PM"
+    return f"{parsed:%Y-%m-%d} {period}"
+
+
+def format_aps_snapshot_slot(slot_key: object) -> str:
+    text = clean_text_value(slot_key)
+    if not text:
+        return "-"
+    match = re.fullmatch(r"(\d{4}-\d{2}-\d{2})\s+(AM|PM)", text)
+    if not match:
+        return text
+    period = "오전" if match.group(2) == "AM" else "오후"
+    return f"{match.group(1)} {period}"
+
+
+def aps_snapshot_slot_sort_key(slot_key: object) -> tuple[str, int]:
+    text = clean_text_value(slot_key)
+    match = re.fullmatch(r"(\d{4}-\d{2}-\d{2})\s+(AM|PM)", text)
+    if not match:
+        return ("", -1)
+    return (match.group(1), 0 if match.group(2) == "AM" else 1)
+
+
+def compare_aps_snapshot_slots(plan_updated_at: object, wip_updated_at: object) -> str:
+    plan_slot = resolve_aps_snapshot_slot(plan_updated_at)
+    wip_slot = resolve_aps_snapshot_slot(wip_updated_at)
+    if not plan_slot:
+        return REFRESH_STATUS_WAITING_FOR_PLAN
+    if not wip_slot:
+        return REFRESH_STATUS_WAITING_FOR_WIP
+    if plan_slot == wip_slot:
+        return REFRESH_STATUS_READY
+    return (
+        REFRESH_STATUS_WAITING_FOR_WIP
+        if aps_snapshot_slot_sort_key(plan_slot) > aps_snapshot_slot_sort_key(wip_slot)
+        else REFRESH_STATUS_WAITING_FOR_PLAN
+    )
+
+
+def get_latest_aps_snapshot_slot(plan_updated_at: object, wip_updated_at: object) -> str:
+    slots = [resolve_aps_snapshot_slot(plan_updated_at), resolve_aps_snapshot_slot(wip_updated_at)]
+    slots = [slot for slot in slots if slot]
+    if not slots:
+        return ""
+    return max(slots, key=aps_snapshot_slot_sort_key)
+
+
+def build_snapshot_set_id(plan_updated_at: object, wip_updated_at: object) -> str:
+    plan_dt = parse_updated_at_value(plan_updated_at)
+    wip_dt = parse_updated_at_value(wip_updated_at)
+    slot_key = resolve_aps_snapshot_slot(plan_updated_at) or get_latest_aps_snapshot_slot(plan_updated_at, wip_updated_at)
+    date_part, period_part = "unknown", "slot"
+    match = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})\s+(AM|PM)", slot_key)
+    if match:
+        date_part = "".join(match.group(i) for i in (1, 2, 3))
+        period_part = match.group(4).lower()
+    plan_part = plan_dt.strftime("%H%M%S") if plan_dt else "unknown"
+    wip_part = wip_dt.strftime("%H%M%S") if wip_dt else "unknown"
+    digest = hashlib.sha256(f"{slot_key}|{plan_updated_at}|{wip_updated_at}".encode("utf-8")).hexdigest()[:8]
+    return f"aps_{date_part}_{period_part}_plan{plan_part}_wip{wip_part}_{digest}"
+
+
+def get_published_snapshot_set_pointer() -> dict[str, object]:
+    current_set = get_cloud_snapshot_context().get("current_set", {})
+    return current_set if isinstance(current_set, dict) else {}
+
+
+def get_published_snapshot_set_manifest() -> dict[str, object]:
+    manifest = get_cloud_snapshot_context().get("current_set_manifest", {})
+    if isinstance(manifest, dict) and clean_text_value(manifest.get("set_id", "")):
+        return manifest
+    return {}
+
+
+def get_validated_snapshot_set_meta_value(key: str) -> str:
+    manifest = get_published_snapshot_set_manifest()
+    if not manifest:
+        return ""
+    clean_key = clean_text_value(key)
+    if clean_key == WIP_INVENTORY_UPDATED_AT_META_KEY:
+        return clean_text_value(manifest.get("wip_updated_at", ""))
+    if clean_key == WIP_INVENTORY_REFRESHED_AT_META_KEY:
+        return clean_text_value(manifest.get("created_at", ""))
+    if clean_key == WIP_INVENTORY_SOURCE_LABEL_META_KEY:
+        sources = manifest.get("sources")
+        if isinstance(sources, dict):
+            wip_source = sources.get("wip")
+            if isinstance(wip_source, dict):
+                label = clean_text_value(wip_source.get("label", ""))
+                if label:
+                    return label
+        return format_wip_inventory_snapshot_source_label(clean_text_value(manifest.get("wip_updated_at", "")))
+    if clean_key == "data_updated_at" or clean_key.startswith("data_updated_at_"):
+        return clean_text_value(manifest.get("plan_updated_at", ""))
+    return ""
+
+
+def get_published_snapshot_set_file_name(name: str) -> str:
+    manifest = get_published_snapshot_set_manifest()
+    set_id = clean_text_value(manifest.get("set_id", ""))
+    if not set_id:
+        return name
+    files = manifest.get("files")
+    if isinstance(files, dict):
+        file_info = files.get(name)
+        if isinstance(file_info, dict):
+            file_name = clean_text_value(file_info.get("path", ""))
+            if file_name:
+                return file_name
+        elif isinstance(file_info, str) and clean_text_value(file_info):
+            return clean_text_value(file_info)
+    return snapshot_set_file_name(set_id, name)
+
+
+def load_published_snapshot_csv(name: str) -> pd.DataFrame:
+    return load_cloud_snapshot_csv(get_published_snapshot_set_file_name(name))
 
 
 def is_cloud_snapshot_fresh(meta_key: str, live_updated_at: str) -> bool:
@@ -3027,17 +3195,58 @@ def summarize_snapshot_refresh_failure(status: dict[str, object]) -> str:
     return "자동 스냅샷 갱신 작업이 완료되지 않았습니다."
 
 
+def normalize_snapshot_refresh_status(value: object) -> str:
+    text = clean_text_value(value).upper()
+    legacy_map = {
+        "COMPLETED": REFRESH_STATUS_PUBLISHED,
+        "PENDING": REFRESH_STATUS_WAITING_FOR_WIP,
+        "PENDING_API_UPDATE": REFRESH_STATUS_WAITING_FOR_PLAN,
+        "PENDING_WIP_UPDATE": REFRESH_STATUS_WAITING_FOR_WIP,
+        "FAILED": REFRESH_STATUS_FAILED,
+        "API_FAILED": REFRESH_STATUS_FAILED,
+        "VALIDATION_FAILED": REFRESH_STATUS_FAILED,
+        "STORAGE_FAILED": REFRESH_STATUS_FAILED,
+    }
+    return legacy_map.get(text, text)
+
+
+def get_refresh_status_slot_text(status: dict[str, object]) -> str:
+    slot_key = clean_text_value(status.get("slot_key", ""))
+    if not slot_key:
+        slot_key = get_latest_aps_snapshot_slot(status.get("api_updated_at", ""), status.get("wip_api_updated_at", ""))
+    return format_aps_snapshot_slot(slot_key)
+
+
+def get_snapshot_refresh_display_status(status: dict[str, object]) -> str:
+    status_text = normalize_snapshot_refresh_status(status.get("status", ""))
+    slot_text = get_refresh_status_slot_text(status)
+    period_text = ""
+    if "오전" in slot_text:
+        period_text = "오전"
+    elif "오후" in slot_text:
+        period_text = "오후"
+    if status_text == REFRESH_STATUS_PUBLISHED:
+        return "최신"
+    if status_text in {REFRESH_STATUS_CHECKING, REFRESH_STATUS_READY, REFRESH_STATUS_BUILDING, REFRESH_STATUS_VALIDATING, REFRESH_STATUS_PUBLISHING}:
+        return f"{period_text + ' ' if period_text else ''}데이터 갱신 중"
+    if status_text in {REFRESH_STATUS_WAITING_FOR_PLAN, REFRESH_STATUS_WAITING_FOR_WIP}:
+        return f"{period_text + ' ' if period_text else ''}데이터 갱신 중"
+    if status_text == REFRESH_STATUS_DELAYED:
+        return "데이터 갱신 지연"
+    if status_text == REFRESH_STATUS_FAILED:
+        return "데이터 갱신 실패"
+    return "저장 스냅샷"
+
+
 def build_snapshot_refresh_failure_message() -> str:
     status = get_snapshot_refresh_status()
-    status_text = clean_text_value(status.get("status", "")).lower()
-    if status_text not in {"failed", "api_failed", "validation_failed", "storage_failed"}:
+    status_text = normalize_snapshot_refresh_status(status.get("status", ""))
+    if status_text != REFRESH_STATUS_FAILED:
         return ""
 
     checked_at = format_reference_timestamp(clean_text_value(status.get("checked_at", "")))
-    reason = summarize_snapshot_refresh_failure(status)
-    if len(reason) > 220:
-        reason = reason[:217].rstrip() + "..."
-    return f"마지막 갱신 실패: {checked_at}. 기존 정상 스냅샷을 표시합니다. 원인: {reason}"
+    checked_part = f" 마지막 확인: {checked_at}." if checked_at != "-" else ""
+    return f"데이터 갱신 실패. 현재는 이전 정상 데이터를 표시하고 있습니다.{checked_part}"
 
 
 def get_recorded_aps_plan_updated_at(default: str = "-") -> str:
@@ -3155,7 +3364,7 @@ def normalize_wip_inventory_snapshot_df(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_cloud_wip_inventory_snapshot_with_label() -> tuple[pd.DataFrame, str]:
-    inventory = normalize_wip_inventory_snapshot_df(load_cloud_snapshot_csv(WIP_INVENTORY_SNAPSHOT_FILE))
+    inventory = normalize_wip_inventory_snapshot_df(load_published_snapshot_csv(WIP_INVENTORY_SNAPSHOT_FILE))
     return inventory, get_cloud_wip_inventory_source_label("APS WIP 정리 스냅샷 없음")
 
 
@@ -3177,7 +3386,7 @@ def write_cloud_wip_inventory_snapshot(inventory_df: pd.DataFrame, updated_at: s
 
 def get_cloud_shortage_wip_source_label(site_filter: str = "전체") -> str:
     _, info_name, _ = shortage_snapshot_file_names(site_filter)
-    info_df = load_cloud_snapshot_csv(info_name)
+    info_df = load_published_snapshot_csv(info_name)
     if info_df.empty or "재고파일" not in info_df.columns:
         return get_cloud_wip_inventory_source_label("")
     return clean_text_value(info_df.iloc[0].get("재고파일", ""))
@@ -3198,18 +3407,8 @@ def build_cloud_wip_inventory_snapshot_unavailable_message() -> str:
     if not should_use_aps_wip_api_for_inventory():
         return ""
     snapshot_updated_at = get_cloud_wip_inventory_snapshot_updated_at("-")
-    recorded_wip_updated_at = get_recorded_aps_wip_updated_at(snapshot_updated_at)
     if snapshot_updated_at == "-":
         return "APS WIP 정리 스냅샷이 없어 최신 재고 데이터를 표시할 수 없습니다. 예약 갱신 작업이 APS WIP API를 먼저 성공해야 합니다."
-
-    snapshot_dt = parse_updated_at_value(snapshot_updated_at)
-    recorded_dt = parse_updated_at_value(recorded_wip_updated_at)
-    if recorded_dt is not None and (snapshot_dt is None or snapshot_dt.timestamp() + 1 < recorded_dt.timestamp()):
-        return (
-            "APS WIP 정리 스냅샷이 최신 기준보다 오래되어 표시하지 않습니다. "
-            f"스냅샷 기준시각: {format_reference_timestamp(snapshot_updated_at)}, "
-            f"APS WIP 최신 기준시각: {format_reference_timestamp(recorded_wip_updated_at)}."
-        )
     return ""
 
 
@@ -3277,7 +3476,9 @@ def build_shortage_snapshot_hold_message(site_filter: str, snapshot_updated_at: 
     accuracy_error = build_shortage_snapshot_accuracy_error(site_filter, snapshot_updated_at, live_updated_at)
     if not accuracy_error:
         return ""
-    return f"{accuracy_error} 최신 스냅샷 생성 완료 전까지 기존 스냅샷 표시는 중지합니다."
+    status = get_snapshot_refresh_status()
+    display_status = get_snapshot_refresh_display_status(status)
+    return f"{display_status}. 현재는 이전 정상 데이터를 표시하고 있습니다."
 
 
 def build_shortage_snapshot_hold_file_info(snapshot_updated_at: str, live_updated_at: str) -> pd.DataFrame:
@@ -3296,39 +3497,41 @@ def build_shortage_snapshot_hold_file_info(snapshot_updated_at: str, live_update
 
 def render_snapshot_status_caption(updated_at: str) -> None:
     status = get_snapshot_refresh_status()
-    status_text = clean_text_value(status.get("status", ""))
-    if status_text == "completed":
-        display_status = "최신"
-    elif status_text == "pending":
-        display_status = "갱신 대기"
-    elif status_text:
-        display_status = f"갱신 상태: {status_text}"
-    else:
-        display_status = "저장 스냅샷"
+    display_status = get_snapshot_refresh_display_status(status)
+    manifest = get_published_snapshot_set_manifest()
+    plan_updated_at = clean_text_value(manifest.get("plan_updated_at", "")) if manifest else clean_text_value(updated_at)
+    wip_updated_at = clean_text_value(manifest.get("wip_updated_at", "")) if manifest else ""
 
-    parts = [f"데이터 기준: {format_reference_timestamp(updated_at)}"]
+    parts = [f"PLAN: {format_reference_timestamp(plan_updated_at)}"]
+    if wip_updated_at:
+        parts.append(f"WIP: {format_reference_timestamp(wip_updated_at)}")
     checked_at = clean_text_value(status.get("checked_at", ""))
     if checked_at:
-        parts.append(f"Snapshot 생성: {format_reference_timestamp(checked_at)}")
-    wip_updated_at = clean_text_value(status.get("wip_api_updated_at", ""))
-    if wip_updated_at:
-        parts.append(f"WIP 기준: {format_reference_timestamp(wip_updated_at)}")
+        parts.append(f"마지막 확인: {format_reference_timestamp(checked_at)}")
+    if manifest:
+        parts.append(f"Set: {clean_text_value(manifest.get('set_id', ''))}")
     parts.append(f"상태: {display_status}")
     st.caption(" · ".join(parts))
 
 
 def load_cloud_shortage_snapshot(site_filter: str = "전체") -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     snapshot_name, info_name, process_name = shortage_snapshot_file_names(site_filter)
+    published_snapshot_name = get_published_snapshot_set_file_name(snapshot_name)
+    published_info_name = get_published_snapshot_set_file_name(info_name)
+    published_process_name = get_published_snapshot_set_file_name(process_name)
     try:
-        specific_snapshot_exists = snapshot_storage.snapshot_exists(CLOUD_SNAPSHOT_DIR, snapshot_name)
+        specific_snapshot_exists = snapshot_storage.snapshot_exists(CLOUD_SNAPSHOT_DIR, published_snapshot_name)
     except Exception:
         specific_snapshot_exists = False
     if snapshot_name != "shortage_snapshot.csv.gz" and not specific_snapshot_exists:
         snapshot_name, info_name, process_name = shortage_snapshot_file_names("전체")
+        published_snapshot_name = get_published_snapshot_set_file_name(snapshot_name)
+        published_info_name = get_published_snapshot_set_file_name(info_name)
+        published_process_name = get_published_snapshot_set_file_name(process_name)
     return (
-        load_cloud_snapshot_csv(snapshot_name),
-        load_cloud_snapshot_csv(info_name),
-        load_cloud_snapshot_csv(process_name),
+        load_cloud_snapshot_csv(published_snapshot_name),
+        load_cloud_snapshot_csv(published_info_name),
+        load_cloud_snapshot_csv(published_process_name),
     )
 
 
@@ -3348,6 +3551,147 @@ def write_cloud_shortage_snapshot(
     if ok:
         ok = write_cloud_snapshot_meta_value(shortage_snapshot_meta_key(site_filter), updated_at) and ok
     return ok
+
+
+def dataframe_content_checksum(df: pd.DataFrame) -> str:
+    frame = repair_korean_mojibake_dataframe(df.copy()) if isinstance(df, pd.DataFrame) else pd.DataFrame()
+    buffer = BytesIO()
+    frame.to_csv(buffer, index=False, encoding="utf-8-sig")
+    return hashlib.sha256(buffer.getvalue()).hexdigest()
+
+
+def snapshot_file_manifest_entry(path: str, df: pd.DataFrame) -> dict[str, object]:
+    return {
+        "path": snapshot_storage.normalize_snapshot_name(path),
+        "rows": int(len(df)) if isinstance(df, pd.DataFrame) else 0,
+        "checksum": dataframe_content_checksum(df),
+    }
+
+
+def plan_snapshot_file_name(site_filter: str = "전체") -> str:
+    suffix = shortage_snapshot_site_suffix(site_filter)
+    return f"aps_plan_operations{suffix}.csv.gz"
+
+
+def build_validated_snapshot_set_manifest(
+    set_id: str,
+    plan_updated_at: str,
+    wip_updated_at: str,
+    sites: list[str],
+    plan_frames: dict[str, pd.DataFrame],
+    wip_inventory: pd.DataFrame,
+    shortage_results: dict[str, tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]],
+    wip_source_label: str,
+    created_at: str,
+) -> dict[str, object]:
+    slot_key = resolve_aps_snapshot_slot(plan_updated_at)
+    files: dict[str, object] = {}
+    row_counts: dict[str, int] = {}
+
+    wip_path = snapshot_set_file_name(set_id, WIP_INVENTORY_SNAPSHOT_FILE)
+    files[WIP_INVENTORY_SNAPSHOT_FILE] = snapshot_file_manifest_entry(wip_path, wip_inventory)
+    row_counts["wip"] = int(len(wip_inventory))
+
+    for site in sites:
+        plan_name = plan_snapshot_file_name(site)
+        plan_df = plan_frames.get(site, pd.DataFrame())
+        plan_path = snapshot_set_file_name(set_id, plan_name)
+        files[plan_name] = snapshot_file_manifest_entry(plan_path, plan_df)
+        row_counts[f"plan_{normalize_shortage_snapshot_site_filter(site)}"] = int(len(plan_df))
+
+        shortage_df, file_info_df, process_map_df = shortage_results[site]
+        for file_name, frame in zip(shortage_snapshot_file_names(site), (shortage_df, file_info_df, process_map_df)):
+            file_path = snapshot_set_file_name(set_id, file_name)
+            files[file_name] = snapshot_file_manifest_entry(file_path, frame)
+        row_counts[f"shortage_{normalize_shortage_snapshot_site_filter(site)}"] = int(len(shortage_df))
+
+    return {
+        "set_id": set_id,
+        "slot_key": slot_key,
+        "plan_updated_at": clean_text_value(plan_updated_at),
+        "wip_updated_at": clean_text_value(wip_updated_at),
+        "created_at": clean_text_value(created_at),
+        "sites": sites,
+        "sources": {
+            "plan": {"label": f"APS API ({format_reference_timestamp(plan_updated_at)})"},
+            "wip": {"label": clean_text_value(wip_source_label)},
+        },
+        "files": files,
+        "row_counts": row_counts,
+        "validation": {"status": "passed"},
+    }
+
+
+def write_validated_snapshot_set(
+    plan_updated_at: str,
+    wip_updated_at: str,
+    sites: list[str],
+    plan_frames: dict[str, pd.DataFrame],
+    wip_inventory: pd.DataFrame,
+    wip_source_label: str,
+    shortage_results: dict[str, tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]],
+    update_flat_compat: bool = True,
+) -> dict[str, object]:
+    if compare_aps_snapshot_slots(plan_updated_at, wip_updated_at) != REFRESH_STATUS_READY:
+        raise ValueError("PLAN/WIP snapshot slots do not match.")
+    clean_sites = [normalize_shortage_snapshot_site_filter(site) for site in sites]
+    missing_sites = [site for site in clean_sites if site not in shortage_results]
+    if missing_sites:
+        raise ValueError(f"snapshot set site results missing: {', '.join(missing_sites)}")
+
+    set_id = build_snapshot_set_id(plan_updated_at, wip_updated_at)
+    created_at = datetime.now(DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    manifest = build_validated_snapshot_set_manifest(
+        set_id,
+        plan_updated_at,
+        wip_updated_at,
+        clean_sites,
+        plan_frames,
+        wip_inventory,
+        shortage_results,
+        wip_source_label,
+        created_at,
+    )
+
+    files = manifest.get("files", {})
+    if not isinstance(files, dict):
+        raise ValueError("snapshot set manifest files are invalid.")
+
+    if not write_cloud_snapshot_csv(snapshot_set_file_name(set_id, WIP_INVENTORY_SNAPSHOT_FILE), wip_inventory):
+        raise RuntimeError("validated WIP snapshot set write failed")
+    for site in clean_sites:
+        plan_df = plan_frames.get(site, pd.DataFrame())
+        if not write_cloud_snapshot_csv(snapshot_set_file_name(set_id, plan_snapshot_file_name(site)), plan_df):
+            raise RuntimeError(f"{site}: validated PLAN snapshot set write failed")
+        shortage_df, file_info_df, process_map_df = shortage_results[site]
+        for file_name, frame in zip(shortage_snapshot_file_names(site), (shortage_df, file_info_df, process_map_df)):
+            if not write_cloud_snapshot_csv(snapshot_set_file_name(set_id, file_name), frame):
+                raise RuntimeError(f"{site}: validated shortage snapshot set write failed: {file_name}")
+
+    snapshot_storage.write_json_snapshot_atomic(
+        CLOUD_SNAPSHOT_DIR,
+        snapshot_set_file_name(set_id, SNAPSHOT_SET_MANIFEST_NAME),
+        manifest,
+    )
+
+    if update_flat_compat:
+        if not write_cloud_wip_inventory_snapshot(wip_inventory, wip_updated_at, wip_source_label):
+            raise RuntimeError("flat WIP compatibility snapshot write failed")
+        for site in clean_sites:
+            shortage_df, file_info_df, process_map_df = shortage_results[site]
+            if not write_cloud_shortage_snapshot(shortage_df, file_info_df, process_map_df, plan_updated_at, site):
+                raise RuntimeError(f"{site}: flat shortage compatibility snapshot write failed")
+
+    current_payload = {
+        "set_id": set_id,
+        "slot_key": manifest["slot_key"],
+        "manifest_path": snapshot_set_file_name(set_id, SNAPSHOT_SET_MANIFEST_NAME),
+        "plan_updated_at": clean_text_value(plan_updated_at),
+        "wip_updated_at": clean_text_value(wip_updated_at),
+        "published_at": datetime.now(DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    snapshot_storage.write_json_snapshot_atomic(CLOUD_SNAPSHOT_DIR, CURRENT_SNAPSHOT_SET_NAME, current_payload)
+    return manifest
 
 
 def load_cloud_inventory_risk_snapshot() -> pd.DataFrame:
@@ -5503,12 +5847,15 @@ def build_data_refresh_key(base_dir: Path) -> str:
 
 def build_api_shortage_refresh_key(base_dir: Path, site_filter: str = "전체") -> str:
     parts = [f"api-shortage:{APP_CACHE_VERSION}", f"site:{clean_text_value(site_filter) or '전체'}", build_plan_api_refresh_key()]
-    try:
-        inv_path, _ = find_excel_files(base_dir)
-        stat = inv_path.stat()
-        parts.append(f"wip:{inv_path.name}:{stat.st_size}:{stat.st_mtime_ns}")
-    except Exception as exc:
-        parts.append(f"wip-error:{exc}")
+    if should_use_aps_wip_api_for_inventory():
+        parts.append(f"wip-snapshot:{build_cloud_snapshot_refresh_key(CURRENT_SNAPSHOT_SET_NAME, WIP_INVENTORY_SNAPSHOT_FILE)}")
+    else:
+        try:
+            inv_path, _ = find_excel_files(base_dir)
+            stat = inv_path.stat()
+            parts.append(f"wip:{inv_path.name}:{stat.st_size}:{stat.st_mtime_ns}")
+        except Exception as exc:
+            parts.append(f"wip-error:{exc}")
 
     ref_path = find_product_name_reference_file(base_dir)
     if ref_path is None:
@@ -7968,16 +8315,39 @@ def load_api_shortage_data(
     base_dir_str: str | None = None,
     site_filter: str = "전체",
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    _ = refresh_key
     data_base_dir = Path(base_dir_str) if base_dir_str else BASE_DIR
     raw, error = read_aps_plan_operations_dataframe(APS_PLAN_SHORTAGE_OPERATIONS, site_filter)
     if error:
         raise ValueError(f"APS API 수요 조회 실패: {error}")
+    return build_api_shortage_data_from_frames(
+        raw,
+        refresh_key,
+        str(data_base_dir),
+        site_filter,
+        plan_updated_at=get_plan_api_updated_at(),
+    )
+
+
+def build_api_shortage_data_from_frames(
+    raw: pd.DataFrame,
+    refresh_key: str,
+    base_dir_str: str | None = None,
+    site_filter: str = "전체",
+    plan_updated_at: str | None = None,
+    inventory_df: pd.DataFrame | None = None,
+    inventory_source_label: str = "",
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    data_base_dir = Path(base_dir_str) if base_dir_str else BASE_DIR
+    plan_source_updated_at = clean_text_value(plan_updated_at) or get_plan_api_updated_at()
+    plan_source_label = f"APS API ({format_reference_timestamp(plan_source_updated_at)})"
+    active_inventory_source_label = clean_text_value(inventory_source_label)
+    if not active_inventory_source_label:
+        active_inventory_source_label = format_active_wip_source_label(data_base_dir)
     if raw.empty:
         empty_info = pd.DataFrame(
             {
-                "재고파일": [format_active_wip_source_label(data_base_dir)],
-                "수요파일": [f"APS API ({format_reference_timestamp(get_plan_api_updated_at())})"],
+                "재고파일": [active_inventory_source_label],
+                "수요파일": [plan_source_label],
                 "행수(현황표)": [0],
             }
         )
@@ -8081,8 +8451,8 @@ def load_api_shortage_data(
     if work.empty:
         empty_info = pd.DataFrame(
             {
-                "재고파일": [format_active_wip_source_label(data_base_dir)],
-                "수요파일": [f"APS API ({format_reference_timestamp(get_plan_api_updated_at())})"],
+                "재고파일": [active_inventory_source_label],
+                "수요파일": [plan_source_label],
                 "행수(현황표)": [0],
             }
         )
@@ -8146,7 +8516,11 @@ def load_api_shortage_data(
         leadji_u_map,
     ) = load_reference_maps_bundle(data_base_dir, reference_refresh_key)
 
-    inv_df, inventory_source_label = load_all_item_inventory_source_with_label(data_base_dir)
+    if inventory_df is None:
+        inv_df, inventory_source_label = load_all_item_inventory_source_with_label(data_base_dir)
+    else:
+        inv_df = normalize_wip_inventory_snapshot_df(inventory_df)
+        inventory_source_label = active_inventory_source_label
     target_inv = inv_df[inv_df["창고"].isin(TARGET_WAREHOUSES)].copy()
     stock_lookup: dict[str, dict[str, float]] = {}
     for raw_name, display_name in WAREHOUSE_MAP.items():
@@ -8309,7 +8683,7 @@ def load_api_shortage_data(
     file_info_df = pd.DataFrame(
         {
             "재고파일": [inventory_source_label],
-            "수요파일": [f"APS API ({format_reference_timestamp(get_plan_api_updated_at())})"],
+            "수요파일": [plan_source_label],
             "행수(현황표)": [len(result)],
             "API 처리행수": [len(raw)],
             "재작업 시트명": [str(rework_meta.get("sheet", "-"))],
@@ -16145,26 +16519,17 @@ def main() -> None:
                                 api_alert_message = wip_snapshot_unavailable_message
                                 sidebar_status_caption = "오류: APS WIP 정리 스냅샷 필요"
                             elif snapshot_hold_message and not snapshot_refresh_failure_message:
-                                df = build_empty_shortage_dashboard_df()
-                                file_info_df = build_shortage_snapshot_hold_file_info(
-                                    snapshot_updated_at,
-                                    shortage_api_updated_at,
-                                )
-                                source_label = "APS 스냅샷 갱신중"
-                                api_alert_title = (
-                                    "갱신중"
-                                    if is_shortage_snapshot_refresh_grace_period(
-                                        snapshot_updated_at,
-                                        shortage_api_updated_at,
-                                    )
-                                    else "오류"
-                                )
+                                df = snapshot_df
+                                file_info_df = snapshot_file_info_df
+                                source_label = "Cloud 스냅샷 (Validated Set)"
+                                display_status = get_snapshot_refresh_display_status(get_snapshot_refresh_status())
+                                api_alert_title = "갱신중" if "갱신 중" in display_status else "지연"
                                 api_alert_message = snapshot_hold_message
-                                sidebar_status_caption = f"{api_alert_title}: 최신 스냅샷 대기"
+                                sidebar_status_caption = f"{api_alert_title}: 이전 정상 스냅샷 표시"
                             else:
                                 df = snapshot_df
                                 file_info_df = snapshot_file_info_df
-                                source_label = "Cloud 스냅샷 (빠른 조회)"
+                                source_label = "Cloud 스냅샷 (Validated Set)"
                                 sidebar_status_caption = (
                                     "자동 갱신 실패: 기존 정상 스냅샷 표시"
                                     if snapshot_hold_message
@@ -16220,18 +16585,15 @@ def main() -> None:
                                     api_alert_message = f"{api_alert_message} {wip_snapshot_unavailable_message}"
                                     sidebar_status_caption = "오류: APS WIP API 재고 필요"
                                 elif snapshot_hold_message and not snapshot_refresh_failure_message:
-                                    df = build_empty_shortage_dashboard_df()
-                                    file_info_df = build_shortage_snapshot_hold_file_info(
-                                        snapshot_updated_at,
-                                        shortage_api_updated_at,
-                                    )
-                                    source_label = "APS 스냅샷 갱신중"
+                                    df = snapshot_df
+                                    file_info_df = snapshot_file_info_df
+                                    source_label = "Cloud 스냅샷 (Validated Set)"
                                     api_alert_message = f"{api_alert_message} {snapshot_hold_message}"
-                                    sidebar_status_caption = "오류: 최신 스냅샷 대기"
+                                    sidebar_status_caption = "갱신중: 이전 정상 스냅샷 표시"
                                 else:
                                     df = snapshot_df
                                     file_info_df = snapshot_file_info_df
-                                    source_label = "Cloud 스냅샷 (APS API 실패 fallback)"
+                                    source_label = "Cloud 스냅샷 (Validated Set)"
                                     sidebar_status_caption = (
                                         "자동 갱신 실패: 기존 정상 스냅샷 표시"
                                         if snapshot_hold_message
