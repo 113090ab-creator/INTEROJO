@@ -1,15 +1,12 @@
 {
-  "checked_at": "2026-09-04 17:32:17",
-  "status": "completed",
-  "api_updated_at": "2026-09-04 15:59:29",
-  "wip_api_updated_at": "2026-09-04 16:10:53",
-  "storage": "로컬 cloud_snapshots 폴더",
+  "checked_at": "2026-09-05 09:59:15",
+  "status": "failed",
+  "reason": "APS WIP API 조회 실패: APS WIP 정리 스냅샷이 최신 기준보다 오래됐습니다 (스냅샷 2026-09-04 16:10:53 / APS WIP 최신 2026-09-05 08:15:16). WIP 파일 대체는 사용하지 않습니다.",
   "sites": [
     "C관",
     "A관",
     "S관",
     "전체"
   ],
-  "skipped": true,
-  "reason": "stored snapshots are already current"
+  "storage": "local-or-remote"
 }
