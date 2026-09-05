@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import tempfile
@@ -64,6 +65,37 @@ class ValidatedSnapshotSetTests(unittest.TestCase):
             os.environ["SNAPSHOT_STORAGE_BACKEND"] = self.original_backend
         clear_app_snapshot_caches()
         self.temp_dir.cleanup()
+
+    def publish_current_set(self, published_at: str = "2026-09-05 10:39:13") -> dict[str, object]:
+        plan_updated_at = "2026-09-05 08:01:23"
+        wip_updated_at = "2026-09-05 08:15:16"
+        manifest = app.write_validated_snapshot_set(
+            plan_updated_at,
+            wip_updated_at,
+            ["전체"],
+            {"전체": pd.DataFrame({"oper_id": ["80"], "item_id": ["P12345"], "plan_qty": [10]})},
+            pd.DataFrame({"품목코드": ["R12345"], "창고": ["사출창고"], "재공코드": ["R12345"], "재고량": [1]}),
+            app.format_wip_inventory_snapshot_source_label(wip_updated_at),
+            {
+                "전체": (
+                    minimal_shortage_df(),
+                    minimal_file_info(plan_updated_at, wip_updated_at),
+                    pd.DataFrame({"공정창고": ["사출창고"]}),
+                )
+            },
+            update_flat_compat=False,
+        )
+        current_path = app.CLOUD_SNAPSHOT_DIR / app.CURRENT_SNAPSHOT_SET_NAME
+        current = json.loads(current_path.read_text(encoding="utf-8"))
+        current["published_at"] = published_at
+        current_path.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
+        clear_app_snapshot_caches()
+        return manifest
+
+    def write_refresh_status(self, payload: dict[str, object]) -> None:
+        status_path = app.CLOUD_SNAPSHOT_DIR / app.CLOUD_SNAPSHOT_REFRESH_STATUS_NAME
+        status_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        clear_app_snapshot_caches()
 
     def test_slot_comparison_waiting_and_ready_states(self) -> None:
         self.assertEqual(
@@ -231,7 +263,80 @@ class ValidatedSnapshotSetTests(unittest.TestCase):
 
     def test_waiting_status_display_keeps_previous_validated_set(self) -> None:
         status = {"status": app.REFRESH_STATUS_WAITING_FOR_WIP, "slot_key": "2026-09-05 AM"}
-        self.assertEqual(app.get_snapshot_refresh_display_status(status), "오전 데이터 갱신 중")
+        self.assertEqual(app.get_snapshot_refresh_display_status(status), "갱신 중")
+
+    def test_stale_failed_status_after_published_set_is_ignored(self) -> None:
+        self.publish_current_set()
+        self.write_refresh_status(
+            {
+                "checked_at": "2026-09-05 09:59:15",
+                "status": app.REFRESH_STATUS_FAILED,
+                "api_updated_at": "2026-09-05 08:01:23",
+                "wip_api_updated_at": "2026-09-04 16:10:53",
+                "slot_key": "2026-09-05 AM",
+                "reason": "old failure",
+            }
+        )
+
+        status = app.get_snapshot_refresh_status()
+        self.assertEqual(status["status"], app.REFRESH_STATUS_PUBLISHED)
+        self.assertEqual(app.get_snapshot_refresh_display_status(status), "최신")
+        self.assertEqual(app.build_snapshot_refresh_failure_message(), "")
+
+    def test_newer_waiting_status_displays_refreshing_and_keeps_current_set(self) -> None:
+        self.publish_current_set()
+        self.write_refresh_status(
+            {
+                "checked_at": "2026-09-05 10:45:00",
+                "status": app.REFRESH_STATUS_WAITING_FOR_WIP,
+                "api_updated_at": "2026-09-05 16:01:00",
+                "wip_api_updated_at": "2026-09-05 08:15:16",
+                "slot_key": "2026-09-05 PM",
+            }
+        )
+
+        status = app.get_snapshot_refresh_status()
+        loaded_shortage, _, _ = app.load_cloud_shortage_snapshot("전체")
+        self.assertEqual(status["status"], app.REFRESH_STATUS_WAITING_FOR_WIP)
+        self.assertEqual(app.get_snapshot_refresh_display_status(status), "갱신 중")
+        self.assertEqual(len(loaded_shortage), 1)
+
+    def test_newer_failed_status_displays_failure_and_keeps_current_set(self) -> None:
+        self.publish_current_set()
+        self.write_refresh_status(
+            {
+                "checked_at": "2026-09-05 10:50:00",
+                "status": app.REFRESH_STATUS_FAILED,
+                "api_updated_at": "2026-09-05 16:01:00",
+                "wip_api_updated_at": "2026-09-05 08:15:16",
+                "slot_key": "2026-09-05 PM",
+                "reason": "current failure",
+            }
+        )
+
+        status = app.get_snapshot_refresh_status()
+        loaded_shortage, _, _ = app.load_cloud_shortage_snapshot("전체")
+        self.assertEqual(status["status"], app.REFRESH_STATUS_FAILED)
+        self.assertEqual(app.get_snapshot_refresh_display_status(status), "갱신 실패")
+        self.assertIn("데이터 갱신 실패", app.build_snapshot_refresh_failure_message())
+        self.assertEqual(len(loaded_shortage), 1)
+
+    def test_published_status_is_displayed_as_latest_not_internal_value(self) -> None:
+        manifest = self.publish_current_set()
+        self.write_refresh_status(
+            {
+                "checked_at": "2026-09-05 10:39:13",
+                "published_at": "2026-09-05 10:39:13",
+                "status": app.REFRESH_STATUS_PUBLISHED,
+                "set_id": manifest["set_id"],
+                "api_updated_at": "2026-09-05 08:01:23",
+                "wip_api_updated_at": "2026-09-05 08:15:16",
+                "slot_key": "2026-09-05 AM",
+            }
+        )
+
+        self.assertEqual(app.get_cloud_snapshot_status_label(), "최신")
+        self.assertEqual(app.get_snapshot_refresh_display_status(app.get_snapshot_refresh_status()), "최신")
 
 
 if __name__ == "__main__":

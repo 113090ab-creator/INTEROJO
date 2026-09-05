@@ -386,6 +386,7 @@ def refresh_snapshots(
 
     if only_if_stale and current_snapshot_set_matches(app, sites, plan_updated_at, wip_updated_at):
         manifest = app.get_published_snapshot_set_manifest()
+        current_set = app.get_published_snapshot_set_pointer()
         logging.info("validated snapshot set already current set=%s", manifest.get("set_id", ""))
         write_status(
             app,
@@ -394,6 +395,7 @@ def refresh_snapshots(
             wip_api_updated_at=wip_updated_at,
             slot_key=slot_key,
             set_id=manifest.get("set_id", ""),
+            published_at=current_set.get("published_at", "") or manifest.get("created_at", ""),
             storage=storage_label,
             sites=sites,
             skipped=True,
@@ -489,6 +491,7 @@ def refresh_snapshots(
         update_flat_compat=True,
     )
     set_id = str(manifest.get("set_id", ""))
+    published_at = datetime.now(app.DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S")
     logging.info("validated snapshot set published set=%s slot=%s", set_id, manifest.get("slot_key", ""))
     write_status(
         app,
@@ -497,6 +500,7 @@ def refresh_snapshots(
         wip_api_updated_at=wip_updated_at,
         slot_key=slot_key,
         set_id=set_id,
+        published_at=published_at,
         storage=storage_label,
         sites=sites,
         results=results,

@@ -2330,16 +2330,8 @@ def is_cloud_snapshot_source_label(source_label: str) -> bool:
 
 def get_cloud_snapshot_status_label(snapshot_failure_message: str = "") -> str:
     if clean_text_value(snapshot_failure_message):
-        return "마지막 갱신 실패"
-    status = get_snapshot_refresh_status()
-    status_text = clean_text_value(status.get("status", "")).lower()
-    if status_text == "completed":
-        return "최신"
-    if status_text == "pending":
-        return "갱신 대기"
-    if status_text:
-        return status_text
-    return "스냅샷"
+        return "갱신 실패"
+    return get_snapshot_refresh_display_status(get_snapshot_refresh_status())
 
 
 def render_cloud_snapshot_sidebar_summary(
@@ -3171,7 +3163,7 @@ def read_first_json_file(paths: tuple[Path, ...]) -> dict[str, object]:
     return {}
 
 
-def get_snapshot_refresh_status() -> dict[str, object]:
+def get_raw_snapshot_refresh_status() -> dict[str, object]:
     status = get_cloud_snapshot_context().get("status", {})
     if isinstance(status, dict) and status:
         return status
@@ -3193,6 +3185,79 @@ def summarize_snapshot_refresh_failure(status: dict[str, object]) -> str:
         if failed:
             return "; ".join(failed)
     return "자동 스냅샷 갱신 작업이 완료되지 않았습니다."
+
+
+def get_snapshot_status_event_time(status: dict[str, object]) -> datetime | None:
+    for key in ("published_at", "checked_at", "created_at"):
+        parsed = parse_updated_at_value(status.get(key, ""))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def get_current_snapshot_set_event_time(
+    current_set: dict[str, object],
+    manifest: dict[str, object],
+) -> datetime | None:
+    for source, key in ((current_set, "published_at"), (manifest, "published_at"), (manifest, "created_at")):
+        parsed = parse_updated_at_value(source.get(key, ""))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def build_published_snapshot_status(
+    current_set: dict[str, object],
+    manifest: dict[str, object],
+) -> dict[str, object]:
+    set_id = clean_text_value(current_set.get("set_id", "")) or clean_text_value(manifest.get("set_id", ""))
+    slot_key = clean_text_value(current_set.get("slot_key", "")) or clean_text_value(manifest.get("slot_key", ""))
+    plan_updated_at = clean_text_value(current_set.get("plan_updated_at", "")) or clean_text_value(
+        manifest.get("plan_updated_at", "")
+    )
+    wip_updated_at = clean_text_value(current_set.get("wip_updated_at", "")) or clean_text_value(
+        manifest.get("wip_updated_at", "")
+    )
+    published_at = clean_text_value(current_set.get("published_at", "")) or clean_text_value(
+        manifest.get("published_at", "")
+    ) or clean_text_value(manifest.get("created_at", ""))
+    return {
+        "status": REFRESH_STATUS_PUBLISHED,
+        "set_id": set_id,
+        "slot_key": slot_key,
+        "api_updated_at": plan_updated_at,
+        "wip_api_updated_at": wip_updated_at,
+        "published_at": published_at,
+        "checked_at": published_at,
+        "current_set": {
+            "set_id": set_id,
+            "slot_key": slot_key,
+            "plan_updated_at": plan_updated_at,
+            "wip_updated_at": wip_updated_at,
+            "published_at": published_at,
+            "created_at": clean_text_value(manifest.get("created_at", "")),
+        },
+    }
+
+
+def get_snapshot_refresh_status() -> dict[str, object]:
+    status = get_raw_snapshot_refresh_status()
+    context = get_cloud_snapshot_context()
+    current_set = context.get("current_set", {})
+    manifest = context.get("current_set_manifest", {})
+    current_set = current_set if isinstance(current_set, dict) else {}
+    manifest = manifest if isinstance(manifest, dict) else {}
+    published_status = build_published_snapshot_status(current_set, manifest) if current_set or manifest else {}
+    if not published_status:
+        return status
+    if not status:
+        return published_status
+
+    published_event_time = get_current_snapshot_set_event_time(current_set, manifest)
+    status_event_time = get_snapshot_status_event_time(status)
+    if published_event_time is not None and status_event_time is not None and status_event_time < published_event_time:
+        return published_status
+    return status
 
 
 def normalize_snapshot_refresh_status(value: object) -> str:
@@ -3219,22 +3284,16 @@ def get_refresh_status_slot_text(status: dict[str, object]) -> str:
 
 def get_snapshot_refresh_display_status(status: dict[str, object]) -> str:
     status_text = normalize_snapshot_refresh_status(status.get("status", ""))
-    slot_text = get_refresh_status_slot_text(status)
-    period_text = ""
-    if "오전" in slot_text:
-        period_text = "오전"
-    elif "오후" in slot_text:
-        period_text = "오후"
     if status_text == REFRESH_STATUS_PUBLISHED:
         return "최신"
     if status_text in {REFRESH_STATUS_CHECKING, REFRESH_STATUS_READY, REFRESH_STATUS_BUILDING, REFRESH_STATUS_VALIDATING, REFRESH_STATUS_PUBLISHING}:
-        return f"{period_text + ' ' if period_text else ''}데이터 갱신 중"
+        return "갱신 중"
     if status_text in {REFRESH_STATUS_WAITING_FOR_PLAN, REFRESH_STATUS_WAITING_FOR_WIP}:
-        return f"{period_text + ' ' if period_text else ''}데이터 갱신 중"
+        return "갱신 중"
     if status_text == REFRESH_STATUS_DELAYED:
-        return "데이터 갱신 지연"
+        return "갱신 지연"
     if status_text == REFRESH_STATUS_FAILED:
-        return "데이터 갱신 실패"
+        return "갱신 실패"
     return "저장 스냅샷"
 
 
