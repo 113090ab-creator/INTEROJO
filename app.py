@@ -63,6 +63,14 @@ REFRESH_STATUS_PUBLISHING = "PUBLISHING"
 REFRESH_STATUS_PUBLISHED = "PUBLISHED"
 REFRESH_STATUS_DELAYED = "DELAYED"
 REFRESH_STATUS_FAILED = "FAILED"
+SNAPSHOT_UI_STATUS_LATEST = "최신"
+SNAPSHOT_UI_STATUS_REFRESHING = "갱신 중"
+SNAPSHOT_UI_STATUS_DELAYED = "갱신 지연"
+SNAPSHOT_UI_STATUS_FAILED = "갱신 실패"
+APS_REFRESH_SLOT_WINDOWS = {
+    "AM": {"start_minute": 8 * 60, "end_minute": 9 * 60 + 55},
+    "PM": {"start_minute": 16 * 60, "end_minute": 17 * 60 + 55},
+}
 STREAMLIT_CLOUD_RUNTIME = (
     bool(os.environ.get("STREAMLIT_CLOUD"))
     or bool(os.environ.get("STREAMLIT_SHARING_MODE"))
@@ -595,6 +603,18 @@ def inject_dashboard_theme() -> None:
             padding: 16px 18px;
             margin: 0 0 18px;
         }
+        .api-unavailable-banner.banner-info {
+            border-color: #2563EB;
+            border-left-color: #2563EB;
+            background: #EFF6FF;
+            box-shadow: 0 12px 30px rgba(37, 99, 235, 0.10);
+        }
+        .api-unavailable-banner.banner-warning {
+            border-color: #D97706;
+            border-left-color: #D97706;
+            background: #FFFBEB;
+            box-shadow: 0 12px 30px rgba(217, 119, 6, 0.10);
+        }
         .api-unavailable-title {
             color: #B91C1C;
             font-size: 30px;
@@ -602,12 +622,25 @@ def inject_dashboard_theme() -> None:
             line-height: 1.1;
             margin: 0 0 6px;
         }
+        .api-unavailable-banner.banner-info .api-unavailable-title {
+            color: #1D4ED8;
+        }
+        .api-unavailable-banner.banner-warning .api-unavailable-title {
+            color: #B45309;
+        }
         .api-unavailable-body {
             color: #991B1B;
             font-size: 15px;
             font-weight: 750;
             line-height: 1.45;
             margin: 0;
+            white-space: pre-line;
+        }
+        .api-unavailable-banner.banner-info .api-unavailable-body {
+            color: #1E40AF;
+        }
+        .api-unavailable-banner.banner-warning .api-unavailable-body {
+            color: #92400E;
         }
         [data-testid="stDataFrame"] {
             border: 1px solid #E5E7EB;
@@ -1514,9 +1547,14 @@ def render_api_unavailable_banner(message: str, title: str = "조회불가") -> 
     if not text:
         return
     title_text = clean_text_value(title) or "조회불가"
+    severity_class = ""
+    if title_text == SNAPSHOT_UI_STATUS_REFRESHING:
+        severity_class = " banner-info"
+    elif title_text == SNAPSHOT_UI_STATUS_DELAYED:
+        severity_class = " banner-warning"
     st.markdown(
         f"""
-        <div class="api-unavailable-banner">
+        <div class="api-unavailable-banner{severity_class}">
             <div class="api-unavailable-title">{html.escape(title_text)}</div>
             <p class="api-unavailable-body">{html.escape(text)}</p>
         </div>
@@ -2328,10 +2366,10 @@ def is_cloud_snapshot_source_label(source_label: str) -> bool:
     return "스냅샷" in source_text
 
 
-def get_cloud_snapshot_status_label(snapshot_failure_message: str = "") -> str:
+def get_cloud_snapshot_status_label(snapshot_failure_message: str = "", now: datetime | None = None) -> str:
     if clean_text_value(snapshot_failure_message):
-        return "갱신 실패"
-    return get_snapshot_refresh_display_status(get_snapshot_refresh_status())
+        return SNAPSHOT_UI_STATUS_FAILED
+    return get_snapshot_operational_ui_state(now)["display_status"]
 
 
 def render_cloud_snapshot_sidebar_summary(
@@ -3260,6 +3298,116 @@ def get_snapshot_refresh_status() -> dict[str, object]:
     return status
 
 
+def normalize_display_datetime(value: datetime | None = None) -> datetime:
+    if value is None:
+        return datetime.now(DISPLAY_TZ)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=DISPLAY_TZ)
+    return value.astimezone(DISPLAY_TZ)
+
+
+def build_aps_snapshot_slot_key(slot_date, period: str) -> str:
+    return f"{slot_date:%Y-%m-%d} {period}"
+
+
+def get_operational_target_snapshot_slot(now: datetime | None = None) -> dict[str, object]:
+    current = normalize_display_datetime(now)
+    current_minute = current.hour * 60 + current.minute
+    am_window = APS_REFRESH_SLOT_WINDOWS["AM"]
+    pm_window = APS_REFRESH_SLOT_WINDOWS["PM"]
+    if current_minute < am_window["start_minute"]:
+        target_date = current.date() - timedelta(days=1)
+        return {
+            "slot_key": build_aps_snapshot_slot_key(target_date, "PM"),
+            "period": "PM",
+            "window_started": False,
+            "window_expired": False,
+        }
+    if current_minute < pm_window["start_minute"]:
+        return {
+            "slot_key": build_aps_snapshot_slot_key(current.date(), "AM"),
+            "period": "AM",
+            "window_started": True,
+            "window_expired": current_minute > am_window["end_minute"],
+        }
+    return {
+        "slot_key": build_aps_snapshot_slot_key(current.date(), "PM"),
+        "period": "PM",
+        "window_started": True,
+        "window_expired": current_minute > pm_window["end_minute"],
+    }
+
+
+def get_refresh_status_slot_key(status: dict[str, object]) -> str:
+    slot_key = clean_text_value(status.get("slot_key", ""))
+    if slot_key:
+        return slot_key
+    return get_latest_aps_snapshot_slot(status.get("api_updated_at", ""), status.get("wip_api_updated_at", ""))
+
+
+def snapshot_slot_is_at_least(slot_key: object, target_slot_key: object) -> bool:
+    target_sort_key = aps_snapshot_slot_sort_key(target_slot_key)
+    if target_sort_key == ("", -1):
+        return True
+    slot_sort_key = aps_snapshot_slot_sort_key(slot_key)
+    if slot_sort_key == ("", -1):
+        return False
+    return slot_sort_key >= target_sort_key
+
+
+def build_snapshot_ui_state(display_status: str, target_slot: str = "", published_slot: str = "") -> dict[str, str]:
+    banner_messages = {
+        SNAPSHOT_UI_STATUS_REFRESHING: "새로운 데이터를 갱신하고 있습니다.\n현재는 이전 정상 데이터를 표시하고 있습니다.",
+        SNAPSHOT_UI_STATUS_DELAYED: "데이터 갱신이 평소보다 지연되고 있습니다.\n현재는 이전 정상 데이터를 표시하고 있습니다.",
+        SNAPSHOT_UI_STATUS_FAILED: "데이터 갱신에 실패했습니다.\n현재는 이전 정상 데이터를 표시하고 있습니다.",
+    }
+    return {
+        "display_status": display_status,
+        "banner_title": "" if display_status == SNAPSHOT_UI_STATUS_LATEST else display_status,
+        "banner_message": banner_messages.get(display_status, ""),
+        "target_slot": target_slot,
+        "published_slot": published_slot,
+    }
+
+
+def get_published_snapshot_slot_key() -> str:
+    pointer = get_published_snapshot_set_pointer()
+    manifest = get_published_snapshot_set_manifest()
+    return clean_text_value(pointer.get("slot_key", "")) or clean_text_value(manifest.get("slot_key", ""))
+
+
+def get_snapshot_operational_ui_state(now: datetime | None = None) -> dict[str, str]:
+    target = get_operational_target_snapshot_slot(now)
+    target_slot = clean_text_value(target.get("slot_key", ""))
+    published_slot = get_published_snapshot_slot_key()
+    if snapshot_slot_is_at_least(published_slot, target_slot):
+        return build_snapshot_ui_state(SNAPSHOT_UI_STATUS_LATEST, target_slot, published_slot)
+
+    status = get_snapshot_refresh_status()
+    status_text = normalize_snapshot_refresh_status(status.get("status", ""))
+    status_slot = get_refresh_status_slot_key(status)
+    status_relevant = not status_slot or snapshot_slot_is_at_least(status_slot, target_slot)
+    if status_relevant:
+        if status_text == REFRESH_STATUS_FAILED:
+            return build_snapshot_ui_state(SNAPSHOT_UI_STATUS_FAILED, target_slot, published_slot)
+        if status_text == REFRESH_STATUS_DELAYED:
+            return build_snapshot_ui_state(SNAPSHOT_UI_STATUS_DELAYED, target_slot, published_slot)
+        if status_text in {
+            REFRESH_STATUS_CHECKING,
+            REFRESH_STATUS_WAITING_FOR_PLAN,
+            REFRESH_STATUS_WAITING_FOR_WIP,
+            REFRESH_STATUS_READY,
+            REFRESH_STATUS_BUILDING,
+            REFRESH_STATUS_VALIDATING,
+            REFRESH_STATUS_PUBLISHING,
+        }:
+            return build_snapshot_ui_state(SNAPSHOT_UI_STATUS_REFRESHING, target_slot, published_slot)
+
+    if bool(target.get("window_started")) and not bool(target.get("window_expired")):
+        return build_snapshot_ui_state(SNAPSHOT_UI_STATUS_REFRESHING, target_slot, published_slot)
+    return build_snapshot_ui_state(SNAPSHOT_UI_STATUS_DELAYED, target_slot, published_slot)
+
+
 def normalize_snapshot_refresh_status(value: object) -> str:
     text = clean_text_value(value).upper()
     legacy_map = {
@@ -3285,27 +3433,23 @@ def get_refresh_status_slot_text(status: dict[str, object]) -> str:
 def get_snapshot_refresh_display_status(status: dict[str, object]) -> str:
     status_text = normalize_snapshot_refresh_status(status.get("status", ""))
     if status_text == REFRESH_STATUS_PUBLISHED:
-        return "최신"
+        return SNAPSHOT_UI_STATUS_LATEST
     if status_text in {REFRESH_STATUS_CHECKING, REFRESH_STATUS_READY, REFRESH_STATUS_BUILDING, REFRESH_STATUS_VALIDATING, REFRESH_STATUS_PUBLISHING}:
-        return "갱신 중"
+        return SNAPSHOT_UI_STATUS_REFRESHING
     if status_text in {REFRESH_STATUS_WAITING_FOR_PLAN, REFRESH_STATUS_WAITING_FOR_WIP}:
-        return "갱신 중"
+        return SNAPSHOT_UI_STATUS_REFRESHING
     if status_text == REFRESH_STATUS_DELAYED:
-        return "갱신 지연"
+        return SNAPSHOT_UI_STATUS_DELAYED
     if status_text == REFRESH_STATUS_FAILED:
-        return "갱신 실패"
+        return SNAPSHOT_UI_STATUS_FAILED
     return "저장 스냅샷"
 
 
-def build_snapshot_refresh_failure_message() -> str:
-    status = get_snapshot_refresh_status()
-    status_text = normalize_snapshot_refresh_status(status.get("status", ""))
-    if status_text != REFRESH_STATUS_FAILED:
+def build_snapshot_refresh_failure_message(now: datetime | None = None) -> str:
+    ui_state = get_snapshot_operational_ui_state(now)
+    if ui_state["display_status"] != SNAPSHOT_UI_STATUS_FAILED:
         return ""
-
-    checked_at = format_reference_timestamp(clean_text_value(status.get("checked_at", "")))
-    checked_part = f" 마지막 확인: {checked_at}." if checked_at != "-" else ""
-    return f"데이터 갱신 실패. 현재는 이전 정상 데이터를 표시하고 있습니다.{checked_part}"
+    return ui_state["banner_message"]
 
 
 def get_recorded_aps_plan_updated_at(default: str = "-") -> str:
@@ -3490,21 +3634,25 @@ def build_shortage_snapshot_accuracy_error(
     site_filter: str,
     snapshot_updated_at: str,
     live_updated_at: str,
+    now: datetime | None = None,
 ) -> str:
+    ui_state = get_snapshot_operational_ui_state(now)
+    if ui_state["display_status"] == SNAPSHOT_UI_STATUS_LATEST:
+        return ""
+
     snapshot_dt = parse_updated_at_value(snapshot_updated_at)
     live_dt = parse_updated_at_value(live_updated_at)
     reasons: list[str] = []
-    today = datetime.now(DISPLAY_TZ).date()
 
     if snapshot_dt is None:
         reasons.append("스냅샷 기준시각을 확인할 수 없습니다")
-    elif snapshot_dt.date() < today:
-        reasons.append("전일 스냅샷입니다")
 
     if live_dt is None:
         reasons.append("APS API 최신 기준시각을 확인할 수 없습니다")
     elif snapshot_dt is not None and snapshot_dt.timestamp() + 1 < live_dt.timestamp():
         reasons.append("APS API 최신 기준시각보다 오래된 스냅샷입니다")
+    if not reasons:
+        reasons.append(f"{clean_text_value(ui_state.get('target_slot', ''))} 회차 스냅샷 갱신 대기 중입니다")
 
     if not reasons:
         return ""
@@ -3531,13 +3679,19 @@ def is_shortage_snapshot_refresh_grace_period(snapshot_updated_at: str, live_upd
     )
 
 
-def build_shortage_snapshot_hold_message(site_filter: str, snapshot_updated_at: str, live_updated_at: str) -> str:
-    accuracy_error = build_shortage_snapshot_accuracy_error(site_filter, snapshot_updated_at, live_updated_at)
+def build_shortage_snapshot_hold_message(
+    site_filter: str,
+    snapshot_updated_at: str,
+    live_updated_at: str,
+    now: datetime | None = None,
+) -> str:
+    ui_state = get_snapshot_operational_ui_state(now)
+    if ui_state["display_status"] == SNAPSHOT_UI_STATUS_LATEST:
+        return ""
+    accuracy_error = build_shortage_snapshot_accuracy_error(site_filter, snapshot_updated_at, live_updated_at, now)
     if not accuracy_error:
         return ""
-    status = get_snapshot_refresh_status()
-    display_status = get_snapshot_refresh_display_status(status)
-    return f"{display_status}. 현재는 이전 정상 데이터를 표시하고 있습니다."
+    return ui_state["banner_message"]
 
 
 def build_shortage_snapshot_hold_file_info(snapshot_updated_at: str, live_updated_at: str) -> pd.DataFrame:
@@ -3556,7 +3710,7 @@ def build_shortage_snapshot_hold_file_info(snapshot_updated_at: str, live_update
 
 def render_snapshot_status_caption(updated_at: str) -> None:
     status = get_snapshot_refresh_status()
-    display_status = get_snapshot_refresh_display_status(status)
+    display_status = get_snapshot_operational_ui_state()["display_status"]
     manifest = get_published_snapshot_set_manifest()
     plan_updated_at = clean_text_value(manifest.get("plan_updated_at", "")) if manifest else clean_text_value(updated_at)
     wip_updated_at = clean_text_value(manifest.get("wip_updated_at", "")) if manifest else ""
@@ -16581,8 +16735,8 @@ def main() -> None:
                                 df = snapshot_df
                                 file_info_df = snapshot_file_info_df
                                 source_label = "Cloud 스냅샷 (Validated Set)"
-                                display_status = get_snapshot_refresh_display_status(get_snapshot_refresh_status())
-                                api_alert_title = "갱신중" if "갱신 중" in display_status else "지연"
+                                snapshot_ui_state = get_snapshot_operational_ui_state()
+                                api_alert_title = clean_text_value(snapshot_ui_state.get("banner_title", "")) or snapshot_ui_state["display_status"]
                                 api_alert_message = snapshot_hold_message
                                 sidebar_status_caption = f"{api_alert_title}: 이전 정상 스냅샷 표시"
                             else:
@@ -16730,7 +16884,8 @@ def main() -> None:
         print(f"[PERF] data_load_total: {time.perf_counter() - data_load_start:.3f} sec view={selected_top_view}", flush=True)
 
     if selected_top_view == "생산 부족 현황" and snapshot_refresh_failure_message:
-        api_alert_title = "오류"
+        snapshot_ui_state = get_snapshot_operational_ui_state()
+        api_alert_title = clean_text_value(snapshot_ui_state.get("banner_title", "")) or SNAPSHOT_UI_STATUS_FAILED
         api_alert_message = (
             f"{snapshot_refresh_failure_message} {api_alert_message}"
             if api_alert_message

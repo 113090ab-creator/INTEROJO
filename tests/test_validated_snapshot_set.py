@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -48,6 +49,10 @@ def minimal_file_info(plan_updated_at: str, wip_updated_at: str) -> pd.DataFrame
     )
 
 
+def kst(value: str) -> datetime:
+    return datetime.strptime(value, "%Y-%m-%d %H:%M:%S").replace(tzinfo=app.DISPLAY_TZ)
+
+
 class ValidatedSnapshotSetTests(unittest.TestCase):
     def setUp(self) -> None:
         self.original_snapshot_dir = app.CLOUD_SNAPSHOT_DIR
@@ -66,9 +71,12 @@ class ValidatedSnapshotSetTests(unittest.TestCase):
         clear_app_snapshot_caches()
         self.temp_dir.cleanup()
 
-    def publish_current_set(self, published_at: str = "2026-09-05 10:39:13") -> dict[str, object]:
-        plan_updated_at = "2026-09-05 08:01:23"
-        wip_updated_at = "2026-09-05 08:15:16"
+    def publish_current_set(
+        self,
+        plan_updated_at: str = "2026-09-05 08:01:23",
+        wip_updated_at: str = "2026-09-05 08:15:16",
+        published_at: str = "2026-09-05 10:39:13",
+    ) -> dict[str, object]:
         manifest = app.write_validated_snapshot_set(
             plan_updated_at,
             wip_updated_at,
@@ -96,6 +104,12 @@ class ValidatedSnapshotSetTests(unittest.TestCase):
         status_path = app.CLOUD_SNAPSHOT_DIR / app.CLOUD_SNAPSHOT_REFRESH_STATUS_NAME
         status_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         clear_app_snapshot_caches()
+
+    def operational_state_at(self, value: str) -> dict[str, str]:
+        return app.get_snapshot_operational_ui_state(kst(value))
+
+    def operational_display_at(self, value: str) -> str:
+        return self.operational_state_at(value)["display_status"]
 
     def test_slot_comparison_waiting_and_ready_states(self) -> None:
         self.assertEqual(
@@ -281,7 +295,7 @@ class ValidatedSnapshotSetTests(unittest.TestCase):
         status = app.get_snapshot_refresh_status()
         self.assertEqual(status["status"], app.REFRESH_STATUS_PUBLISHED)
         self.assertEqual(app.get_snapshot_refresh_display_status(status), "최신")
-        self.assertEqual(app.build_snapshot_refresh_failure_message(), "")
+        self.assertEqual(app.build_snapshot_refresh_failure_message(kst("2026-09-05 10:45:00")), "")
 
     def test_newer_waiting_status_displays_refreshing_and_keeps_current_set(self) -> None:
         self.publish_current_set()
@@ -318,7 +332,7 @@ class ValidatedSnapshotSetTests(unittest.TestCase):
         loaded_shortage, _, _ = app.load_cloud_shortage_snapshot("전체")
         self.assertEqual(status["status"], app.REFRESH_STATUS_FAILED)
         self.assertEqual(app.get_snapshot_refresh_display_status(status), "갱신 실패")
-        self.assertIn("데이터 갱신 실패", app.build_snapshot_refresh_failure_message())
+        self.assertIn("데이터 갱신에 실패", app.build_snapshot_refresh_failure_message(kst("2026-09-05 16:55:00")))
         self.assertEqual(len(loaded_shortage), 1)
 
     def test_published_status_is_displayed_as_latest_not_internal_value(self) -> None:
@@ -335,8 +349,141 @@ class ValidatedSnapshotSetTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(app.get_cloud_snapshot_status_label(), "최신")
-        self.assertEqual(app.get_snapshot_refresh_display_status(app.get_snapshot_refresh_status()), "최신")
+        self.assertEqual(app.get_cloud_snapshot_status_label(now=kst("2026-09-05 10:45:00")), "최신")
+        self.assertEqual(self.operational_display_at("2026-09-05 10:45:00"), "최신")
+
+    def test_pm_published_is_latest_before_next_am_window(self) -> None:
+        self.publish_current_set(
+            "2026-09-06 15:51:50",
+            "2026-09-06 16:06:04",
+            "2026-09-06 20:26:28",
+        )
+
+        self.assertEqual(self.operational_display_at("2026-09-07 07:30:00"), "최신")
+        self.assertEqual(
+            app.build_shortage_snapshot_hold_message(
+                "전체",
+                "2026-09-06 15:51:50",
+                "2026-09-06 15:51:50",
+                kst("2026-09-07 07:30:00"),
+            ),
+            "",
+        )
+
+    def test_next_am_window_started_keeps_previous_set_while_refreshing(self) -> None:
+        self.publish_current_set(
+            "2026-09-06 15:51:50",
+            "2026-09-06 16:06:04",
+            "2026-09-06 20:26:28",
+        )
+
+        state = self.operational_state_at("2026-09-07 08:05:00")
+        loaded_shortage, _, _ = app.load_cloud_shortage_snapshot("전체")
+        self.assertEqual(state["display_status"], "갱신 중")
+        self.assertEqual(state["banner_title"], "갱신 중")
+        self.assertIn("새로운 데이터를 갱신", state["banner_message"])
+        self.assertEqual(len(loaded_shortage), 1)
+
+    def test_next_am_window_expired_is_delayed(self) -> None:
+        self.publish_current_set(
+            "2026-09-06 15:51:50",
+            "2026-09-06 16:06:04",
+            "2026-09-06 20:26:28",
+        )
+
+        state = self.operational_state_at("2026-09-07 10:30:00")
+        self.assertEqual(state["display_status"], "갱신 지연")
+        self.assertEqual(state["banner_title"], "갱신 지연")
+        self.assertIn("평소보다 지연", state["banner_message"])
+
+    def test_am_published_is_latest_through_pm_window_start(self) -> None:
+        self.publish_current_set(
+            "2026-09-07 07:51:44",
+            "2026-09-07 08:09:50",
+            "2026-09-07 09:20:00",
+        )
+
+        self.assertEqual(self.operational_display_at("2026-09-07 10:30:00"), "최신")
+        self.assertEqual(self.operational_display_at("2026-09-07 15:00:00"), "최신")
+
+    def test_pm_window_started_after_am_set_is_refreshing(self) -> None:
+        self.publish_current_set(
+            "2026-09-07 07:51:44",
+            "2026-09-07 08:09:50",
+            "2026-09-07 09:20:00",
+        )
+
+        state = self.operational_state_at("2026-09-07 16:05:00")
+        self.assertEqual(state["display_status"], "갱신 중")
+        self.assertEqual(state["target_slot"], "2026-09-07 PM")
+
+    def test_pm_published_is_latest(self) -> None:
+        self.publish_current_set(
+            "2026-09-07 15:51:50",
+            "2026-09-07 16:06:04",
+            "2026-09-07 16:30:00",
+        )
+
+        self.assertEqual(self.operational_display_at("2026-09-07 18:30:00"), "최신")
+
+    def test_stale_delayed_status_after_new_publish_is_ignored(self) -> None:
+        self.publish_current_set(
+            "2026-09-07 07:51:44",
+            "2026-09-07 08:09:50",
+            "2026-09-07 09:20:00",
+        )
+        self.write_refresh_status(
+            {
+                "checked_at": "2026-09-07 08:30:00",
+                "status": app.REFRESH_STATUS_DELAYED,
+                "api_updated_at": "2026-09-07 07:51:44",
+                "wip_api_updated_at": "2026-09-06 16:06:04",
+                "slot_key": "2026-09-07 AM",
+            }
+        )
+
+        self.assertEqual(self.operational_display_at("2026-09-07 10:30:00"), "최신")
+
+    def test_current_failed_status_keeps_previous_set_and_displays_failure(self) -> None:
+        self.publish_current_set(
+            "2026-09-07 07:51:44",
+            "2026-09-07 08:09:50",
+            "2026-09-07 09:20:00",
+        )
+        self.write_refresh_status(
+            {
+                "checked_at": "2026-09-07 16:30:00",
+                "status": app.REFRESH_STATUS_FAILED,
+                "api_updated_at": "2026-09-07 15:51:50",
+                "wip_api_updated_at": "2026-09-06 16:06:04",
+                "slot_key": "2026-09-07 PM",
+                "reason": "current PM refresh failed",
+            }
+        )
+
+        state = self.operational_state_at("2026-09-07 16:35:00")
+        loaded_shortage, _, _ = app.load_cloud_shortage_snapshot("전체")
+        self.assertEqual(state["display_status"], "갱신 실패")
+        self.assertIn("데이터 갱신에 실패", app.build_snapshot_refresh_failure_message(kst("2026-09-07 16:35:00")))
+        self.assertEqual(len(loaded_shortage), 1)
+
+    def test_published_state_never_builds_delayed_banner(self) -> None:
+        self.publish_current_set(
+            "2026-09-06 15:51:50",
+            "2026-09-06 16:06:04",
+            "2026-09-06 20:26:28",
+        )
+
+        state = self.operational_state_at("2026-09-07 07:30:00")
+        hold_message = app.build_shortage_snapshot_hold_message(
+            "전체",
+            "2026-09-06 15:51:50",
+            "2026-09-06 15:51:50",
+            kst("2026-09-07 07:30:00"),
+        )
+        self.assertEqual(state["display_status"], "최신")
+        self.assertEqual(state["banner_title"], "")
+        self.assertEqual(hold_message, "")
 
 
 if __name__ == "__main__":
