@@ -1,20 +1,12 @@
 {
-<<<<<<< HEAD
-  "checked_at": "2026-09-07 09:33:32",
-  "slot_key": "2026-09-07 07:30",
+  "checked_at": "2026-09-07 09:52:27",
+  "status": "PUBLISHED",
   "api_updated_at": "2026-09-07 07:51:44",
   "wip_api_updated_at": "2026-09-07 08:09:50",
-  "status": "failed",
-=======
-  "checked_at": "2026-09-06 20:26:28",
-  "status": "PUBLISHED",
-  "api_updated_at": "2026-09-06 15:51:50",
-  "wip_api_updated_at": "2026-09-06 16:06:04",
-  "slot_key": "2026-09-06 PM",
-  "set_id": "aps_20260906_pm_plan155150_wip160604_0d0f0d8f",
-  "published_at": "2026-09-06 20:26:28",
+  "slot_key": "2026-09-07 AM",
+  "set_id": "aps_20260907_am_plan075144_wip080950_42a05659",
+  "published_at": "2026-09-07 09:52:27",
   "storage": "로컬 cloud_snapshots 폴더",
->>>>>>> 1da34a649140a7da6c0ceb83afa3ca326de5dd70
   "sites": [
     "C관",
     "A관",
@@ -22,25 +14,17 @@
     "전체"
   ],
   "results": {
-<<<<<<< HEAD
-    "WIP": "refreshed rows=30,034 updated_at=2026-09-07 08:09:50",
-    "C관": "failed: APS WIP API 조회 실패: APS WIP 정리 스냅샷이 최신 기준보다 오래됐습니다 (스냅샷 2026-09-05 08:15:16 / APS WIP 최신 2026-09-05 16:04:45). WIP 파일 대체는 사용하지 않습니다.",
-    "A관": "failed: APS WIP API 조회 실패: APS WIP 정리 스냅샷이 최신 기준보다 오래됐습니다 (스냅샷 2026-09-05 08:15:16 / APS WIP 최신 2026-09-05 16:04:45). WIP 파일 대체는 사용하지 않습니다.",
-    "S관": "failed: APS WIP API 조회 실패: APS WIP 정리 스냅샷이 최신 기준보다 오래됐습니다 (스냅샷 2026-09-05 08:15:16 / APS WIP 최신 2026-09-05 16:04:45). WIP 파일 대체는 사용하지 않습니다.",
-    "전체": "failed: APS WIP API 조회 실패: APS WIP 정리 스냅샷이 최신 기준보다 오래됐습니다 (스냅샷 2026-09-05 08:15:16 / APS WIP 최신 2026-09-05 16:04:45). WIP 파일 대체는 사용하지 않습니다."
-=======
-    "WIP": "staged rows=30,173 updated_at=2026-09-06 16:06:04",
-    "C관": "staged rows=4,430 updated_at=2026-09-06 15:51:50",
-    "A관": "staged rows=1,271 updated_at=2026-09-06 15:51:50",
-    "S관": "staged rows=4,416 updated_at=2026-09-06 15:51:50",
-    "전체": "staged rows=10,117 updated_at=2026-09-06 15:51:50"
+    "WIP": "staged rows=30,034 updated_at=2026-09-07 08:09:50",
+    "C관": "staged rows=4,153 updated_at=2026-09-07 07:51:44",
+    "A관": "staged rows=1,210 updated_at=2026-09-07 07:51:44",
+    "S관": "staged rows=4,733 updated_at=2026-09-07 07:51:44",
+    "전체": "staged rows=10,096 updated_at=2026-09-07 07:51:44"
   },
   "current_set": {
-    "set_id": "aps_20260906_pm_plan155150_wip160604_0d0f0d8f",
-    "slot_key": "2026-09-06 PM",
-    "plan_updated_at": "2026-09-06 15:51:50",
-    "wip_updated_at": "2026-09-06 16:06:04",
-    "created_at": "2026-09-06 20:26:24"
->>>>>>> 1da34a649140a7da6c0ceb83afa3ca326de5dd70
+    "set_id": "aps_20260907_am_plan075144_wip080950_42a05659",
+    "slot_key": "2026-09-07 AM",
+    "plan_updated_at": "2026-09-07 07:51:44",
+    "wip_updated_at": "2026-09-07 08:09:50",
+    "created_at": "2026-09-07 09:52:22"
   }
 }
