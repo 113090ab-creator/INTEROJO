@@ -1,11 +1,9 @@
 {
-  "checked_at": "2026-09-05 10:39:13",
-  "status": "PUBLISHED",
-  "api_updated_at": "2026-09-05 08:01:23",
-  "wip_api_updated_at": "2026-09-05 08:15:16",
-  "slot_key": "2026-09-05 AM",
-  "set_id": "aps_20260905_am_plan080123_wip081516_5b7800e6",
-  "storage": "로컬 cloud_snapshots 폴더",
+  "checked_at": "2026-09-07 09:33:32",
+  "slot_key": "2026-09-07 07:30",
+  "api_updated_at": "2026-09-07 07:51:44",
+  "wip_api_updated_at": "2026-09-07 08:09:50",
+  "status": "failed",
   "sites": [
     "C관",
     "A관",
@@ -13,17 +11,10 @@
     "전체"
   ],
   "results": {
-    "WIP": "staged rows=30,147 updated_at=2026-09-05 08:15:16",
-    "C관": "staged rows=4,799 updated_at=2026-09-05 08:01:23",
-    "A관": "staged rows=1,485 updated_at=2026-09-05 08:01:23",
-    "S관": "staged rows=7,969 updated_at=2026-09-05 08:01:23",
-    "전체": "staged rows=14,253 updated_at=2026-09-05 08:01:23"
-  },
-  "current_set": {
-    "set_id": "aps_20260905_am_plan080123_wip081516_5b7800e6",
-    "slot_key": "2026-09-05 AM",
-    "plan_updated_at": "2026-09-05 08:01:23",
-    "wip_updated_at": "2026-09-05 08:15:16",
-    "created_at": "2026-09-05 10:39:07"
+    "WIP": "refreshed rows=30,034 updated_at=2026-09-07 08:09:50",
+    "C관": "failed: APS WIP API 조회 실패: APS WIP 정리 스냅샷이 최신 기준보다 오래됐습니다 (스냅샷 2026-09-05 08:15:16 / APS WIP 최신 2026-09-05 16:04:45). WIP 파일 대체는 사용하지 않습니다.",
+    "A관": "failed: APS WIP API 조회 실패: APS WIP 정리 스냅샷이 최신 기준보다 오래됐습니다 (스냅샷 2026-09-05 08:15:16 / APS WIP 최신 2026-09-05 16:04:45). WIP 파일 대체는 사용하지 않습니다.",
+    "S관": "failed: APS WIP API 조회 실패: APS WIP 정리 스냅샷이 최신 기준보다 오래됐습니다 (스냅샷 2026-09-05 08:15:16 / APS WIP 최신 2026-09-05 16:04:45). WIP 파일 대체는 사용하지 않습니다.",
+    "전체": "failed: APS WIP API 조회 실패: APS WIP 정리 스냅샷이 최신 기준보다 오래됐습니다 (스냅샷 2026-09-05 08:15:16 / APS WIP 최신 2026-09-05 16:04:45). WIP 파일 대체는 사용하지 않습니다."
   }
 }
