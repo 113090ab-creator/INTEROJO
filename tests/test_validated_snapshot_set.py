@@ -56,14 +56,24 @@ def kst(value: str) -> datetime:
 class ValidatedSnapshotSetTests(unittest.TestCase):
     def setUp(self) -> None:
         self.original_snapshot_dir = app.CLOUD_SNAPSHOT_DIR
+        self.original_refresh_status_paths = app.APS_SNAPSHOT_REFRESH_STATUS_PATHS
+        self.original_refresh_state_paths = app.APS_SNAPSHOT_REFRESH_STATE_PATHS
         self.original_backend = os.environ.get("SNAPSHOT_STORAGE_BACKEND")
         os.environ["SNAPSHOT_STORAGE_BACKEND"] = "local"
         self.temp_dir = tempfile.TemporaryDirectory()
         app.CLOUD_SNAPSHOT_DIR = Path(self.temp_dir.name)
+        app.APS_SNAPSHOT_REFRESH_STATUS_PATHS = (
+            app.CLOUD_SNAPSHOT_DIR / app.CLOUD_SNAPSHOT_REFRESH_STATUS_NAME,
+        )
+        app.APS_SNAPSHOT_REFRESH_STATE_PATHS = (
+            app.CLOUD_SNAPSHOT_DIR / app.CLOUD_SNAPSHOT_REFRESH_STATE_NAME,
+        )
         clear_app_snapshot_caches()
 
     def tearDown(self) -> None:
         app.CLOUD_SNAPSHOT_DIR = self.original_snapshot_dir
+        app.APS_SNAPSHOT_REFRESH_STATUS_PATHS = self.original_refresh_status_paths
+        app.APS_SNAPSHOT_REFRESH_STATE_PATHS = self.original_refresh_state_paths
         if self.original_backend is None:
             os.environ.pop("SNAPSHOT_STORAGE_BACKEND", None)
         else:
@@ -466,6 +476,28 @@ class ValidatedSnapshotSetTests(unittest.TestCase):
         self.assertEqual(state["display_status"], "갱신 실패")
         self.assertIn("데이터 갱신에 실패", app.build_snapshot_refresh_failure_message(kst("2026-09-07 16:35:00")))
         self.assertEqual(len(loaded_shortage), 1)
+
+    def test_legacy_refresh_slot_key_matches_current_failed_target(self) -> None:
+        self.publish_current_set(
+            "2026-09-06 15:51:50",
+            "2026-09-06 16:06:04",
+            "2026-09-06 20:26:28",
+        )
+        self.write_refresh_status(
+            {
+                "checked_at": "2026-09-08 09:11:24",
+                "status": "failed",
+                "api_updated_at": "2026-09-08 07:33:47",
+                "wip_api_updated_at": "2026-09-08 07:48:49",
+                "slot_key": "2026-09-08 07:30",
+                "reason": "current AM refresh failed",
+            }
+        )
+
+        state = self.operational_state_at("2026-09-08 09:12:00")
+        self.assertEqual(app.get_refresh_status_slot_key(app.get_snapshot_refresh_status()), "2026-09-08 AM")
+        self.assertEqual(state["display_status"], "갱신 실패")
+        self.assertEqual(state["banner_title"], "갱신 실패")
 
     def test_published_state_never_builds_delayed_banner(self) -> None:
         self.publish_current_set(

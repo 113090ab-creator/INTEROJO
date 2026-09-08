@@ -3056,7 +3056,7 @@ def resolve_aps_snapshot_slot(value: object) -> str:
 
 
 def format_aps_snapshot_slot(slot_key: object) -> str:
-    text = clean_text_value(slot_key)
+    text = normalize_aps_snapshot_slot_key(slot_key)
     if not text:
         return "-"
     match = re.fullmatch(r"(\d{4}-\d{2}-\d{2})\s+(AM|PM)", text)
@@ -3066,8 +3066,22 @@ def format_aps_snapshot_slot(slot_key: object) -> str:
     return f"{match.group(1)} {period}"
 
 
-def aps_snapshot_slot_sort_key(slot_key: object) -> tuple[str, int]:
+def normalize_aps_snapshot_slot_key(slot_key: object) -> str:
     text = clean_text_value(slot_key)
+    if not text:
+        return ""
+    slot_match = re.fullmatch(r"(\d{4}-\d{2}-\d{2})\s+(AM|PM)", text, re.IGNORECASE)
+    if slot_match:
+        return f"{slot_match.group(1)} {slot_match.group(2).upper()}"
+    legacy_match = re.fullmatch(r"(\d{4}-\d{2}-\d{2})\s+(\d{1,2}):(\d{2})(?::\d{2})?", text)
+    if legacy_match:
+        period = "AM" if int(legacy_match.group(2)) < 12 else "PM"
+        return f"{legacy_match.group(1)} {period}"
+    return text
+
+
+def aps_snapshot_slot_sort_key(slot_key: object) -> tuple[str, int]:
+    text = normalize_aps_snapshot_slot_key(slot_key)
     match = re.fullmatch(r"(\d{4}-\d{2}-\d{2})\s+(AM|PM)", text)
     if not match:
         return ("", -1)
@@ -3339,7 +3353,7 @@ def get_operational_target_snapshot_slot(now: datetime | None = None) -> dict[st
 
 
 def get_refresh_status_slot_key(status: dict[str, object]) -> str:
-    slot_key = clean_text_value(status.get("slot_key", ""))
+    slot_key = normalize_aps_snapshot_slot_key(status.get("slot_key", ""))
     if slot_key:
         return slot_key
     return get_latest_aps_snapshot_slot(status.get("api_updated_at", ""), status.get("wip_api_updated_at", ""))
