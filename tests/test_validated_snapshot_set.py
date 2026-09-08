@@ -499,6 +499,28 @@ class ValidatedSnapshotSetTests(unittest.TestCase):
         self.assertEqual(state["display_status"], "갱신 실패")
         self.assertEqual(state["banner_title"], "갱신 실패")
 
+    def test_checking_status_after_window_expired_is_delayed(self) -> None:
+        self.publish_current_set(
+            "2026-09-07 18:35:44",
+            "2026-09-07 18:50:54",
+            "2026-09-07 22:07:56",
+        )
+        self.write_refresh_status(
+            {
+                "checked_at": "2026-09-08 16:14:04",
+                "status": "checking",
+                "api_updated_at": "2026-09-08 15:52:09",
+                "wip_api_updated_at": "-",
+                "slot_key": "2026-09-08 16:00",
+            }
+        )
+
+        in_window_state = self.operational_state_at("2026-09-08 17:54:00")
+        expired_state = self.operational_state_at("2026-09-08 17:56:00")
+        self.assertEqual(in_window_state["display_status"], "갱신 중")
+        self.assertEqual(expired_state["display_status"], "갱신 지연")
+        self.assertEqual(expired_state["banner_title"], "갱신 지연")
+
     def test_published_state_never_builds_delayed_banner(self) -> None:
         self.publish_current_set(
             "2026-09-06 15:51:50",

@@ -3415,6 +3415,8 @@ def get_snapshot_operational_ui_state(now: datetime | None = None) -> dict[str, 
             REFRESH_STATUS_VALIDATING,
             REFRESH_STATUS_PUBLISHING,
         }:
+            if bool(target.get("window_expired")):
+                return build_snapshot_ui_state(SNAPSHOT_UI_STATUS_DELAYED, target_slot, published_slot)
             return build_snapshot_ui_state(SNAPSHOT_UI_STATUS_REFRESHING, target_slot, published_slot)
 
     if bool(target.get("window_started")) and not bool(target.get("window_expired")):
