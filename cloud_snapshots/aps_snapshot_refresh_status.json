@@ -1,20 +1,13 @@
 {
-  "checked_at": "2026-09-09 09:39:31",
+  "checked_at": "2026-09-09 09:40:33",
   "slot_key": "2026-09-09 07:30",
-  "api_updated_at": "2026-09-09 07:55:00",
-  "wip_api_updated_at": "2026-09-09 08:27:49",
-  "status": "failed",
+  "api_updated_at": "-",
+  "wip_api_updated_at": "-",
+  "status": "pending_api_update",
   "sites": [
     "C관",
     "A관",
     "S관",
     "전체"
-  ],
-  "results": {
-    "WIP": "refreshed rows=30,123 updated_at=2026-09-09 08:27:49",
-    "C관": "failed: APS WIP API 조회 실패: APS WIP 정리 스냅샷이 최신 기준보다 오래됐습니다 (스냅샷 2026-09-08 07:48:49 / APS WIP 최신 2026-09-08 16:13:07). WIP 파일 대체는 사용하지 않습니다.",
-    "A관": "failed: APS WIP API 조회 실패: APS WIP 정리 스냅샷이 최신 기준보다 오래됐습니다 (스냅샷 2026-09-08 07:48:49 / APS WIP 최신 2026-09-08 16:13:07). WIP 파일 대체는 사용하지 않습니다.",
-    "S관": "failed: APS WIP API 조회 실패: APS WIP 정리 스냅샷이 최신 기준보다 오래됐습니다 (스냅샷 2026-09-08 07:48:49 / APS WIP 최신 2026-09-08 16:13:07). WIP 파일 대체는 사용하지 않습니다.",
-    "전체": "failed: APS WIP API 조회 실패: APS WIP 정리 스냅샷이 최신 기준보다 오래됐습니다 (스냅샷 2026-09-08 07:48:49 / APS WIP 최신 2026-09-08 16:13:07). WIP 파일 대체는 사용하지 않습니다."
-  }
+  ]
 }
