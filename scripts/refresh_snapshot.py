@@ -543,8 +543,7 @@ def refresh_snapshots(
             )
             if waiting_status:
                 status = maybe_delayed_status(app, waiting_status, plan_updated_at, wip_updated_at)
-                if status != app.REFRESH_STATUS_DELAYED:
-                    raise SnapshotWaiting(status, reason, plan_updated_at, wip_updated_at, slot_key) from exc
+                raise SnapshotWaiting(status, reason, plan_updated_at, wip_updated_at, slot_key) from exc
             raise
 
         write_status(
@@ -632,7 +631,7 @@ def main() -> int:
     parser.add_argument("--sites", default=",".join(DEFAULT_SITES), help="Comma-separated site filters.")
     parser.add_argument("--require-remote-storage", action="store_true", help="Fail unless private remote storage is used.")
     parser.add_argument("--dry-run", action="store_true", help="Validate API outputs without publishing a snapshot set.")
-    parser.add_argument("--only-if-stale", action="store_true", help="Skip when the published validated set already matches APS 기준시각.")
+    parser.add_argument("--only-if-stale", action="store_true", help="Skip when the operational target slot is already published.")
     parser.add_argument("--validate-existing", action="store_true", help="Validate already saved snapshots without API calls.")
     args = parser.parse_args()
 
