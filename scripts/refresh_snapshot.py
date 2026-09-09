@@ -15,6 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 LOG_PATH = PROJECT_ROOT / "outputs" / "refresh_snapshot.log"
 STATUS_SNAPSHOT_NAME = "aps_snapshot_refresh_status.json"
 DEFAULT_SITES = ("C관", "A관", "S관", "전체")
+OBSERVED_METADATA_FIELDS = ("api_updated_at", "wip_api_updated_at")
 try:
     MIN_ROW_COUNT_RATIO = float(os.getenv("SNAPSHOT_MIN_ROW_COUNT_RATIO", "0.5"))
 except ValueError:
@@ -133,8 +134,75 @@ def comparable_status(payload: dict[str, object]) -> dict[str, object]:
     return {key: value for key, value in payload.items() if key != "checked_at"}
 
 
+def clean_status_value(value: object) -> str:
+    return str(value or "").strip()
+
+
+def is_missing_metadata(value: object) -> bool:
+    return clean_status_value(value) in {"", "-"}
+
+
+def get_status_slot_key(app, payload: dict[str, object]) -> str:
+    slot_key = app.normalize_aps_snapshot_slot_key(payload.get("slot_key", ""))
+    if slot_key:
+        return slot_key
+    return app.get_latest_aps_snapshot_slot(
+        payload.get("api_updated_at", ""),
+        payload.get("wip_api_updated_at", ""),
+    )
+
+
+def preserve_same_slot_observed_metadata(
+    app,
+    status_payload: dict[str, object],
+    existing: dict[str, object],
+) -> dict[str, object]:
+    if not isinstance(existing, dict) or not existing:
+        return status_payload
+    payload_slot = get_status_slot_key(app, status_payload)
+    existing_slot = get_status_slot_key(app, existing)
+    if not payload_slot or payload_slot != existing_slot:
+        return status_payload
+    for field in OBSERVED_METADATA_FIELDS:
+        if is_missing_metadata(status_payload.get(field)) and not is_missing_metadata(existing.get(field)):
+            status_payload[field] = existing[field]
+    return status_payload
+
+
+def get_operational_target_slot_key(app) -> str:
+    target = app.get_operational_target_snapshot_slot()
+    return clean_status_value(target.get("slot_key", ""))
+
+
+def target_snapshot_set_is_published(app, target_slot_key: str) -> bool:
+    if not target_slot_key:
+        return False
+    published_slot = app.get_published_snapshot_slot_key()
+    return bool(published_slot) and app.snapshot_slot_is_at_least(published_slot, target_slot_key)
+
+
+def build_observed_metadata_payload(
+    app,
+    target_slot_key: str,
+    plan_updated_at: str,
+    wip_updated_at: str,
+    existing: dict[str, object],
+) -> dict[str, object]:
+    slot_key = app.get_latest_aps_snapshot_slot(plan_updated_at, wip_updated_at) or target_slot_key
+    payload = {
+        "api_updated_at": plan_updated_at,
+        "wip_api_updated_at": wip_updated_at,
+        "slot_key": slot_key,
+    }
+    return preserve_same_slot_observed_metadata(app, payload, existing)
+
+
 def write_status(app, status: str, **payload: object) -> None:
     import snapshot_storage
+
+    if status == app.REFRESH_STATUS_CHECKING:
+        logging.info("transient CHECKING status is not persisted")
+        return
 
     status_payload: dict[str, object] = {
         "checked_at": datetime.now(app.DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S"),
@@ -150,8 +218,10 @@ def write_status(app, status: str, **payload: object) -> None:
             "wip_updated_at": current_manifest.get("wip_updated_at", ""),
             "created_at": current_manifest.get("created_at", ""),
         }
+    existing: dict[str, object] = {}
     try:
         existing = snapshot_storage.read_json_snapshot(app.CLOUD_SNAPSHOT_DIR, STATUS_SNAPSHOT_NAME)
+        status_payload = preserve_same_slot_observed_metadata(app, status_payload, existing)
         if comparable_status(existing) == comparable_status(status_payload):
             return
         snapshot_storage.write_json_snapshot_atomic(
@@ -234,6 +304,24 @@ def current_snapshot_set_matches(app, sites: list[str], plan_updated_at: str, wi
         if snapshot_df.empty or file_info_df.empty:
             return False
     return True
+
+
+def write_published_target_skip_status(app, storage_label: str, sites: list[str], target_slot_key: str) -> None:
+    manifest = app.get_published_snapshot_set_manifest()
+    current_set = app.get_published_snapshot_set_pointer()
+    write_status(
+        app,
+        app.REFRESH_STATUS_PUBLISHED,
+        api_updated_at=manifest.get("plan_updated_at", ""),
+        wip_api_updated_at=manifest.get("wip_updated_at", ""),
+        slot_key=manifest.get("slot_key", "") or target_slot_key,
+        set_id=manifest.get("set_id", ""),
+        published_at=current_set.get("published_at", "") or manifest.get("created_at", ""),
+        storage=storage_label,
+        sites=sites,
+        skipped=True,
+        reason="target validated snapshot set is already published",
+    )
 
 
 def file_info_value(file_info_df: pd.DataFrame, column: str) -> str:
@@ -354,6 +442,14 @@ def refresh_snapshots(
     storage_label = snapshot_storage.describe_snapshot_storage()
     sites = [app.normalize_shortage_snapshot_site_filter(site) for site in sites]
     logging.info("snapshot storage=%s", storage_label)
+    target_slot_key = get_operational_target_slot_key(app)
+    published_slot_key = app.get_published_snapshot_slot_key()
+    logging.info("operational target slot=%s published slot=%s", target_slot_key, published_slot_key)
+    if only_if_stale and target_snapshot_set_is_published(app, target_slot_key):
+        logging.info("target validated snapshot set already published slot=%s", target_slot_key)
+        write_published_target_skip_status(app, storage_label, sites, target_slot_key)
+        return 0
+
     logging.info(
         "API timeouts plan=%ss wip=%ss retry_attempts=%s",
         app.PLAN_API_TIMEOUT_SECONDS,
@@ -363,100 +459,53 @@ def refresh_snapshots(
 
     plan_updated_at = app.get_plan_api_updated_at()
     wip_updated_at = app.get_aps_wip_api_updated_at()
-    logging.info("APS PLAN updated_at=%s APS WIP updated_at=%s", plan_updated_at, wip_updated_at)
-    write_status(
+    try:
+        existing_status = snapshot_storage.read_json_snapshot(app.CLOUD_SNAPSHOT_DIR, STATUS_SNAPSHOT_NAME)
+    except Exception:
+        existing_status = {}
+    observed_metadata = build_observed_metadata_payload(
         app,
-        app.REFRESH_STATUS_CHECKING,
-        api_updated_at=plan_updated_at,
-        wip_api_updated_at=wip_updated_at,
-        slot_key=app.get_latest_aps_snapshot_slot(plan_updated_at, wip_updated_at),
-        storage=storage_label,
-        sites=sites,
+        target_slot_key,
+        plan_updated_at,
+        wip_updated_at,
+        existing_status,
     )
+    plan_updated_at = clean_status_value(observed_metadata.get("api_updated_at", ""))
+    wip_updated_at = clean_status_value(observed_metadata.get("wip_api_updated_at", ""))
+    observed_slot_key = clean_status_value(observed_metadata.get("slot_key", "")) or target_slot_key
+    logging.info("APS PLAN updated_at=%s APS WIP updated_at=%s", plan_updated_at, wip_updated_at)
     if not plan_updated_at or plan_updated_at == "-":
         raise SnapshotWaiting(
             app.REFRESH_STATUS_WAITING_FOR_PLAN,
             "APS PLAN API 기준시각을 확인하지 못했습니다. PLAN 데이터 갱신 대기 중입니다.",
             plan_updated_at,
             wip_updated_at,
+            observed_slot_key,
         )
-
-    raise_if_slots_not_ready(app, plan_updated_at, wip_updated_at)
-    slot_key = app.resolve_aps_snapshot_slot(plan_updated_at)
-
-    if only_if_stale and current_snapshot_set_matches(app, sites, plan_updated_at, wip_updated_at):
-        manifest = app.get_published_snapshot_set_manifest()
-        current_set = app.get_published_snapshot_set_pointer()
-        logging.info("validated snapshot set already current set=%s", manifest.get("set_id", ""))
-        write_status(
-            app,
-            app.REFRESH_STATUS_PUBLISHED,
-            api_updated_at=plan_updated_at,
-            wip_api_updated_at=wip_updated_at,
-            slot_key=slot_key,
-            set_id=manifest.get("set_id", ""),
-            published_at=current_set.get("published_at", "") or manifest.get("created_at", ""),
-            storage=storage_label,
-            sites=sites,
-            skipped=True,
-            reason="stored validated snapshot set is already current",
-        )
-        return 0
-
-    write_status(
-        app,
-        app.REFRESH_STATUS_READY,
-        api_updated_at=plan_updated_at,
-        wip_api_updated_at=wip_updated_at,
-        slot_key=slot_key,
-        storage=storage_label,
-        sites=sites,
-    )
 
     try:
-        write_status(
-            app,
-            app.REFRESH_STATUS_BUILDING,
-            api_updated_at=plan_updated_at,
-            wip_api_updated_at=wip_updated_at,
-            slot_key=slot_key,
-            storage=storage_label,
-            sites=sites,
-        )
-        inventory, source_label, plan_frames, shortage_results, results = build_validated_snapshot_set(
-            app,
-            sites,
-            plan_updated_at,
-            wip_updated_at,
-        )
-    except SnapshotRefreshError as exc:
-        reason = clean_log_text(exc)
-        waiting_status = (
-            app.REFRESH_STATUS_WAITING_FOR_WIP
-            if "WIP" in reason and is_transient_source_error(reason)
-            else app.REFRESH_STATUS_WAITING_FOR_PLAN
-            if "PLAN" in reason and is_transient_source_error(reason)
-            else ""
-        )
-        if waiting_status:
-            status = maybe_delayed_status(app, waiting_status, plan_updated_at, wip_updated_at)
-            if status != app.REFRESH_STATUS_DELAYED:
-                raise SnapshotWaiting(status, reason, plan_updated_at, wip_updated_at, slot_key) from exc
-        raise
+        raise_if_slots_not_ready(app, plan_updated_at, wip_updated_at)
+        slot_key = app.resolve_aps_snapshot_slot(plan_updated_at)
 
-    write_status(
-        app,
-        app.REFRESH_STATUS_VALIDATING,
-        api_updated_at=plan_updated_at,
-        wip_api_updated_at=wip_updated_at,
-        slot_key=slot_key,
-        storage=storage_label,
-        sites=sites,
-        results=results,
-    )
+        if only_if_stale and current_snapshot_set_matches(app, sites, plan_updated_at, wip_updated_at):
+            manifest = app.get_published_snapshot_set_manifest()
+            current_set = app.get_published_snapshot_set_pointer()
+            logging.info("validated snapshot set already current set=%s", manifest.get("set_id", ""))
+            write_status(
+                app,
+                app.REFRESH_STATUS_PUBLISHED,
+                api_updated_at=plan_updated_at,
+                wip_api_updated_at=wip_updated_at,
+                slot_key=slot_key,
+                set_id=manifest.get("set_id", ""),
+                published_at=current_set.get("published_at", "") or manifest.get("created_at", ""),
+                storage=storage_label,
+                sites=sites,
+                skipped=True,
+                reason="stored validated snapshot set is already current",
+            )
+            return 0
 
-    if dry_run:
-        logging.info("dry run complete; validated snapshot set was not published")
         write_status(
             app,
             app.REFRESH_STATUS_READY,
@@ -465,47 +514,117 @@ def refresh_snapshots(
             slot_key=slot_key,
             storage=storage_label,
             sites=sites,
-            dry_run=True,
+        )
+
+        try:
+            write_status(
+                app,
+                app.REFRESH_STATUS_BUILDING,
+                api_updated_at=plan_updated_at,
+                wip_api_updated_at=wip_updated_at,
+                slot_key=slot_key,
+                storage=storage_label,
+                sites=sites,
+            )
+            inventory, source_label, plan_frames, shortage_results, results = build_validated_snapshot_set(
+                app,
+                sites,
+                plan_updated_at,
+                wip_updated_at,
+            )
+        except SnapshotRefreshError as exc:
+            reason = clean_log_text(exc)
+            waiting_status = (
+                app.REFRESH_STATUS_WAITING_FOR_WIP
+                if "WIP" in reason and is_transient_source_error(reason)
+                else app.REFRESH_STATUS_WAITING_FOR_PLAN
+                if "PLAN" in reason and is_transient_source_error(reason)
+                else ""
+            )
+            if waiting_status:
+                status = maybe_delayed_status(app, waiting_status, plan_updated_at, wip_updated_at)
+                if status != app.REFRESH_STATUS_DELAYED:
+                    raise SnapshotWaiting(status, reason, plan_updated_at, wip_updated_at, slot_key) from exc
+            raise
+
+        write_status(
+            app,
+            app.REFRESH_STATUS_VALIDATING,
+            api_updated_at=plan_updated_at,
+            wip_api_updated_at=wip_updated_at,
+            slot_key=slot_key,
+            storage=storage_label,
+            sites=sites,
+            results=results,
+        )
+
+        if dry_run:
+            logging.info("dry run complete; validated snapshot set was not published")
+            write_status(
+                app,
+                app.REFRESH_STATUS_READY,
+                api_updated_at=plan_updated_at,
+                wip_api_updated_at=wip_updated_at,
+                slot_key=slot_key,
+                storage=storage_label,
+                sites=sites,
+                dry_run=True,
+                results=results,
+            )
+            return 0
+
+        write_status(
+            app,
+            app.REFRESH_STATUS_PUBLISHING,
+            api_updated_at=plan_updated_at,
+            wip_api_updated_at=wip_updated_at,
+            slot_key=slot_key,
+            storage=storage_label,
+            sites=sites,
+            results=results,
+        )
+        manifest = app.write_validated_snapshot_set(
+            plan_updated_at,
+            wip_updated_at,
+            sites,
+            plan_frames,
+            inventory,
+            source_label,
+            shortage_results,
+            update_flat_compat=True,
+        )
+        set_id = str(manifest.get("set_id", ""))
+        published_at = datetime.now(app.DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S")
+        logging.info("validated snapshot set published set=%s slot=%s", set_id, manifest.get("slot_key", ""))
+        write_status(
+            app,
+            app.REFRESH_STATUS_PUBLISHED,
+            api_updated_at=plan_updated_at,
+            wip_api_updated_at=wip_updated_at,
+            slot_key=slot_key,
+            set_id=set_id,
+            published_at=published_at,
+            storage=storage_label,
+            sites=sites,
             results=results,
         )
         return 0
-
-    write_status(
-        app,
-        app.REFRESH_STATUS_PUBLISHING,
-        api_updated_at=plan_updated_at,
-        wip_api_updated_at=wip_updated_at,
-        slot_key=slot_key,
-        storage=storage_label,
-        sites=sites,
-        results=results,
-    )
-    manifest = app.write_validated_snapshot_set(
-        plan_updated_at,
-        wip_updated_at,
-        sites,
-        plan_frames,
-        inventory,
-        source_label,
-        shortage_results,
-        update_flat_compat=True,
-    )
-    set_id = str(manifest.get("set_id", ""))
-    published_at = datetime.now(app.DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S")
-    logging.info("validated snapshot set published set=%s slot=%s", set_id, manifest.get("slot_key", ""))
-    write_status(
-        app,
-        app.REFRESH_STATUS_PUBLISHED,
-        api_updated_at=plan_updated_at,
-        wip_api_updated_at=wip_updated_at,
-        slot_key=slot_key,
-        set_id=set_id,
-        published_at=published_at,
-        storage=storage_label,
-        sites=sites,
-        results=results,
-    )
-    return 0
+    except SnapshotWaiting:
+        raise
+    except Exception as exc:
+        reason = clean_log_text(exc)
+        logging.exception("snapshot refresh failed: %s", reason)
+        write_status(
+            app,
+            app.REFRESH_STATUS_FAILED,
+            reason=reason,
+            api_updated_at=plan_updated_at,
+            wip_api_updated_at=wip_updated_at,
+            slot_key=observed_slot_key,
+            sites=sites,
+            storage=storage_label,
+        )
+        return 1
 
 
 def main() -> int:

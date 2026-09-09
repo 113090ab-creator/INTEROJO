@@ -8,10 +8,10 @@ on:
         required: false
         default: "C관,A관,S관,전체"
   schedule:
-    # KST 08:00-09:55. Each run is short: check readiness, publish only when PLAN/WIP slots match.
-    - cron: "*/5 23,0 * * *"
-    # KST 16:00-17:55. Avoid holding a runner with long sleep while PLAN/WIP delivery is staggered.
-    - cron: "*/5 7,8 * * *"
+    # KST 08:02-10:57. Runs are target-slot idempotent, so late/dropped cron events do not block AM publish.
+    - cron: "2-57/5 23,0,1 * * *"
+    # KST 16:02-18:57. Runs are target-slot idempotent, so late/dropped cron events do not block PM publish.
+    - cron: "2-57/5 7,8,9 * * *"
 
 permissions:
   contents: write

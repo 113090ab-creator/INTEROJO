@@ -1,13 +1,20 @@
 {
-  "checked_at": "2026-09-09 09:41:14",
+  "checked_at": "2026-09-09 09:43:52",
   "slot_key": "2026-09-09 07:30",
   "api_updated_at": "2026-09-09 07:55:00",
-  "wip_api_updated_at": "-",
-  "status": "checking",
+  "wip_api_updated_at": "2026-09-09 08:27:49",
+  "status": "completed",
   "sites": [
     "C관",
     "A관",
     "S관",
     "전체"
-  ]
+  ],
+  "results": {
+    "WIP": "refreshed rows=30,123 updated_at=2026-09-09 08:27:49",
+    "C관": "refreshed rows=3,524 updated_at=2026-09-09 07:55:00",
+    "A관": "refreshed rows=1,236 updated_at=2026-09-09 07:55:00",
+    "S관": "refreshed rows=4,545 updated_at=2026-09-09 07:55:00",
+    "전체": "refreshed rows=9,305 updated_at=2026-09-09 07:55:00"
+  }
 }
