@@ -57,7 +57,6 @@ class ValidatedSnapshotSetTests(unittest.TestCase):
     def setUp(self) -> None:
         self.original_snapshot_dir = app.CLOUD_SNAPSHOT_DIR
         self.original_refresh_status_paths = app.APS_SNAPSHOT_REFRESH_STATUS_PATHS
-        self.original_refresh_state_paths = app.APS_SNAPSHOT_REFRESH_STATE_PATHS
         self.original_backend = os.environ.get("SNAPSHOT_STORAGE_BACKEND")
         os.environ["SNAPSHOT_STORAGE_BACKEND"] = "local"
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -65,15 +64,11 @@ class ValidatedSnapshotSetTests(unittest.TestCase):
         app.APS_SNAPSHOT_REFRESH_STATUS_PATHS = (
             app.CLOUD_SNAPSHOT_DIR / app.CLOUD_SNAPSHOT_REFRESH_STATUS_NAME,
         )
-        app.APS_SNAPSHOT_REFRESH_STATE_PATHS = (
-            app.CLOUD_SNAPSHOT_DIR / app.CLOUD_SNAPSHOT_REFRESH_STATE_NAME,
-        )
         clear_app_snapshot_caches()
 
     def tearDown(self) -> None:
         app.CLOUD_SNAPSHOT_DIR = self.original_snapshot_dir
         app.APS_SNAPSHOT_REFRESH_STATUS_PATHS = self.original_refresh_status_paths
-        app.APS_SNAPSHOT_REFRESH_STATE_PATHS = self.original_refresh_state_paths
         if self.original_backend is None:
             os.environ.pop("SNAPSHOT_STORAGE_BACKEND", None)
         else:

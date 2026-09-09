@@ -1,9 +1,12 @@
 {
-  "checked_at": "2026-09-09 16:32:54",
-  "slot_key": "2026-09-09 16:00",
+  "checked_at": "2026-09-09 17:38:12",
+  "status": "PUBLISHED",
   "api_updated_at": "2026-09-09 15:53:12",
   "wip_api_updated_at": "2026-09-09 16:09:13",
-  "status": "completed",
+  "slot_key": "2026-09-09 PM",
+  "set_id": "aps_20260909_pm_plan155312_wip160913_bff99d52",
+  "published_at": "2026-09-09 17:38:12",
+  "storage": "로컬 cloud_snapshots 폴더",
   "sites": [
     "C관",
     "A관",
@@ -11,10 +14,17 @@
     "전체"
   ],
   "results": {
-    "WIP": "refreshed rows=30,114 updated_at=2026-09-09 16:09:13",
-    "C관": "refreshed rows=3,515 updated_at=2026-09-09 15:53:12",
-    "A관": "refreshed rows=1,194 updated_at=2026-09-09 15:53:12",
-    "S관": "refreshed rows=7,228 updated_at=2026-09-09 15:53:12",
-    "전체": "refreshed rows=11,937 updated_at=2026-09-09 15:53:12"
+    "WIP": "staged rows=30,114 updated_at=2026-09-09 16:09:13",
+    "C관": "staged rows=3,515 updated_at=2026-09-09 15:53:12",
+    "A관": "staged rows=1,194 updated_at=2026-09-09 15:53:12",
+    "S관": "staged rows=7,228 updated_at=2026-09-09 15:53:12",
+    "전체": "staged rows=11,937 updated_at=2026-09-09 15:53:12"
+  },
+  "current_set": {
+    "set_id": "aps_20260909_pm_plan155312_wip160913_bff99d52",
+    "slot_key": "2026-09-09 PM",
+    "plan_updated_at": "2026-09-09 15:53:12",
+    "wip_updated_at": "2026-09-09 16:09:13",
+    "created_at": "2026-09-09 17:38:08"
   }
 }

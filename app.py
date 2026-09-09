@@ -40,15 +40,10 @@ LATEST_UPLOAD_SESSION_FILE = UPLOAD_WORKSPACE_ROOT / "latest_session.txt"
 UPLOAD_SIGNATURE_FILE = "upload_signature.txt"
 CLOUD_SNAPSHOT_DIR = BASE_DIR / "cloud_snapshots"
 CLOUD_SNAPSHOT_META_NAME = "snapshot_meta.csv"
-CLOUD_SNAPSHOT_REFRESH_STATE_NAME = "aps_snapshot_refresh_state.json"
 CLOUD_SNAPSHOT_REFRESH_STATUS_NAME = "aps_snapshot_refresh_status.json"
 CURRENT_SNAPSHOT_SET_NAME = "current_snapshot_set.json"
 SNAPSHOT_SETS_DIR_NAME = "sets"
 SNAPSHOT_SET_MANIFEST_NAME = "manifest.json"
-APS_SNAPSHOT_REFRESH_STATE_PATHS = (
-    CLOUD_SNAPSHOT_DIR / CLOUD_SNAPSHOT_REFRESH_STATE_NAME,
-    BASE_DIR / "outputs" / CLOUD_SNAPSHOT_REFRESH_STATE_NAME,
-)
 APS_SNAPSHOT_REFRESH_STATUS_PATHS = (
     CLOUD_SNAPSHOT_DIR / CLOUD_SNAPSHOT_REFRESH_STATUS_NAME,
     BASE_DIR / "outputs" / CLOUD_SNAPSHOT_REFRESH_STATUS_NAME,
@@ -2838,6 +2833,61 @@ def shortage_snapshot_file_names(site_filter: str = "전체") -> tuple[str, str,
     )
 
 
+VSS_MANAGED_FLAT_SNAPSHOT_NAMES = frozenset(
+    {
+        WIP_INVENTORY_SNAPSHOT_FILE,
+        "shortage_snapshot.csv.gz",
+        "shortage_file_info.csv.gz",
+        "process_map.csv.gz",
+        "shortage_snapshot_asite.csv.gz",
+        "shortage_file_info_asite.csv.gz",
+        "process_map_asite.csv.gz",
+        "shortage_snapshot_csite.csv.gz",
+        "shortage_file_info_csite.csv.gz",
+        "process_map_csite.csv.gz",
+        "shortage_snapshot_ssite.csv.gz",
+        "shortage_file_info_ssite.csv.gz",
+        "process_map_ssite.csv.gz",
+    }
+)
+VSS_MANAGED_META_KEYS = frozenset(
+    {
+        "data_updated_at",
+        "data_updated_at_A관",
+        "data_updated_at_C관",
+        "data_updated_at_S관",
+        WIP_INVENTORY_UPDATED_AT_META_KEY,
+        WIP_INVENTORY_SOURCE_LABEL_META_KEY,
+        WIP_INVENTORY_REFRESHED_AT_META_KEY,
+    }
+)
+_VSS_PRODUCTION_WRITE_DEPTH = 0
+
+
+def is_vss_managed_production_snapshot_name(name: object) -> bool:
+    snapshot_name = snapshot_storage.normalize_snapshot_name(clean_text_value(name))
+    if not snapshot_name:
+        return False
+    if snapshot_name.startswith(f"{SNAPSHOT_SETS_DIR_NAME}/"):
+        return True
+    return snapshot_name in VSS_MANAGED_FLAT_SNAPSHOT_NAMES
+
+
+def assert_vss_production_snapshot_write_allowed(name: object) -> None:
+    if is_vss_managed_production_snapshot_name(name) and _VSS_PRODUCTION_WRITE_DEPTH <= 0:
+        raise RuntimeError(
+            "VSS-managed production snapshots can only be written by write_validated_snapshot_set()."
+        )
+
+
+def assert_vss_production_meta_write_allowed(key: object) -> None:
+    clean_key = clean_text_value(key)
+    if clean_key in VSS_MANAGED_META_KEYS and _VSS_PRODUCTION_WRITE_DEPTH <= 0:
+        raise RuntimeError(
+            "VSS-managed production snapshot metadata can only be written by write_validated_snapshot_set()."
+        )
+
+
 def shortage_snapshot_meta_key(site_filter: str = "전체") -> str:
     site = normalize_shortage_snapshot_site_filter(site_filter)
     return "data_updated_at" if site == "전체" else f"data_updated_at_{site}"
@@ -2899,7 +2949,6 @@ def build_cloud_snapshot_context_refresh_key() -> str:
     return build_cloud_snapshot_refresh_key(
         CLOUD_SNAPSHOT_META_NAME,
         CLOUD_SNAPSHOT_REFRESH_STATUS_NAME,
-        CLOUD_SNAPSHOT_REFRESH_STATE_NAME,
         CURRENT_SNAPSHOT_SET_NAME,
     )
 
@@ -2930,7 +2979,7 @@ def parse_cloud_snapshot_json_bytes(data: bytes) -> dict[str, object]:
 def read_cloud_snapshot_context_cached(refresh_key: str) -> dict[str, object]:
     _ = refresh_key
     with PerfTimer("snapshot_context"):
-        context: dict[str, object] = {"meta": {}, "status": {}, "state": {}, "current_set": {}, "current_set_manifest": {}}
+        context: dict[str, object] = {"meta": {}, "status": {}, "current_set": {}, "current_set_manifest": {}}
         try:
             context["meta"] = parse_cloud_snapshot_meta_bytes(
                 snapshot_storage.read_snapshot_bytes(CLOUD_SNAPSHOT_DIR, CLOUD_SNAPSHOT_META_NAME)
@@ -2943,12 +2992,6 @@ def read_cloud_snapshot_context_cached(refresh_key: str) -> dict[str, object]:
             )
         except Exception:
             context["status"] = {}
-        try:
-            context["state"] = parse_cloud_snapshot_json_bytes(
-                snapshot_storage.read_snapshot_bytes(CLOUD_SNAPSHOT_DIR, CLOUD_SNAPSHOT_REFRESH_STATE_NAME)
-            )
-        except Exception:
-            context["state"] = {}
         try:
             current_set = parse_cloud_snapshot_json_bytes(
                 snapshot_storage.read_snapshot_bytes(CLOUD_SNAPSHOT_DIR, CURRENT_SNAPSHOT_SET_NAME)
@@ -2981,6 +3024,7 @@ def get_cloud_snapshot_meta_map() -> dict[str, str]:
 def write_cloud_snapshot_csv(name: str, df: pd.DataFrame) -> bool:
     if not isinstance(df, pd.DataFrame):
         return False
+    assert_vss_production_snapshot_write_allowed(name)
     try:
         df = repair_korean_mojibake_dataframe(df)
         if name.endswith(".gz"):
@@ -3014,6 +3058,7 @@ def write_cloud_snapshot_meta_value(key: str, value: str) -> bool:
     clean_key = clean_text_value(key)
     if not clean_key:
         return False
+    assert_vss_production_meta_write_allowed(clean_key)
     meta = load_cloud_snapshot_csv(CLOUD_SNAPSHOT_META_NAME)
     if not {"key", "value"}.issubset(meta.columns):
         meta = pd.DataFrame(columns=["key", "value"])
@@ -3483,18 +3528,6 @@ def get_recorded_aps_plan_updated_at(default: str = "-") -> str:
     if status_updated_at:
         candidates.append(status_updated_at)
 
-    state = context.get("state", {})
-    state = state if isinstance(state, dict) else {}
-    if not state:
-        state = read_first_json_file(APS_SNAPSHOT_REFRESH_STATE_PATHS)
-    completed_slots = state.get("completed_slots")
-    if isinstance(completed_slots, dict):
-        for slot_info in completed_slots.values():
-            if isinstance(slot_info, dict):
-                updated_at = clean_text_value(slot_info.get("api_updated_at", ""))
-                if updated_at:
-                    candidates.append(updated_at)
-
     parsed_candidates: list[tuple[datetime, str]] = []
     for value in candidates:
         parsed = parse_updated_at_value(value)
@@ -3519,18 +3552,6 @@ def get_recorded_aps_wip_updated_at(default: str = "-") -> str:
     status_updated_at = clean_text_value(status.get("wip_api_updated_at", ""))
     if status_updated_at:
         candidates.append(status_updated_at)
-
-    state = context.get("state", {})
-    state = state if isinstance(state, dict) else {}
-    if not state:
-        state = read_first_json_file(APS_SNAPSHOT_REFRESH_STATE_PATHS)
-    completed_slots = state.get("completed_slots")
-    if isinstance(completed_slots, dict):
-        for slot_info in completed_slots.values():
-            if isinstance(slot_info, dict):
-                updated_at = clean_text_value(slot_info.get("wip_api_updated_at", ""))
-                if updated_at:
-                    candidates.append(updated_at)
 
     parsed_candidates: list[tuple[datetime, str]] = []
     for value in candidates:
@@ -3851,7 +3872,7 @@ def build_validated_snapshot_set_manifest(
     }
 
 
-def write_validated_snapshot_set(
+def _write_validated_snapshot_set_impl(
     plan_updated_at: str,
     wip_updated_at: str,
     sites: list[str],
@@ -3921,6 +3942,33 @@ def write_validated_snapshot_set(
     }
     snapshot_storage.write_json_snapshot_atomic(CLOUD_SNAPSHOT_DIR, CURRENT_SNAPSHOT_SET_NAME, current_payload)
     return manifest
+
+
+def write_validated_snapshot_set(
+    plan_updated_at: str,
+    wip_updated_at: str,
+    sites: list[str],
+    plan_frames: dict[str, pd.DataFrame],
+    wip_inventory: pd.DataFrame,
+    wip_source_label: str,
+    shortage_results: dict[str, tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]],
+    update_flat_compat: bool = True,
+) -> dict[str, object]:
+    global _VSS_PRODUCTION_WRITE_DEPTH
+    _VSS_PRODUCTION_WRITE_DEPTH += 1
+    try:
+        return _write_validated_snapshot_set_impl(
+            plan_updated_at,
+            wip_updated_at,
+            sites,
+            plan_frames,
+            wip_inventory,
+            wip_source_label,
+            shortage_results,
+            update_flat_compat=update_flat_compat,
+        )
+    finally:
+        _VSS_PRODUCTION_WRITE_DEPTH -= 1
 
 
 def load_cloud_inventory_risk_snapshot() -> pd.DataFrame:
@@ -9069,29 +9117,10 @@ def build_wip_inventory_snapshot_from_api(source_updated_at: str | None = None) 
 
 
 def refresh_cloud_wip_inventory_snapshot(only_if_stale: bool = False) -> dict[str, object]:
-    source_updated_at = get_aps_wip_api_updated_at()
-    if only_if_stale and source_updated_at != "-" and is_cloud_wip_inventory_snapshot_current(source_updated_at):
-        return {
-            "status": "skip-current",
-            "updated_at": source_updated_at,
-            "rows": int(len(load_cloud_wip_inventory_snapshot_with_label()[0])),
-            "raw_dir": "",
-        }
-
-    inventory, source_label, raw_snapshot_dir, error = build_wip_inventory_snapshot_from_api(source_updated_at)
-    if error or inventory.empty:
-        raise RuntimeError(error or "APS WIP 정리 스냅샷 생성 실패")
-
-    if not write_cloud_wip_inventory_snapshot(inventory, source_updated_at, source_label):
-        raise RuntimeError("APS WIP 정리 스냅샷 저장 실패")
-
-    return {
-        "status": "refreshed",
-        "updated_at": source_updated_at,
-        "rows": int(len(inventory)),
-        "raw_dir": raw_snapshot_dir,
-        "source_label": source_label,
-    }
+    _ = only_if_stale
+    raise RuntimeError(
+        "Legacy flat WIP snapshot refresh is blocked. Use scripts/refresh_snapshot.py to publish a Validated Snapshot Set."
+    )
 
 
 def load_api_demand_like_df(site_filter: str = "전체") -> pd.DataFrame:
@@ -16779,13 +16808,8 @@ def main() -> None:
                             shortage_api_site_filter,
                         )
                         updated_at = shortage_api_updated_at if shortage_api_updated_at != "-" else get_plan_api_updated_at()
-                        write_cloud_shortage_snapshot(
-                            df,
-                            file_info_df,
-                            process_map_df,
-                            updated_at,
-                            shortage_api_site_filter,
-                        )
+                        # Streamlit is a read-only consumer of production snapshots.
+                        # Publishing is restricted to scripts/refresh_snapshot.py.
                         shortage_locked_site_filter = shortage_api_site_filter
                     except Exception as live_exc:
                         fallback_loaded = False

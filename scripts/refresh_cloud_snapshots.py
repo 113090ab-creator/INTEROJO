@@ -14,7 +14,36 @@ sys.path.insert(0, str(REPO_ROOT))
 import app  # noqa: E402
 
 
+VSS_MANAGED_APS_SNAPSHOT_NAMES = frozenset(
+    {
+        "current_snapshot_set.json",
+        "aps_snapshot_refresh_status.json",
+        "aps_snapshot_refresh_state.json",
+        "wip_inventory_snapshot.csv.gz",
+        "shortage_snapshot.csv.gz",
+        "shortage_file_info.csv.gz",
+        "process_map.csv.gz",
+        "shortage_snapshot_asite.csv.gz",
+        "shortage_file_info_asite.csv.gz",
+        "process_map_asite.csv.gz",
+        "shortage_snapshot_csite.csv.gz",
+        "shortage_file_info_csite.csv.gz",
+        "process_map_csite.csv.gz",
+        "shortage_snapshot_ssite.csv.gz",
+        "shortage_file_info_ssite.csv.gz",
+        "process_map_ssite.csv.gz",
+    }
+)
+
+
+def is_vss_managed_aps_snapshot_name(name: str) -> bool:
+    snapshot_name = name.replace("\\", "/").lstrip("/")
+    return snapshot_name.startswith("sets/") or snapshot_name in VSS_MANAGED_APS_SNAPSHOT_NAMES
+
+
 def write_snapshot(name: str, df: pd.DataFrame) -> None:
+    if is_vss_managed_aps_snapshot_name(name):
+        raise RuntimeError(f"VSS-managed APS snapshot writes are blocked: {name}")
     path = REPO_ROOT / "cloud_snapshots" / name
     compression: str | dict[str, object] = "infer"
     if name.endswith(".gz"):
@@ -59,18 +88,14 @@ def main() -> None:
     snapshot_dir.mkdir(exist_ok=True)
     meta_values = load_existing_meta(snapshot_dir)
 
+    print("skipped APS shortage snapshots: managed by scripts/refresh_snapshot.py")
     try:
         data_refresh_key = app.build_data_refresh_key(REPO_ROOT)
-        shortage_df, file_info_df, process_map_df = app.load_data(data_refresh_key, str(REPO_ROOT))
         inventory_risk_df = app.build_inventory_risk_snapshot(data_refresh_key, str(REPO_ROOT))
     except Exception as exc:
-        print(f"skipped data snapshots: {exc}")
+        print(f"skipped inventory risk snapshot: {exc}")
     else:
-        write_snapshot("shortage_snapshot.csv.gz", shortage_df)
-        write_snapshot("shortage_file_info.csv.gz", file_info_df)
-        write_snapshot("process_map.csv.gz", process_map_df)
         write_snapshot("inventory_risk_snapshot.csv.gz", inventory_risk_df)
-        meta_values["data_updated_at"] = app.get_data_updated_at(REPO_ROOT)
 
     try:
         all_item_refresh_key = app.build_all_item_refresh_key(REPO_ROOT)
