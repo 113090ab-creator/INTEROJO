@@ -1,9 +1,9 @@
 {
-  "checked_at": "2026-09-09 09:40:33",
+  "checked_at": "2026-09-09 09:41:14",
   "slot_key": "2026-09-09 07:30",
-  "api_updated_at": "-",
+  "api_updated_at": "2026-09-09 07:55:00",
   "wip_api_updated_at": "-",
-  "status": "pending_api_update",
+  "status": "checking",
   "sites": [
     "C관",
     "A관",
