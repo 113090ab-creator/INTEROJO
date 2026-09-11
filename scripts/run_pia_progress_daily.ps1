@@ -3,7 +3,8 @@ param(
   [string]$RunDate = (Get-Date -Format "yyyy-MM-dd"),
   [switch]$SkipIfExists,
   [string]$Packing1DayPath = "",
-  [string]$PackingFrpPath = ""
+  [string]$PackingFrpPath = "",
+  [string]$DemandInfoPath = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -76,10 +77,16 @@ try {
   Assert-Path $buildScript
   Assert-Path $Packing1DayPath
   Assert-Path $PackingFrpPath
+  if ($DemandInfoPath) {
+    Assert-Path $DemandInfoPath
+  }
 
   Write-Host "PIA progress automation started: $RunDate"
   Write-Host "1-Day packing: $Packing1DayPath"
   Write-Host "FRP packing: $PackingFrpPath"
+  if ($DemandInfoPath) {
+    Write-Host "Demand info: $DemandInfoPath"
+  }
   Write-Host "Output: $outputPath"
 
   if ($SkipIfExists -and (Test-Path -LiteralPath $outputPath)) {
@@ -89,6 +96,7 @@ try {
     $env:PIA_PROGRESS_OUTPUT_DIR = $outputDir
     $env:PIA_PACKING_1DAY = $Packing1DayPath
     $env:PIA_PACKING_FRP = $PackingFrpPath
+    $env:PIA_DEMAND_INFO_PATH = $DemandInfoPath
     $env:NODE_PATH = $nodeModules
 
     & $python $generateScript
