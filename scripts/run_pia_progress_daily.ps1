@@ -43,6 +43,9 @@ function Format-Count {
 
 function Format-DeltaText {
   param([object]$Value, [string]$Suffix = "")
+  if ($null -eq $Value -or "$Value" -eq "") {
+    return "``비교 제외``"
+  }
   $number = [int64][math]::Round([double]$Value)
   if ($number -gt 0) {
     return "``$(Format-Count $number)$Suffix`` 감소"
@@ -184,17 +187,22 @@ visible_rows = [
 ]
 packing_shortage = int(round(sum(float(row.get("포장부족수량") or 0) for row in visible_rows)))
 
+def int_or_none(value):
+    if value is None or value == "":
+        return None
+    return int(round(float(value)))
+
 metrics = {
     "output": str(path),
     "order_qty": int(round(float(overview.cell(8, 3).value or 0))),
     "production_shortage": int(round(float(overview.cell(8, 4).value or 0))),
     "production_rate": float(overview.cell(8, 6).value or 0),
     "production_rate_text": f"{float(overview.cell(8, 6).value or 0) * 100:.2f}%",
-    "production_decrease": int(round(float(overview.cell(8, 7).value or 0))),
-    "production_color_change": int(round(float(overview.cell(8, 8).value or 0))),
+    "production_decrease": int_or_none(overview.cell(8, 7).value),
+    "production_color_change": int_or_none(overview.cell(8, 8).value),
     "injection_shortage": int(round(float(overview.cell(8, 9).value or 0))),
-    "injection_decrease": int(round(float(overview.cell(8, 11).value or 0))),
-    "injection_color_change": int(round(float(overview.cell(8, 12).value or 0))),
+    "injection_decrease": int_or_none(overview.cell(8, 11).value),
+    "injection_color_change": int_or_none(overview.cell(8, 12).value),
     "packing_rate": float(overview.cell(8, 13).value or 0),
     "packing_rate_text": f"{float(overview.cell(8, 13).value or 0) * 100:.2f}%",
     "packing_shortage": packing_shortage,
