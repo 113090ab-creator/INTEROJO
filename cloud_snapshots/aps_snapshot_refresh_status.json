@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-09-15 09:05:51",
+  "checked_at": "2026-09-15 10:22:01",
   "status": "PUBLISHED",
   "api_updated_at": "2026-09-15 07:48:33",
   "wip_api_updated_at": "2026-09-15 08:03:09",
@@ -13,13 +13,8 @@
     "S관",
     "전체"
   ],
-  "results": {
-    "WIP": "staged rows=30,493 updated_at=2026-09-15 08:03:09",
-    "C관": "staged rows=3,352 updated_at=2026-09-15 07:48:33",
-    "A관": "staged rows=965 updated_at=2026-09-15 07:48:33",
-    "S관": "staged rows=5,711 updated_at=2026-09-15 07:48:33",
-    "전체": "staged rows=10,028 updated_at=2026-09-15 07:48:33"
-  },
+  "skipped": true,
+  "reason": "target validated snapshot set is already published",
   "current_set": {
     "set_id": "aps_20260915_am_plan074833_wip080309_bcc6dcef",
     "slot_key": "2026-09-15 AM",
