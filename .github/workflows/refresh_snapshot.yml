@@ -71,6 +71,7 @@ jobs:
           refresh_outcome="${{ steps.refresh.outcome }}"
           echo "Snapshot git status before commit:"
           git status --short -- cloud_snapshots || true
+          python scripts/validate_snapshot_integrity.py
           if git diff --quiet -- cloud_snapshots; then
             echo "No APS snapshot changes to commit."
             python scripts/report_snapshot_status.py || true
