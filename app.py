@@ -6484,10 +6484,24 @@ def collapse_duplicate_p_demand_rows(df: pd.DataFrame) -> pd.DataFrame:
     if not key_cols:
         return df
 
-    normalized = normalize_flow_link_key_columns(df, key_cols)
-    duplicate_mask = normalized.duplicated(subset=key_cols, keep=False)
+    key_frame = pd.DataFrame(index=df.index)
+    for col in key_cols:
+        key_frame[col] = df[col].map(normalize_flow_link_key_value)
+    duplicate_mask = key_frame.duplicated(subset=key_cols, keep=False)
     if not duplicate_mask.any():
         return df
+
+    normalized = df.copy()
+    for col in key_cols:
+        normalized[col] = key_frame[col]
+    row_order_col = "__collapse_row_order__"
+    while row_order_col in normalized.columns:
+        row_order_col = f"_{row_order_col}"
+    row_order = pd.Series(range(len(normalized)), index=normalized.index)
+    duplicate_rows = normalized.loc[duplicate_mask].copy()
+    duplicate_rows[row_order_col] = row_order.loc[duplicate_rows.index].to_numpy()
+    unique_rows = normalized.loc[~duplicate_mask].copy()
+    unique_rows[row_order_col] = row_order.loc[unique_rows.index].to_numpy()
 
     max_numeric_cols = {
         DEMAND_QTY_COL,
@@ -6527,17 +6541,23 @@ def collapse_duplicate_p_demand_rows(df: pd.DataFrame) -> pd.DataFrame:
         return float(parse_mixed_numeric(values).max())
 
     agg_map: dict[str, object] = {}
-    for col in normalized.columns:
-        if col in key_cols:
+    for col in duplicate_rows.columns:
+        if col in key_cols or col == row_order_col:
             continue
-        if col in max_numeric_cols or pd.api.types.is_numeric_dtype(normalized[col]):
+        if col in max_numeric_cols or pd.api.types.is_numeric_dtype(duplicate_rows[col]):
             agg_map[col] = max_numeric
         elif col in joined_text_cols:
             agg_map[col] = join_unique_text_values
         else:
             agg_map[col] = first_non_empty
+    agg_map[row_order_col] = "min"
 
-    collapsed = normalized.groupby(key_cols, as_index=False, dropna=False, sort=False).agg(agg_map)
+    collapsed_duplicates = duplicate_rows.groupby(key_cols, as_index=False, dropna=False, sort=False).agg(agg_map)
+    collapsed = (
+        pd.concat([unique_rows, collapsed_duplicates], ignore_index=True, sort=False)
+        .sort_values(row_order_col, kind="stable")
+        .drop(columns=[row_order_col], errors="ignore")
+    )
     ordered_columns = [col for col in df.columns if col in collapsed.columns]
     return collapsed[ordered_columns]
 
@@ -7837,7 +7857,7 @@ def select_shortage_main_table_display_columns(df: pd.DataFrame) -> tuple[pd.Dat
         return pd.DataFrame(), SHORTAGE_MAIN_TABLE_DISPLAY_COLUMNS.copy()
     visible_columns = [col for col in SHORTAGE_MAIN_TABLE_DISPLAY_COLUMNS if col in df.columns]
     missing_columns = [col for col in SHORTAGE_MAIN_TABLE_DISPLAY_COLUMNS if col not in df.columns]
-    return df.loc[:, visible_columns].copy(), missing_columns
+    return df.loc[:, visible_columns], missing_columns
 
 
 def _multi_pill_previous_key(key: str) -> str:
@@ -8709,7 +8729,12 @@ def build_initial_injection_summary(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty or "이니셜" not in df.columns or "품목코드" not in df.columns:
         return pd.DataFrame(columns=columns)
 
-    base = df.copy()
+    source_columns = [
+        col
+        for col in ["이니셜", "품목코드", "거래처", "부족수량", "사출생산필요수량", "사출창고"]
+        if col in df.columns
+    ]
+    base = df.loc[:, source_columns].copy()
     if "거래처" not in base.columns:
         base["거래처"] = "-"
     if "부족수량" not in base.columns:
@@ -8849,7 +8874,12 @@ def build_summary_group_totals_with_safe_split(df: pd.DataFrame) -> pd.DataFrame
     if df.empty:
         return pd.DataFrame(columns=columns)
 
-    base = df.copy()
+    source_columns = [
+        col
+        for col in ["분류별요약", "이니셜", "부족수량", "사출 부족수량", "사출생산필요수량"]
+        if col in df.columns
+    ]
+    base = df.loc[:, source_columns].copy()
     if "분류별요약" not in base.columns:
         base["분류별요약"] = "(미분류)"
     if "이니셜" not in base.columns:
@@ -12055,7 +12085,8 @@ def apply_filters(
         st.caption(f"앱 버전: {APP_CACHE_VERSION}")
         default_scope_caption = st.empty()
 
-        site_sum_map, *_ = build_filter_option_maps(df, "전체")
+        with PerfTimer("shortage_filter_option_maps_all_sites", rows=len(df)):
+            site_sum_map, *_ = build_filter_option_maps(df, "전체")
         site_options = ["전체"] + list(site_sum_map.keys())
         site_count_map = {"전체": float(sum(site_sum_map.values())), **site_sum_map}
         locked_site_text = clean_text_value(locked_site_filter)
@@ -12088,12 +12119,13 @@ def apply_filters(
                 format_func=lambda x: format_pill_label(x, site_count_map),
             )
 
-        (
-            _,
-            demand_type_sum_map,
-            customer_group_sum_map,
-            summary_sum_map,
-        ) = build_filter_option_maps(df, selected_site_option or "전체")
+        with PerfTimer("shortage_filter_option_maps_scoped", rows=len(df), site=selected_site_option or "전체"):
+            (
+                _,
+                demand_type_sum_map,
+                customer_group_sum_map,
+                summary_sum_map,
+            ) = build_filter_option_maps(df, selected_site_option or "전체")
 
         demand_type_order = [DEMAND_TYPE_ORDER, DEMAND_TYPE_SAFETY_STOCK]
         demand_type_options = ["전체"] + [value for value in demand_type_order if value in demand_type_sum_map]
@@ -13818,7 +13850,7 @@ def render_shortage_dashboard(
             if col in filtered.columns
         ]
         filtered = filter_display_table_with_query(filtered, direct_query, shortage_direct_search_columns).copy()
-    link_mapping_scope = enriched_df.copy()
+    link_mapping_scope = enriched_df
 
     locked_site_text = clean_text_value(locked_site_filter)
     if locked_site_text:
@@ -13828,7 +13860,8 @@ def render_shortage_dashboard(
             "다른 관 수요는 좌측 상단 사이트코드에서 해당 관 또는 전체를 선택해야 표시됩니다."
         )
 
-    render_rework_match_debug(file_info_df)
+    with PerfTimer("shortage_rework_debug"):
+        render_rework_match_debug(file_info_df)
     if "재작업" in filtered.columns and "품목코드" in filtered.columns:
         rework_text = filtered["재작업"].astype(str).str.strip()
         rework_scope = filtered[rework_text.ne("") & ~rework_text.str.lower().isin(INVALID_CATEGORY_VALUES)]
@@ -13860,7 +13893,8 @@ def render_shortage_dashboard(
         with c5:
             leakage_stock_kpi_slot = st.empty()
 
-        initial_inj_summary = build_initial_injection_summary(filtered)
+        with PerfTimer("shortage_initial_injection_summary", rows=len(filtered)):
+            initial_inj_summary = build_initial_injection_summary(filtered)
         with st.expander("이니셜별 사출부족수량 요약", expanded=False):
             st.caption("사출 부족수량 = 이니셜별(품목코드 단위) 사출 생산 필요수량 합계")
             if initial_inj_summary.empty:
@@ -13880,12 +13914,13 @@ def render_shortage_dashboard(
                     hide_index=True,
                 )
 
-        p_view = filtered.copy()
-        p_view["부족수량"] = parse_mixed_numeric(p_view["부족수량"])
-        if "사출생산필요수량" in p_view.columns:
-            p_view["사출생산필요수량"] = parse_mixed_numeric(p_view["사출생산필요수량"])
-        else:
-            p_view["사출생산필요수량"] = 0
+        with PerfTimer("shortage_main_prepare_filtered_copy", rows=len(filtered), cols=len(filtered.columns)):
+            p_view = filtered.copy()
+            p_view["부족수량"] = parse_mixed_numeric(p_view["부족수량"])
+            if "사출생산필요수량" in p_view.columns:
+                p_view["사출생산필요수량"] = parse_mixed_numeric(p_view["사출생산필요수량"])
+            else:
+                p_view["사출생산필요수량"] = 0
 
         mapped_inj_total = 0.0
         unmatched_inj_total = 0.0
@@ -13899,11 +13934,12 @@ def render_shortage_dashboard(
             p_rows = p_view.copy()
             r_rows = p_view.iloc[0:0].copy()
 
-        synthetic_display_rows = build_synthetic_p_rows_for_process_scope(
-            p_view,
-            link_mapping_scope,
-            p_view.columns.tolist(),
-        )
+        with PerfTimer("shortage_main_synthetic_rows", rows=len(p_view), ref_rows=len(link_mapping_scope)):
+            synthetic_display_rows = build_synthetic_p_rows_for_process_scope(
+                p_view,
+                link_mapping_scope,
+                p_view.columns.tolist(),
+            )
         if not synthetic_display_rows.empty:
             p_rows = pd.concat([p_rows, synthetic_display_rows], ignore_index=True, sort=False)
 
@@ -14122,7 +14158,8 @@ def render_shortage_dashboard(
                 due_missing & fallback_due_valid
             ]
 
-        p_view = collapse_duplicate_p_demand_rows(p_view)
+        with PerfTimer("shortage_main_collapse_duplicates", rows=len(p_view), cols=len(p_view.columns)):
+            p_view = collapse_duplicate_p_demand_rows(p_view)
         p_view["표시부족수량"] = (
             parse_mixed_numeric(p_view["부족수량"])
             + parse_mixed_numeric(p_view["사출 부족수량"])
@@ -14149,7 +14186,8 @@ def render_shortage_dashboard(
             rework_available = rework_text.ne("") & ~rework_text.str.lower().isin(INVALID_CATEGORY_VALUES)
             p_view.loc[rework_available & (p_view["확인구분"].astype(str).str.strip() == ""), "확인구분"] = "재작업가능"
 
-        p_view = add_pia_order_classification(p_view)
+        with PerfTimer("shortage_main_pia_classification", rows=len(p_view), cols=len(p_view.columns)):
+            p_view = add_pia_order_classification(p_view)
         pia_order_pills_key = "shortage_pia_order_class_pills_v1"
         pia_order_options = list(PIA_ORDER_CLASS_FILTER_OPTIONS)
         prepare_multi_pill_state(pia_order_pills_key, pia_order_options)
@@ -14164,7 +14202,8 @@ def render_shortage_dashboard(
                 args=(pia_order_pills_key,),
             ),
         )
-        p_view = filter_by_pia_order_class(p_view, selected_pia_order_options)
+        with PerfTimer("shortage_main_pia_filter", rows=len(p_view)):
+            p_view = filter_by_pia_order_class(p_view, selected_pia_order_options)
 
         p_detail_columns = detail_columns.copy()
         if "사출 부족수량" not in p_detail_columns:
@@ -14178,10 +14217,12 @@ def render_shortage_dashboard(
             p_view["_안전정렬"] = p_view["이니셜"].astype(str).str.contains("안전", na=False).astype(int)
             sort_columns = ["_안전정렬", *sort_columns]
             sort_ascending = [True, *sort_ascending]
-        p_table = p_view.sort_values(sort_columns, ascending=sort_ascending)[p_detail_columns]
-        p_table_ui = p_table.drop(columns=["상태"], errors="ignore")
+        with PerfTimer("shortage_main_table_sort_select", rows=len(p_view), cols=len(p_detail_columns)):
+            p_table = p_view.sort_values(sort_columns, ascending=sort_ascending)[p_detail_columns]
+            p_table_ui = p_table.drop(columns=["상태"], errors="ignore")
         with full_demand_summary_slot.container():
-            full_demand_summary = build_summary_group_totals_with_safe_split(p_view)
+            with PerfTimer("shortage_full_demand_summary", rows=len(p_view), cols=len(p_view.columns)):
+                full_demand_summary = build_summary_group_totals_with_safe_split(p_view)
             with st.expander("분류별요약 기준 부족수량 요약", expanded=False):
                 st.caption(
                     "표시 표 기준 = P코드 중심으로 R/Q 공정수량 연결 후 집계, "
@@ -14203,37 +14244,38 @@ def render_shortage_dashboard(
                         column_config=full_demand_summary_column_config,
                         hide_index=True,
                     )
-        kpi_source = p_table_ui.copy()
-        kpi_totals = {
-            "부족수량": parse_mixed_numeric(kpi_source["부족수량"]).sum() if "부족수량" in kpi_source.columns else 0,
-            "사출 부족수량": (
-                parse_mixed_numeric(kpi_source["사출 부족수량"]).sum()
-                if "사출 부족수량" in kpi_source.columns
-                else 0
-            ),
-            "공정재고 합계": (
-                parse_mixed_numeric(kpi_source["공정재고 합계"]).sum()
-                if "공정재고 합계" in kpi_source.columns
-                else 0
-            ),
-            "사출창고": parse_mixed_numeric(kpi_source["사출창고"]).sum() if "사출창고" in kpi_source.columns else 0,
-            "분리창고": parse_mixed_numeric(kpi_source["분리창고"]).sum() if "분리창고" in kpi_source.columns else 0,
-            "검사접착창고": (
-                parse_mixed_numeric(kpi_source["검사접착창고"]).sum()
-                if "검사접착창고" in kpi_source.columns
-                else 0
-            ),
-            "검사접착재작업창고": (
-                parse_mixed_numeric(kpi_source["검사접착재작업창고"]).sum()
-                if "검사접착재작업창고" in kpi_source.columns
-                else 0
-            ),
-            "누수규격검사 창고": (
-                parse_mixed_numeric(kpi_source["누수규격검사 창고"]).sum()
-                if "누수규격검사 창고" in kpi_source.columns
-                else 0
-            ),
-        }
+        kpi_source = p_table_ui
+        with PerfTimer("shortage_main_kpi_totals", rows=len(kpi_source), cols=len(kpi_source.columns)):
+            kpi_totals = {
+                "부족수량": parse_mixed_numeric(kpi_source["부족수량"]).sum() if "부족수량" in kpi_source.columns else 0,
+                "사출 부족수량": (
+                    parse_mixed_numeric(kpi_source["사출 부족수량"]).sum()
+                    if "사출 부족수량" in kpi_source.columns
+                    else 0
+                ),
+                "공정재고 합계": (
+                    parse_mixed_numeric(kpi_source["공정재고 합계"]).sum()
+                    if "공정재고 합계" in kpi_source.columns
+                    else 0
+                ),
+                "사출창고": parse_mixed_numeric(kpi_source["사출창고"]).sum() if "사출창고" in kpi_source.columns else 0,
+                "분리창고": parse_mixed_numeric(kpi_source["분리창고"]).sum() if "분리창고" in kpi_source.columns else 0,
+                "검사접착창고": (
+                    parse_mixed_numeric(kpi_source["검사접착창고"]).sum()
+                    if "검사접착창고" in kpi_source.columns
+                    else 0
+                ),
+                "검사접착재작업창고": (
+                    parse_mixed_numeric(kpi_source["검사접착재작업창고"]).sum()
+                    if "검사접착재작업창고" in kpi_source.columns
+                    else 0
+                ),
+                "누수규격검사 창고": (
+                    parse_mixed_numeric(kpi_source["누수규격검사 창고"]).sum()
+                    if "누수규격검사 창고" in kpi_source.columns
+                    else 0
+                ),
+            }
         with shortage_kpi_slot.container():
             render_dashboard_kpi("부족수량 합계", f"{kpi_totals['부족수량']:,.0f}", "risk")
         with injection_kpi_slot.container():
@@ -14252,33 +14294,43 @@ def render_shortage_dashboard(
             render_dashboard_kpi("누수규격 재고", f"{kpi_totals['누수규격검사 창고']:,.0f}", "stock")
         p_table_total_count = len(p_table_ui)
         result_caption.caption(f"표시 {len(p_table_ui):,}건 / 전체 {p_table_total_count:,}건")
-        p_table_screen_source, missing_display_columns = select_shortage_main_table_display_columns(p_table_ui)
+        with PerfTimer("shortage_main_table_display_columns", rows=len(p_table_ui), cols=len(p_table_ui.columns)):
+            p_table_screen_source, missing_display_columns = select_shortage_main_table_display_columns(p_table_ui)
         if missing_display_columns:
             st.caption("화면 테이블 누락 컬럼: " + ", ".join(missing_display_columns))
-        p_table_display_source, _ = limit_dataframe_for_display(p_table_screen_source)
-        caption_limited_rows(len(p_table_ui), len(p_table_display_source))
+        p_table_display_source = p_table_screen_source
         p_display_columns = p_table_display_source.columns.tolist()
-        p_table_display = format_numeric_columns_for_display(p_table_display_source)
-        p_detail_column_config = build_auto_column_config(
-            p_table_display, p_display_columns, source_df=p_table_display_source
-        )
-        render_lazy_excel_download_button(
-            "엑셀 다운로드",
-            p_table_ui,
-            "생산현황",
-            f"shortage_production_{download_stamp}.xlsx",
-            "download_shortage_tab_p",
-        )
+        with PerfTimer(
+            "shortage_main_table_format_display",
+            rows=len(p_table_display_source),
+            cols=len(p_display_columns),
+        ):
+            p_table_display = format_numeric_columns_for_display(p_table_display_source)
+        with PerfTimer("shortage_main_table_column_config", cols=len(p_display_columns)):
+            p_detail_column_config = build_auto_column_config(
+                p_table_display, p_display_columns, source_df=p_table_display_source
+            )
+        with PerfTimer("shortage_main_table_excel_button", rows=len(p_table_ui), cols=len(p_table_ui.columns)):
+            render_lazy_excel_download_button(
+                "엑셀 다운로드",
+                p_table_ui,
+                "생산현황",
+                f"shortage_production_{download_stamp}.xlsx",
+                "download_shortage_tab_p",
+            )
 
-        st.dataframe(
-            style_operational_table(p_table_display, p_table_display_source),
-            width="stretch",
-            height=700,
-            column_order=p_display_columns,
-            column_config=p_detail_column_config,
-            hide_index=True,
-            key="shortage_p_table_v2",
-        )
+        with PerfTimer("shortage_main_table_style", rows=len(p_table_display), cols=len(p_display_columns)):
+            p_table_payload = style_operational_table(p_table_display, p_table_display_source)
+        with PerfTimer("shortage_main_table_render", rows=len(p_table_display), cols=len(p_display_columns)):
+            st.dataframe(
+                p_table_payload,
+                width="stretch",
+                height=700,
+                column_order=p_display_columns,
+                column_config=p_detail_column_config,
+                hide_index=True,
+                key="shortage_p_table_v2",
+            )
 
     elif selected_shortage_view == "사출 현황":
         r_summary = build_rcode_summary(filtered)
