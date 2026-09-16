@@ -120,6 +120,9 @@ DOMESTIC_EXPORT_EXPORT = "해외"
 DOMESTIC_EXPORT_UNKNOWN = "미확인"
 REGION_UNKNOWN = "권역 미확인"
 OPERATION_SEGMENT_UNKNOWN = "운영구분 미확인"
+DEMAND_TYPE_COL = "수요구분"
+DEMAND_TYPE_ORDER = "수주"
+DEMAND_TYPE_SAFETY_STOCK = "안전재고"
 LEADJI_REQUIRED_QTY_COL = "[45]하이드레이션/전면검사 필요수량"
 LEADJI_REQUIRED_DUE_COL = "[45]하이드레이션/전면검사 납기일"
 ADHESION_REQUIRED_QTY_COL = "[55]접착/멸균 필요수량"
@@ -11843,6 +11846,22 @@ def build_inventory_risk_snapshot(refresh_key: str, base_dir_str: str | None = N
     return inventory_group.sort_values(["정렬순위", "재고수량", "품목코드"], ascending=[True, False, True])
 
 
+def derive_demand_type_series(df: pd.DataFrame) -> pd.Series:
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return pd.Series(dtype="object")
+    if "품목코드" in df.columns:
+        item_prefix = df["품목코드"].map(normalize_item_code_value).str[:1]
+    else:
+        item_prefix = pd.Series("", index=df.index, dtype="object")
+    if ORDER_NO_COL in df.columns:
+        order_key = df[ORDER_NO_COL].map(normalize_order_no_value)
+    else:
+        order_key = pd.Series("", index=df.index, dtype="object")
+    demand_type = pd.Series(DEMAND_TYPE_ORDER, index=df.index, dtype="object")
+    demand_type.loc[item_prefix.eq("P") & ~order_key.map(is_valid_reference_text)] = DEMAND_TYPE_SAFETY_STOCK
+    return demand_type
+
+
 @st.cache_data(show_spinner=False, max_entries=CACHE_MAX_ENTRIES)
 def build_filter_option_maps(
     df: pd.DataFrame, selected_site_option: str = "전체"
@@ -11852,26 +11871,14 @@ def build_filter_option_maps(
     dict[str, float],
     dict[str, float],
     dict[str, float],
-    dict[str, float],
-    dict[str, float],
-    dict[str, float],
-    dict[str, float],
-    dict[str, float],
-    dict[str, float],
 ]:
     required_cols = [
         "사이트코드",
-        COUNTRY_DOMESTIC_EXPORT_COL,
-        REGION_COL,
         COUNTRY_DISPLAY_COL,
         "분류별요약",
         CUSTOMER_GROUP_COL,
-        FINAL_CUSTOMER_COL,
-        CUSTOMER_CONFIRMATION_STATUS_COL,
         "품목코드",
-        "착용주기",
-        "모델명",
-        "API 매칭상태",
+        ORDER_NO_COL,
         "부족수량",
     ]
     source_df = apply_customer_confirmation_columns(df)
@@ -11880,41 +11887,24 @@ def build_filter_option_maps(
         option_df["부족수량"] = 0
     if "사이트코드" not in option_df.columns:
         option_df["사이트코드"] = "(미지정)"
-    if COUNTRY_DOMESTIC_EXPORT_COL not in option_df.columns:
-        option_df[COUNTRY_DOMESTIC_EXPORT_COL] = DOMESTIC_EXPORT_UNKNOWN
-    if REGION_COL not in option_df.columns:
-        option_df[REGION_COL] = REGION_UNKNOWN
     if COUNTRY_DISPLAY_COL not in option_df.columns:
         option_df[COUNTRY_DISPLAY_COL] = "(국가 미확인)"
     if "분류별요약" not in option_df.columns:
         option_df["분류별요약"] = "(미분류)"
     if CUSTOMER_GROUP_COL not in option_df.columns:
         option_df[CUSTOMER_GROUP_COL] = UNCLASSIFIED_SHEET_CATEGORY
-    if FINAL_CUSTOMER_COL not in option_df.columns:
-        option_df[FINAL_CUSTOMER_COL] = CUSTOMER_SOURCE_MISSING
-    if CUSTOMER_CONFIRMATION_STATUS_COL not in option_df.columns:
-        option_df[CUSTOMER_CONFIRMATION_STATUS_COL] = CUSTOMER_STATUS_SOURCE_MISSING
     if "품목코드" not in option_df.columns:
         option_df["품목코드"] = ""
-    if "착용주기" not in option_df.columns:
-        option_df["착용주기"] = "(미확인)"
-    if "모델명" not in option_df.columns:
-        option_df["모델명"] = "(미확인)"
-    if "API 매칭상태" not in option_df.columns:
-        option_df["API 매칭상태"] = "(미확인)"
+    if ORDER_NO_COL not in option_df.columns:
+        option_df[ORDER_NO_COL] = ""
+    option_df[DEMAND_TYPE_COL] = derive_demand_type_series(option_df)
 
     fill_labels = {
         "사이트코드": "(미지정)",
-        COUNTRY_DOMESTIC_EXPORT_COL: DOMESTIC_EXPORT_UNKNOWN,
-        REGION_COL: REGION_UNKNOWN,
         COUNTRY_DISPLAY_COL: "(국가 미확인)",
         "분류별요약": "(미분류)",
         CUSTOMER_GROUP_COL: UNCLASSIFIED_SHEET_CATEGORY,
-        FINAL_CUSTOMER_COL: CUSTOMER_SOURCE_MISSING,
-        CUSTOMER_CONFIRMATION_STATUS_COL: CUSTOMER_STATUS_SOURCE_MISSING,
-        "착용주기": "(미확인)",
-        "모델명": "(미확인)",
-        "API 매칭상태": "(미확인)",
+        DEMAND_TYPE_COL: DEMAND_TYPE_ORDER,
     }
     for col, label in fill_labels.items():
         text = option_df[col].astype(str).str.strip()
@@ -11931,14 +11921,8 @@ def build_filter_option_maps(
     if selected_site_option and selected_site_option != "전체":
         scoped = scoped[scoped["사이트코드"] == selected_site_option]
 
-    domestic_export_sum_map = (
-        scoped.groupby(COUNTRY_DOMESTIC_EXPORT_COL, as_index=True)["부족수량"]
-        .sum()
-        .sort_values(ascending=False)
-        .to_dict()
-    )
-    region_sum_map = (
-        scoped.groupby(REGION_COL, as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
+    demand_type_sum_map = (
+        scoped.groupby(DEMAND_TYPE_COL, as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
     )
     country_sum_map = (
         scoped.groupby(COUNTRY_DISPLAY_COL, as_index=True)["부족수량"]
@@ -11949,31 +11933,13 @@ def build_filter_option_maps(
     customer_group_sum_map = (
         scoped.groupby(CUSTOMER_GROUP_COL, as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
     )
-    final_customer_sum_map = (
-        scoped.groupby(FINAL_CUSTOMER_COL, as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
-    )
     summary_sum_map = scoped.groupby("분류별요약", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
-    wear_cycle_sum_map = scoped.groupby("착용주기", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
-    model_sum_map = scoped.groupby("모델명", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
-    api_status_sum_map = scoped.groupby("API 매칭상태", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
-    customer_status_sum_map = (
-        scoped.groupby(CUSTOMER_CONFIRMATION_STATUS_COL, as_index=True)["부족수량"]
-        .sum()
-        .sort_values(ascending=False)
-        .to_dict()
-    )
     return (
         site_sum_map,
-        domestic_export_sum_map,
-        region_sum_map,
+        demand_type_sum_map,
         country_sum_map,
         customer_group_sum_map,
-        final_customer_sum_map,
         summary_sum_map,
-        wear_cycle_sum_map,
-        model_sum_map,
-        api_status_sum_map,
-        customer_status_sum_map,
     )
 
 
@@ -11983,16 +11949,10 @@ def filter_data(
     selected_site_option: str,
     unified_query: str,
     exclude_safe_initial: bool,
-    selected_domestic_export_options: tuple[str, ...],
-    selected_region_options: tuple[str, ...],
+    selected_demand_type_options: tuple[str, ...],
     selected_country_options: tuple[str, ...],
     selected_summary_options: tuple[str, ...],
     selected_customer_group_options: tuple[str, ...],
-    selected_final_customer_options: tuple[str, ...],
-    selected_wear_cycle_options: tuple[str, ...],
-    selected_model_options: tuple[str, ...],
-    selected_api_status_options: tuple[str, ...],
-    selected_customer_status_options: tuple[str, ...],
     only_same_rq_group: bool,
     only_with_stock: bool,
     only_rework_available: bool,
@@ -12002,6 +11962,7 @@ def filter_data(
         base_filtered["사이트코드"] = "(미지정)"
     site_label = base_filtered["사이트코드"].astype(str).str.strip()
     base_filtered["사이트코드"] = site_label.replace({"": "(미지정)", "nan": "(미지정)", "None": "(미지정)"})
+    base_filtered[DEMAND_TYPE_COL] = derive_demand_type_series(base_filtered)
 
     if selected_site_option and selected_site_option != "전체":
         base_filtered = base_filtered[base_filtered["사이트코드"] == selected_site_option]
@@ -12047,36 +12008,14 @@ def filter_data(
     base_filtered = filter_with_terms_any(base_filtered, search_cols, unified_query)
     if exclude_safe_initial and "이니셜" in base_filtered.columns:
         base_filtered = base_filtered[~base_filtered["이니셜"].astype(str).str.contains("안전", na=False)]
-    if (
-        is_specific_pill_selection(selected_domestic_export_options)
-        and COUNTRY_DOMESTIC_EXPORT_COL in base_filtered.columns
-    ):
-        base_filtered = base_filtered[
-            base_filtered[COUNTRY_DOMESTIC_EXPORT_COL].isin(selected_domestic_export_options)
-        ]
-    if is_specific_pill_selection(selected_region_options) and REGION_COL in base_filtered.columns:
-        base_filtered = base_filtered[base_filtered[REGION_COL].isin(selected_region_options)]
+    if is_specific_pill_selection(selected_demand_type_options):
+        base_filtered = base_filtered[base_filtered[DEMAND_TYPE_COL].isin(selected_demand_type_options)]
     if is_specific_pill_selection(selected_country_options) and COUNTRY_DISPLAY_COL in base_filtered.columns:
         base_filtered = base_filtered[base_filtered[COUNTRY_DISPLAY_COL].isin(selected_country_options)]
     if is_specific_pill_selection(selected_summary_options) and "분류별요약" in base_filtered.columns:
         base_filtered = base_filtered[base_filtered["분류별요약"].isin(selected_summary_options)]
     if is_specific_pill_selection(selected_customer_group_options) and CUSTOMER_GROUP_COL in base_filtered.columns:
         base_filtered = base_filtered[base_filtered[CUSTOMER_GROUP_COL].isin(selected_customer_group_options)]
-    if is_specific_pill_selection(selected_final_customer_options) and FINAL_CUSTOMER_COL in base_filtered.columns:
-        base_filtered = base_filtered[base_filtered[FINAL_CUSTOMER_COL].isin(selected_final_customer_options)]
-    if is_specific_pill_selection(selected_wear_cycle_options) and "착용주기" in base_filtered.columns:
-        base_filtered = base_filtered[base_filtered["착용주기"].isin(selected_wear_cycle_options)]
-    if is_specific_pill_selection(selected_model_options) and "모델명" in base_filtered.columns:
-        base_filtered = base_filtered[base_filtered["모델명"].isin(selected_model_options)]
-    if is_specific_pill_selection(selected_api_status_options) and "API 매칭상태" in base_filtered.columns:
-        base_filtered = base_filtered[base_filtered["API 매칭상태"].isin(selected_api_status_options)]
-    if (
-        is_specific_pill_selection(selected_customer_status_options)
-        and CUSTOMER_CONFIRMATION_STATUS_COL in base_filtered.columns
-    ):
-        base_filtered = base_filtered[
-            base_filtered[CUSTOMER_CONFIRMATION_STATUS_COL].isin(selected_customer_status_options)
-        ]
     if only_same_rq_group and {"R코드5", "Q코드5", "P코드5"}.issubset(base_filtered.columns):
         p_count_per_group = base_filtered.groupby(["R코드5", "Q코드5"])["P코드5"].transform("nunique")
         base_filtered = base_filtered[p_count_per_group >= 2]
@@ -12138,67 +12077,37 @@ def apply_filters(
 
         (
             _,
-            domestic_export_sum_map,
-            region_sum_map,
+            demand_type_sum_map,
             country_sum_map,
             customer_group_sum_map,
-            final_customer_sum_map,
             summary_sum_map,
-            wear_cycle_sum_map,
-            model_sum_map,
-            api_status_sum_map,
-            customer_status_sum_map,
         ) = build_filter_option_maps(df, selected_site_option or "전체")
 
-        domestic_export_options = ["전체"] + list(domestic_export_sum_map.keys())
-        region_options = ["전체"] + list(region_sum_map.keys())
+        demand_type_order = [DEMAND_TYPE_ORDER, DEMAND_TYPE_SAFETY_STOCK]
+        demand_type_options = ["전체"] + [value for value in demand_type_order if value in demand_type_sum_map]
+        demand_type_options += [value for value in demand_type_sum_map if value not in demand_type_options]
         country_options = ["전체"] + list(country_sum_map.keys())
         customer_group_options = ["전체"] + list(customer_group_sum_map.keys())
-        final_customer_options = ["전체"] + list(final_customer_sum_map.keys())
         summary_options = ["전체"] + list(summary_sum_map.keys())
-        wear_cycle_options = ["전체"] + list(wear_cycle_sum_map.keys())
-        model_options = ["전체"] + list(model_sum_map.keys())
-        api_status_options = ["전체"] + list(api_status_sum_map.keys())
-        customer_status_options = ["전체"] + list(customer_status_sum_map.keys())
         scoped_total = float(sum(summary_sum_map.values()))
-        domestic_export_count_map = {"전체": scoped_total, **domestic_export_sum_map}
-        region_count_map = {"전체": scoped_total, **region_sum_map}
+        demand_type_count_map = {"전체": scoped_total, **demand_type_sum_map}
         country_count_map = {"전체": scoped_total, **country_sum_map}
         customer_group_count_map = {"전체": scoped_total, **customer_group_sum_map}
-        final_customer_count_map = {"전체": scoped_total, **final_customer_sum_map}
         summary_count_map = {"전체": scoped_total, **summary_sum_map}
-        wear_cycle_count_map = {"전체": scoped_total, **wear_cycle_sum_map}
-        model_count_map = {"전체": scoped_total, **model_sum_map}
-        api_status_count_map = {"전체": scoped_total, **api_status_sum_map}
-        customer_status_count_map = {"전체": scoped_total, **customer_status_sum_map}
 
         st.divider()
-        domestic_export_pills_key = "flt_domestic_export_pills"
-        prepare_multi_pill_state(domestic_export_pills_key, domestic_export_options)
-        selected_domestic_export_options = finalize_multi_pill_selection(
-            domestic_export_pills_key,
+        demand_type_pills_key = "flt_demand_type_pills"
+        prepare_multi_pill_state(demand_type_pills_key, demand_type_options)
+        selected_demand_type_options = finalize_multi_pill_selection(
+            demand_type_pills_key,
             st.pills(
-                "내수/수출구분",
-                options=domestic_export_options,
+                "수요구분",
+                options=demand_type_options,
                 selection_mode="multi",
-                key=domestic_export_pills_key,
-                format_func=lambda x: format_pill_label(x, domestic_export_count_map),
+                key=demand_type_pills_key,
+                format_func=lambda x: format_pill_label(x, demand_type_count_map),
                 on_change=sync_multi_pill_state,
-                args=(domestic_export_pills_key,),
-            ),
-        )
-        region_pills_key = "flt_region_pills"
-        prepare_multi_pill_state(region_pills_key, region_options)
-        selected_region_options = finalize_multi_pill_selection(
-            region_pills_key,
-            st.pills(
-                REGION_COL,
-                options=region_options,
-                selection_mode="multi",
-                key=region_pills_key,
-                format_func=lambda x: format_pill_label(x, region_count_map),
-                on_change=sync_multi_pill_state,
-                args=(region_pills_key,),
+                args=(demand_type_pills_key,),
             ),
         )
         country_pills_key = "flt_order_country_pills"
@@ -12229,20 +12138,6 @@ def apply_filters(
                 args=(customer_group_pills_key,),
             ),
         )
-        final_customer_pills_key = "flt_final_customer_pills"
-        prepare_multi_pill_state(final_customer_pills_key, final_customer_options)
-        selected_final_customer_options = finalize_multi_pill_selection(
-            final_customer_pills_key,
-            st.pills(
-                FINAL_CUSTOMER_COL,
-                options=final_customer_options,
-                selection_mode="multi",
-                key=final_customer_pills_key,
-                format_func=lambda x: format_pill_label(x, final_customer_count_map),
-                on_change=sync_multi_pill_state,
-                args=(final_customer_pills_key,),
-            ),
-        )
         summary_pills_key = "flt_summary_pills"
         prepare_multi_pill_state(summary_pills_key, summary_options)
         selected_summary_options = finalize_multi_pill_selection(
@@ -12255,62 +12150,6 @@ def apply_filters(
                 format_func=lambda x: format_pill_label(x, summary_count_map),
                 on_change=sync_multi_pill_state,
                 args=(summary_pills_key,),
-            ),
-        )
-        wear_cycle_pills_key = "flt_wear_cycle_pills"
-        prepare_multi_pill_state(wear_cycle_pills_key, wear_cycle_options)
-        selected_wear_cycle_options = finalize_multi_pill_selection(
-            wear_cycle_pills_key,
-            st.pills(
-                "착용주기",
-                options=wear_cycle_options,
-                selection_mode="multi",
-                key=wear_cycle_pills_key,
-                format_func=lambda x: format_pill_label(x, wear_cycle_count_map),
-                on_change=sync_multi_pill_state,
-                args=(wear_cycle_pills_key,),
-            ),
-        )
-        model_pills_key = "flt_model_pills"
-        prepare_multi_pill_state(model_pills_key, model_options)
-        selected_model_options = finalize_multi_pill_selection(
-            model_pills_key,
-            st.pills(
-                "모델명",
-                options=model_options,
-                selection_mode="multi",
-                key=model_pills_key,
-                format_func=lambda x: format_pill_label(x, model_count_map),
-                on_change=sync_multi_pill_state,
-                args=(model_pills_key,),
-            ),
-        )
-        api_status_pills_key = "flt_api_status_pills"
-        prepare_multi_pill_state(api_status_pills_key, api_status_options)
-        selected_api_status_options = finalize_multi_pill_selection(
-            api_status_pills_key,
-            st.pills(
-                "API 매칭상태",
-                options=api_status_options,
-                selection_mode="multi",
-                key=api_status_pills_key,
-                format_func=lambda x: format_pill_label(x, api_status_count_map),
-                on_change=sync_multi_pill_state,
-                args=(api_status_pills_key,),
-            ),
-        )
-        customer_status_pills_key = "flt_customer_status_pills"
-        prepare_multi_pill_state(customer_status_pills_key, customer_status_options)
-        selected_customer_status_options = finalize_multi_pill_selection(
-            customer_status_pills_key,
-            st.pills(
-                CUSTOMER_CONFIRMATION_STATUS_COL,
-                options=customer_status_options,
-                selection_mode="multi",
-                key=customer_status_pills_key,
-                format_func=lambda x: format_pill_label(x, customer_status_count_map),
-                on_change=sync_multi_pill_state,
-                args=(customer_status_pills_key,),
             ),
         )
 
@@ -12336,16 +12175,10 @@ def apply_filters(
         selected_site_option or "전체",
         unified_query,
         exclude_safe_initial,
-        selected_domestic_export_options,
-        selected_region_options,
+        selected_demand_type_options,
         selected_country_options,
         selected_summary_options,
         selected_customer_group_options,
-        selected_final_customer_options,
-        selected_wear_cycle_options,
-        selected_model_options,
-        selected_api_status_options,
-        selected_customer_status_options,
         only_same_rq_group,
         only_with_stock,
         only_rework_available,
@@ -17870,7 +17703,7 @@ def main() -> None:
                         options=shortage_api_site_options,
                         default=EFFECTIVE_PRODUCTION_DEFAULT_SITE,
                         key=shortage_api_site_key,
-                        help="선택한 관만 APS API로 먼저 조회합니다. 속도가 느릴 때는 C관/A관/S관 중 하나를 선택하세요.",
+                        help="선택한 관의 게시 스냅샷을 먼저 표시합니다. 전체가 필요할 때만 전체를 선택하세요.",
                     )
                     or EFFECTIVE_PRODUCTION_DEFAULT_SITE
                 )
