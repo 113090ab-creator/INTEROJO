@@ -2803,10 +2803,10 @@ def apply_product_master_reference(
 def enrich_loaded_shortage_snapshot_for_display(df: pd.DataFrame) -> pd.DataFrame:
     if not isinstance(df, pd.DataFrame) or df.empty:
         return df
-    product_info = load_product_names_api_lookup()
-    if not product_info.empty and "품목코드" in df.columns:
-        return apply_order_status_reference(apply_product_master_reference(df, product_info))
-    return apply_order_status_reference(df)
+    result = repair_korean_mojibake_dataframe(df.copy())
+    result = ensure_plan_customer_column(result)
+    result = ensure_order_status_display_columns(result)
+    return apply_customer_confirmation_columns(result)
 
 
 def read_aps_plan_operations_dataframe(
@@ -18006,135 +18006,74 @@ def main() -> None:
         if selected_top_view == "생산 부족 현황":
             if is_plan_api_enabled():
                 shortage_api_updated_at = "-"
-                force_live_shortage_api = consume_session_flag("force_live_plan_api_once")
+                consume_session_flag("force_live_plan_api_once")
                 quick_snapshot_loaded = False
-                use_shortage_snapshot_first = (
-                    not force_live_shortage_api
-                    and should_use_shortage_snapshot_first(data_base_dir)
-                )
-                if use_shortage_snapshot_first:
-                    try:
-                        snapshot_df, snapshot_file_info_df, _ = load_cloud_shortage_snapshot(shortage_api_site_filter)
-                        if not snapshot_df.empty:
-                            snapshot_updated_at = get_cloud_shortage_snapshot_updated_at(
-                                shortage_api_site_filter,
-                                data_live_updated_at,
+                snapshot_load_error: Exception | None = None
+                try:
+                    snapshot_df, snapshot_file_info_df, _ = load_cloud_shortage_snapshot(shortage_api_site_filter)
+                    if not snapshot_df.empty:
+                        snapshot_updated_at = get_cloud_shortage_snapshot_updated_at(
+                            shortage_api_site_filter,
+                            data_live_updated_at,
+                        )
+                        shortage_api_updated_at = get_recorded_aps_plan_updated_at(snapshot_updated_at)
+                        updated_at = snapshot_updated_at
+                        wip_snapshot_unavailable_message = build_wip_snapshot_unavailable_message(
+                            snapshot_file_info_df
+                        )
+                        snapshot_hold_message = build_shortage_snapshot_hold_message(
+                            shortage_api_site_filter,
+                            snapshot_updated_at,
+                            shortage_api_updated_at,
+                        )
+                        if wip_snapshot_unavailable_message:
+                            df = build_empty_shortage_dashboard_df()
+                            file_info_df = snapshot_file_info_df
+                            source_label = "APS WIP 정리 스냅샷 오류"
+                            api_alert_title = "오류"
+                            api_alert_message = wip_snapshot_unavailable_message
+                            sidebar_status_caption = "오류: APS WIP 정리 스냅샷 필요"
+                        elif snapshot_hold_message and not snapshot_refresh_failure_message:
+                            df = snapshot_df
+                            file_info_df = snapshot_file_info_df
+                            source_label = "Cloud 스냅샷 (Validated Set)"
+                            snapshot_ui_state = get_snapshot_operational_ui_state()
+                            api_alert_title = (
+                                clean_text_value(snapshot_ui_state.get("banner_title", ""))
+                                or snapshot_ui_state["display_status"]
                             )
-                            shortage_api_updated_at = get_recorded_aps_plan_updated_at(snapshot_updated_at)
-                            updated_at = snapshot_updated_at
-                            wip_snapshot_unavailable_message = build_wip_snapshot_unavailable_message(
-                                snapshot_file_info_df
+                            api_alert_message = snapshot_hold_message
+                            sidebar_status_caption = f"{api_alert_title}: 이전 정상 스냅샷 표시"
+                        else:
+                            df = snapshot_df
+                            file_info_df = snapshot_file_info_df
+                            source_label = "Cloud 스냅샷 (Validated Set)"
+                            sidebar_status_caption = (
+                                "자동 갱신 실패: 기존 정상 스냅샷 표시"
+                                if snapshot_hold_message
+                                else "빠른 조회: 최신 스냅샷 표시"
                             )
-                            snapshot_hold_message = build_shortage_snapshot_hold_message(
-                                shortage_api_site_filter,
-                                snapshot_updated_at,
-                                shortage_api_updated_at,
-                            )
-                            if wip_snapshot_unavailable_message:
-                                df = build_empty_shortage_dashboard_df()
-                                file_info_df = snapshot_file_info_df
-                                source_label = "APS WIP 정리 스냅샷 오류"
-                                api_alert_title = "오류"
-                                api_alert_message = wip_snapshot_unavailable_message
-                                sidebar_status_caption = "오류: APS WIP 정리 스냅샷 필요"
-                            elif snapshot_hold_message and not snapshot_refresh_failure_message:
-                                df = snapshot_df
-                                file_info_df = snapshot_file_info_df
-                                source_label = "Cloud 스냅샷 (Validated Set)"
-                                snapshot_ui_state = get_snapshot_operational_ui_state()
-                                api_alert_title = clean_text_value(snapshot_ui_state.get("banner_title", "")) or snapshot_ui_state["display_status"]
-                                api_alert_message = snapshot_hold_message
-                                sidebar_status_caption = f"{api_alert_title}: 이전 정상 스냅샷 표시"
-                            else:
-                                df = snapshot_df
-                                file_info_df = snapshot_file_info_df
-                                source_label = "Cloud 스냅샷 (Validated Set)"
-                                sidebar_status_caption = (
-                                    "자동 갱신 실패: 기존 정상 스냅샷 표시"
-                                    if snapshot_hold_message
-                                    else "빠른 조회: 최신 스냅샷 표시"
-                                )
-                            shortage_locked_site_filter = shortage_api_site_filter
-                            quick_snapshot_loaded = True
-                    except Exception:
-                        quick_snapshot_loaded = False
+                        shortage_locked_site_filter = shortage_api_site_filter
+                        quick_snapshot_loaded = True
+                except Exception as exc:
+                    snapshot_load_error = exc
 
                 if not quick_snapshot_loaded:
-                    try:
-                        shortage_api_updated_at = get_plan_api_updated_at()
-                        refresh_key = build_api_shortage_refresh_key(data_base_dir, shortage_api_site_filter)
-                        df, file_info_df, process_map_df = load_api_shortage_data(
-                            refresh_key,
-                            str(data_base_dir),
-                            shortage_api_site_filter,
-                        )
-                        updated_at = shortage_api_updated_at if shortage_api_updated_at != "-" else get_plan_api_updated_at()
-                        # Streamlit is a read-only consumer of production snapshots.
-                        # Publishing is restricted to scripts/refresh_snapshot.py.
-                        shortage_locked_site_filter = shortage_api_site_filter
-                    except Exception as live_exc:
-                        fallback_loaded = False
-                        try:
-                            snapshot_df, snapshot_file_info_df, _ = load_cloud_shortage_snapshot(shortage_api_site_filter)
-                            if not snapshot_df.empty:
-                                snapshot_updated_at = get_cloud_shortage_snapshot_updated_at(
-                                    shortage_api_site_filter,
-                                    data_live_updated_at,
-                                )
-                                updated_at = snapshot_updated_at
-                                api_alert_title = "오류"
-                                api_alert_message = format_aps_api_error_banner_message(live_exc, "기존 스냅샷")
-                                wip_snapshot_unavailable_message = build_wip_snapshot_unavailable_message(
-                                    snapshot_file_info_df
-                                )
-                                snapshot_hold_message = build_shortage_snapshot_hold_message(
-                                    shortage_api_site_filter,
-                                    snapshot_updated_at,
-                                    shortage_api_updated_at,
-                                )
-                                if wip_snapshot_unavailable_message:
-                                    df = build_empty_shortage_dashboard_df()
-                                    file_info_df = snapshot_file_info_df
-                                    source_label = "APS WIP API 오류"
-                                    api_alert_message = f"{api_alert_message} {wip_snapshot_unavailable_message}"
-                                    sidebar_status_caption = "오류: APS WIP API 재고 필요"
-                                elif snapshot_hold_message and not snapshot_refresh_failure_message:
-                                    df = snapshot_df
-                                    file_info_df = snapshot_file_info_df
-                                    source_label = "Cloud 스냅샷 (Validated Set)"
-                                    api_alert_message = f"{api_alert_message} {snapshot_hold_message}"
-                                    sidebar_status_caption = "갱신중: 이전 정상 스냅샷 표시"
-                                else:
-                                    df = snapshot_df
-                                    file_info_df = snapshot_file_info_df
-                                    source_label = "Cloud 스냅샷 (Validated Set)"
-                                    sidebar_status_caption = (
-                                        "자동 갱신 실패: 기존 정상 스냅샷 표시"
-                                        if snapshot_hold_message
-                                        else "API 오류: 기존 스냅샷 표시"
-                                    )
-                                shortage_locked_site_filter = shortage_api_site_filter
-                                fallback_loaded = True
-                        except Exception:
-                            fallback_loaded = False
-
-                        if not fallback_loaded:
-                            df = build_empty_shortage_dashboard_df()
-                            file_info_df = pd.DataFrame(
-                                {
-                                    "재고파일": ["조회 안 함"],
-                                    "수요파일": ["APS API 조회 실패"],
-                                }
-                            )
-                            updated_at = "-"
-                            source_label = "APS API 오류"
-                            sidebar_status_caption = "API 오류: APS 수요 조회 실패"
-                            api_alert_title = "오류"
-                            api_alert_message = format_aps_api_error_banner_message(
-                                live_exc,
-                                "표시 가능한 대체 데이터가 없습니다",
-                            )
-                            shortage_locked_site_filter = shortage_api_site_filter
+                    df = build_empty_shortage_dashboard_df()
+                    file_info_df = pd.DataFrame(
+                        {
+                            "재고파일": ["게시된 스냅샷 없음"],
+                            "수요파일": ["게시된 생산부족 스냅샷 없음"],
+                        }
+                    )
+                    updated_at = "-"
+                    source_label = "Cloud 스냅샷 없음"
+                    sidebar_status_caption = "오류: 게시된 생산부족 스냅샷 없음"
+                    api_alert_title = "오류"
+                    api_alert_message = "게시된 생산부족 스냅샷을 읽지 못했습니다. 자동갱신 상태를 확인하세요."
+                    if snapshot_load_error is not None:
+                        api_alert_message = f"{api_alert_message} ({snapshot_load_error})"
+                    shortage_locked_site_filter = shortage_api_site_filter
             else:
                 use_data_cloud_snapshot = cloud_snapshots_available and is_cloud_snapshot_fresh(
                     "data_updated_at", data_live_updated_at
