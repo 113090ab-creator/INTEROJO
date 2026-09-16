@@ -10,8 +10,16 @@ on:
   schedule:
     # KST 08:20 = UTC previous-day 23:20.
     - cron: "20 23 * * *"
+    # KST 08:30-08:50 = UTC previous-day 23:30-23:50, every 10 minutes.
+    - cron: "30-50/10 23 * * *"
+    # KST 09:00-09:20 = UTC same-day 00:00-00:20, every 10 minutes.
+    - cron: "0-20/10 0 * * *"
     # KST 16:30 = UTC same-day 07:30.
     - cron: "30 7 * * *"
+    # KST 16:40-16:50 = UTC same-day 07:40-07:50, every 10 minutes.
+    - cron: "40-50/10 7 * * *"
+    # KST 17:00-17:30 = UTC same-day 08:00-08:30, every 10 minutes.
+    - cron: "0-30/10 8 * * *"
 
 permissions:
   contents: write
