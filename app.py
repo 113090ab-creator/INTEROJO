@@ -6,6 +6,9 @@ import pickle
 import re
 import shutil
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
@@ -74,6 +77,9 @@ STREAMLIT_CLOUD_RUNTIME = (
     or Path("/mount/src").exists()
 )
 SNAPSHOT_GITHUB_REPOSITORY_DEFAULT = "113090ab-creator/INTEROJO"
+SNAPSHOT_REFRESH_WORKFLOW_FILE = "refresh_snapshot.yml"
+MANUAL_SNAPSHOT_REFRESH_STATE_KEY = "manual_snapshot_refresh_state_v1"
+MANUAL_SNAPSHOT_REFRESH_SITES = "C관,A관,S관,전체"
 if STREAMLIT_CLOUD_RUNTIME and not os.environ.get(snapshot_storage.SNAPSHOT_STORAGE_BACKEND_ENV):
     os.environ.setdefault(snapshot_storage.SNAPSHOT_STORAGE_BACKEND_ENV, "github")
     os.environ.setdefault(snapshot_storage.SNAPSHOT_GITHUB_REPOSITORY_ENV, SNAPSHOT_GITHUB_REPOSITORY_DEFAULT)
@@ -3562,6 +3568,258 @@ def sync_plan_api_data_mode() -> bool:
     return api_configured
 
 
+def get_github_actions_token() -> str:
+    for secret_name in (snapshot_storage.SNAPSHOT_GITHUB_TOKEN_ENV, "GITHUB_TOKEN", "GH_TOKEN"):
+        token = get_streamlit_or_env_secret(secret_name, "")
+        if token:
+            return token
+    return ""
+
+
+def get_github_actions_repository() -> str:
+    repository = (
+        get_streamlit_or_env_secret(snapshot_storage.SNAPSHOT_GITHUB_REPOSITORY_ENV, "")
+        or os.environ.get("GITHUB_REPOSITORY", "")
+        or SNAPSHOT_GITHUB_REPOSITORY_DEFAULT
+    )
+    return snapshot_storage.normalize_github_repository(repository)
+
+
+def get_github_actions_branch() -> str:
+    return get_streamlit_or_env_secret(snapshot_storage.SNAPSHOT_GITHUB_BRANCH_ENV, "main") or "main"
+
+
+def github_api_request(
+    method: str,
+    path: str,
+    payload: dict[str, object] | None = None,
+    token: str | None = None,
+) -> tuple[int, dict[str, object], str]:
+    repository = get_github_actions_repository()
+    clean_path = path.lstrip("/")
+    url = f"https://api.github.com/repos/{repository}/{clean_path}"
+    body = json.dumps(payload or {}).encode("utf-8") if payload is not None else None
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "INTEROJO-streamlit-snapshot-refresh",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    active_token = token if token is not None else get_github_actions_token()
+    if active_token:
+        headers["Authorization"] = f"Bearer {active_token}"
+    request = urllib.request.Request(url, data=body, headers=headers, method=method.upper())
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            data = response.read()
+            if not data:
+                return int(response.status), {}, ""
+            try:
+                parsed = json.loads(data.decode("utf-8"))
+            except json.JSONDecodeError:
+                parsed = {}
+            return int(response.status), parsed if isinstance(parsed, dict) else {}, ""
+    except urllib.error.HTTPError as exc:
+        error_text = ""
+        try:
+            error_text = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            error_text = str(exc)
+        return int(exc.code), {}, error_text
+    except Exception as exc:
+        return 0, {}, f"{type(exc).__name__}: {exc}"
+
+
+def parse_github_datetime(value: object) -> datetime | None:
+    text = clean_text_value(value)
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(DISPLAY_TZ)
+    except ValueError:
+        return None
+
+
+def dispatch_snapshot_refresh_workflow() -> tuple[bool, str]:
+    token = get_github_actions_token()
+    if not token:
+        return False, f"{snapshot_storage.SNAPSHOT_GITHUB_TOKEN_ENV} 또는 GITHUB_TOKEN 설정이 필요합니다."
+    workflow_file = urllib.parse.quote(SNAPSHOT_REFRESH_WORKFLOW_FILE, safe="")
+    status_code, _, error_text = github_api_request(
+        "POST",
+        f"actions/workflows/{workflow_file}/dispatches",
+        {
+            "ref": get_github_actions_branch(),
+            "inputs": {"sites": MANUAL_SNAPSHOT_REFRESH_SITES},
+        },
+        token=token,
+    )
+    if status_code == 204:
+        return True, "공식 스냅샷 수동갱신을 요청했습니다."
+    detail = clean_text_value(error_text)
+    return False, f"GitHub Actions 요청 실패: HTTP {status_code}" + (f" / {detail[:200]}" if detail else "")
+
+
+def fetch_snapshot_refresh_workflow_runs(per_page: int = 10) -> tuple[list[dict[str, object]], str]:
+    workflow_file = urllib.parse.quote(SNAPSHOT_REFRESH_WORKFLOW_FILE, safe="")
+    branch = urllib.parse.quote(get_github_actions_branch(), safe="")
+    status_code, payload, error_text = github_api_request(
+        "GET",
+        f"actions/workflows/{workflow_file}/runs?branch={branch}&per_page={int(per_page)}",
+        token=get_github_actions_token(),
+    )
+    if status_code != 200:
+        return [], error_text or f"HTTP {status_code}"
+    runs = payload.get("workflow_runs", [])
+    if not isinstance(runs, list):
+        return [], "workflow_runs 응답 형식이 올바르지 않습니다."
+    return [run for run in runs if isinstance(run, dict)], ""
+
+
+def find_manual_snapshot_refresh_run(
+    state: dict[str, object],
+    runs: list[dict[str, object]],
+) -> dict[str, object]:
+    run_id = clean_text_value(state.get("run_id", ""))
+    if run_id:
+        for run in runs:
+            if clean_text_value(run.get("id", "")) == run_id:
+                return run
+    requested_at = parse_github_datetime(state.get("requested_at", ""))
+    candidates: list[dict[str, object]] = []
+    for run in runs:
+        if clean_text_value(run.get("event", "")) != "workflow_dispatch":
+            continue
+        created_at = parse_github_datetime(run.get("created_at", ""))
+        if requested_at is None or created_at is None or created_at.timestamp() >= requested_at.timestamp() - 60:
+            candidates.append(run)
+    candidates.sort(
+        key=lambda run: (parse_github_datetime(run.get("created_at", "")) or datetime.min.replace(tzinfo=DISPLAY_TZ)).timestamp(),
+        reverse=True,
+    )
+    return candidates[0] if candidates else {}
+
+
+def classify_manual_snapshot_refresh_state(
+    state: dict[str, object],
+    run: dict[str, object],
+    snapshot_status: dict[str, object],
+) -> dict[str, object]:
+    target_slot = clean_text_value(state.get("target_slot", "")) or get_operational_target_snapshot_slot().get("slot_key", "")
+    if not run:
+        return {"label": "갱신 요청", "active": True, "message": "GitHub Actions 실행 생성을 기다리는 중입니다."}
+
+    run_status = clean_text_value(run.get("status", "")).lower()
+    conclusion = clean_text_value(run.get("conclusion", "")).lower()
+    run_url = clean_text_value(run.get("html_url", ""))
+    run_id = clean_text_value(run.get("id", ""))
+    if run_status in {"queued", "requested", "waiting", "pending"}:
+        return {"label": "갱신 요청", "active": True, "message": "GitHub Actions 대기열에 등록됐습니다.", "run_id": run_id, "run_url": run_url}
+    if run_status == "in_progress":
+        return {"label": "갱신 중", "active": True, "message": "workflow가 공식 갱신 경로를 실행 중입니다.", "run_id": run_id, "run_url": run_url}
+    if run_status == "completed" and conclusion == "success":
+        status_text = normalize_snapshot_refresh_status(snapshot_status.get("status", ""))
+        status_slot = get_refresh_status_slot_key(snapshot_status)
+        if status_text == REFRESH_STATUS_PUBLISHED and snapshot_slot_is_at_least(status_slot, target_slot):
+            return {"label": "완료", "active": False, "message": "최신 게시 스냅샷을 다시 읽었습니다.", "run_id": run_id, "run_url": run_url}
+        if status_text in {REFRESH_STATUS_WAITING_FOR_PLAN, REFRESH_STATUS_WAITING_FOR_WIP, REFRESH_STATUS_DELAYED}:
+            return {"label": "데이터 대기", "active": False, "message": summarize_snapshot_refresh_failure(snapshot_status), "run_id": run_id, "run_url": run_url}
+        return {"label": "완료", "active": False, "message": "workflow가 완료됐습니다.", "run_id": run_id, "run_url": run_url}
+    if run_status == "completed":
+        return {
+            "label": "실패",
+            "active": False,
+            "message": f"workflow가 {conclusion or '실패'} 상태로 종료됐습니다.",
+            "run_id": run_id,
+            "run_url": run_url,
+        }
+    return {"label": "갱신 요청", "active": True, "message": "GitHub Actions 상태를 확인 중입니다.", "run_id": run_id, "run_url": run_url}
+
+
+def clear_snapshot_refresh_caches() -> None:
+    for func_name in ("read_cloud_snapshot_context_cached", "read_cloud_snapshot_csv"):
+        func = globals().get(func_name)
+        clear = getattr(func, "clear", None)
+        if callable(clear):
+            clear()
+    try:
+        st.cache_data.clear()
+        st.cache_resource.clear()
+    except Exception:
+        pass
+
+
+def render_manual_snapshot_refresh_control() -> None:
+    state = get_session_value(MANUAL_SNAPSHOT_REFRESH_STATE_KEY, {})
+    state = state if isinstance(state, dict) else {}
+    token_available = bool(get_github_actions_token())
+    resolved = {"label": "", "active": False, "message": ""}
+    if state and bool(state.get("terminal", False)):
+        resolved = {
+            "label": clean_text_value(state.get("label", "")),
+            "active": False,
+            "message": clean_text_value(state.get("message", "")),
+            "run_id": clean_text_value(state.get("run_id", "")),
+            "run_url": clean_text_value(state.get("run_url", "")),
+        }
+    elif state:
+        runs, run_error = fetch_snapshot_refresh_workflow_runs()
+        run = find_manual_snapshot_refresh_run(state, runs)
+        if run and clean_text_value(run.get("id", "")) and clean_text_value(state.get("run_id", "")) != clean_text_value(run.get("id", "")):
+            state = {**state, "run_id": clean_text_value(run.get("id", "")), "run_url": clean_text_value(run.get("html_url", ""))}
+            set_session_value(MANUAL_SNAPSHOT_REFRESH_STATE_KEY, state)
+        resolved = classify_manual_snapshot_refresh_state(state, run, get_snapshot_refresh_status())
+        if run_error and not run:
+            resolved = {"label": "갱신 요청", "active": True, "message": f"GitHub Actions 상태 확인 실패: {run_error}"}
+
+    disabled = bool(resolved.get("active")) or not token_available
+    if st.button("공식 스냅샷 수동갱신", key="refresh_plan_api_data", use_container_width=True, disabled=disabled):
+        target_slot = clean_text_value(get_operational_target_snapshot_slot().get("slot_key", ""))
+        requested_at = datetime.now(DISPLAY_TZ).isoformat()
+        ok, message = dispatch_snapshot_refresh_workflow()
+        next_state = {
+            "requested_at": requested_at,
+            "target_slot": target_slot,
+            "message": message,
+            "cache_cleared": False,
+        }
+        set_session_value(MANUAL_SNAPSHOT_REFRESH_STATE_KEY, next_state)
+        if not ok:
+            set_session_value(
+                MANUAL_SNAPSHOT_REFRESH_STATE_KEY,
+                {**next_state, "failed": True, "message": message},
+            )
+        st.rerun()
+
+    if not token_available:
+        st.caption(f"수동갱신 비활성: {snapshot_storage.SNAPSHOT_GITHUB_TOKEN_ENV} 또는 GITHUB_TOKEN 설정 필요")
+
+    if state:
+        if bool(state.get("failed", False)):
+            st.error(clean_text_value(state.get("message", "GitHub Actions 요청에 실패했습니다.")))
+            return
+        label = clean_text_value(resolved.get("label", "")) or "갱신 요청"
+        message = clean_text_value(resolved.get("message", "")) or clean_text_value(state.get("message", ""))
+        run_url = clean_text_value(resolved.get("run_url", "")) or clean_text_value(state.get("run_url", ""))
+        if label in {"완료", "실패", "데이터 대기"} and not bool(state.get("terminal", False)):
+            state = {**state, "terminal": True, "label": label, "message": message, "run_url": run_url}
+            set_session_value(MANUAL_SNAPSHOT_REFRESH_STATE_KEY, state)
+        if label == "완료":
+            if not bool(state.get("cache_cleared", False)):
+                set_session_value(MANUAL_SNAPSHOT_REFRESH_STATE_KEY, {**state, "cache_cleared": True})
+                clear_snapshot_refresh_caches()
+                st.rerun()
+            st.success(f"{label}: {message}")
+        elif label == "실패":
+            st.error(f"{label}: {message}")
+        elif label == "데이터 대기":
+            st.warning(f"{label}: {message}")
+        else:
+            st.info(f"{label}: {message}")
+            st.markdown('<meta http-equiv="refresh" content="15">', unsafe_allow_html=True)
+        if run_url:
+            st.caption(f"GitHub Actions: {run_url}")
+
+
 def select_data_source(base_dir: Path, selected_top_view: str = "") -> tuple[Path, str, str]:
     st.subheader("데이터 소스")
     api_key_source = get_plan_api_key_source_label()
@@ -3578,6 +3836,7 @@ def select_data_source(base_dir: Path, selected_top_view: str = "") -> tuple[Pat
         )
 
     api_configured = sync_plan_api_data_mode()
+    set_session_value("force_live_plan_api_once", False)
     use_quick_shortage_snapshot = (
         selected_top_view == "생산 부족 현황"
         and should_use_shortage_snapshot_first(base_dir)
@@ -3594,15 +3853,10 @@ def select_data_source(base_dir: Path, selected_top_view: str = "") -> tuple[Pat
         elif not use_quick_shortage_snapshot:
             render_plan_api_status()
         if api_configured:
-            if st.button("APS API 새로고침", key="refresh_plan_api_data", use_container_width=True):
-                set_session_value("force_live_plan_api_once", True)
-                set_session_value("plan_api_refresh_nonce", get_plan_api_refresh_nonce() + 1)
-                st.cache_data.clear()
-                st.cache_resource.clear()
-                st.rerun()
+            render_manual_snapshot_refresh_control()
             if use_quick_shortage_snapshot:
                 if DEBUG_PERFORMANCE:
-                    st.caption("APS API는 하루 2회 갱신 기준입니다. 즉시 재조회가 필요할 때만 APS API 새로고침을 누르세요.")
+                    st.caption("저장된 스냅샷은 cron 자동갱신 결과입니다. 누락 시 공식 스냅샷 수동갱신을 사용하세요.")
             elif should_use_aps_wip_api_for_inventory():
                 st.caption(
                     "APS 수요는 API로 조회하고, WIP/공정재고는 예약 작업이 만든 APS WIP 정리 스냅샷을 사용합니다. "
@@ -3612,7 +3866,7 @@ def select_data_source(base_dir: Path, selected_top_view: str = "") -> tuple[Pat
                 st.caption("APS 수요는 API로 조회하고, WIP/공정재고는 기존 WIP 엑셀 파일 기준으로 계산합니다.")
             if use_quick_shortage_snapshot:
                 updated_at = get_cloud_snapshot_meta_value("data_updated_at", "-")
-                return base_dir, "Cloud 스냅샷 우선 + APS API 새로고침", updated_at
+                return base_dir, "Cloud 스냅샷 우선 + 공식 수동갱신", updated_at
             api_updated_at = get_plan_api_updated_at()
             updated_at = api_updated_at if api_updated_at != "-" else get_data_updated_at(base_dir)
             source_name = (

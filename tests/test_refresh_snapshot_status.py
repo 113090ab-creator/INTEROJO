@@ -90,6 +90,7 @@ class RefreshSnapshotStatusTests(unittest.TestCase):
         self.assertIn('cron: "30 7 * * *"', workflow)
         self.assertIn("SNAPSHOT_REFRESH_MAX_ATTEMPTS", workflow)
         self.assertIn("for attempt in $(seq 1", workflow)
+        self.assertIn("--only-if-stale", workflow)
 
     def test_same_slot_metadata_does_not_regress_to_missing_value(self) -> None:
         self.write_status_file(
@@ -230,6 +231,70 @@ class RefreshSnapshotStatusTests(unittest.TestCase):
             with self.subTest(value=value):
                 now = datetime.strptime(value, "%Y-%m-%d %H:%M:%S").replace(tzinfo=app.DISPLAY_TZ)
                 self.assertEqual(app.get_operational_target_snapshot_slot(now)["slot_key"], expected)
+
+    def test_manual_snapshot_dispatch_uses_workflow_dispatch(self) -> None:
+        calls = []
+        original_token = app.get_github_actions_token
+        original_branch = app.get_github_actions_branch
+        original_request = app.github_api_request
+        try:
+            app.get_github_actions_token = lambda: "test-token"
+            app.get_github_actions_branch = lambda: "main"
+
+            def fake_request(method, path, payload=None, token=None):
+                calls.append((method, path, payload, token))
+                return 204, {}, ""
+
+            app.github_api_request = fake_request
+            ok, message = app.dispatch_snapshot_refresh_workflow()
+        finally:
+            app.get_github_actions_token = original_token
+            app.get_github_actions_branch = original_branch
+            app.github_api_request = original_request
+
+        self.assertTrue(ok, message)
+        self.assertEqual(len(calls), 1)
+        method, path, payload, token = calls[0]
+        self.assertEqual(method, "POST")
+        self.assertEqual(path, "actions/workflows/refresh_snapshot.yml/dispatches")
+        self.assertEqual(payload["ref"], "main")
+        self.assertEqual(payload["inputs"]["sites"], "C관,A관,S관,전체")
+        self.assertEqual(token, "test-token")
+
+    def test_manual_snapshot_state_maps_running_waiting_complete_and_failed(self) -> None:
+        state = {"target_slot": "2026-09-16 PM"}
+
+        running = app.classify_manual_snapshot_refresh_state(
+            state,
+            {"status": "in_progress", "id": 1001, "html_url": "https://example.test/run/1001"},
+            {},
+        )
+        self.assertEqual(running["label"], "갱신 중")
+        self.assertTrue(running["active"])
+
+        waiting = app.classify_manual_snapshot_refresh_state(
+            state,
+            {"status": "completed", "conclusion": "success", "id": 1002, "html_url": "https://example.test/run/1002"},
+            {"status": app.REFRESH_STATUS_WAITING_FOR_WIP, "slot_key": "2026-09-16 PM", "reason": "WIP 대기"},
+        )
+        self.assertEqual(waiting["label"], "데이터 대기")
+        self.assertFalse(waiting["active"])
+
+        completed = app.classify_manual_snapshot_refresh_state(
+            state,
+            {"status": "completed", "conclusion": "success", "id": 1003, "html_url": "https://example.test/run/1003"},
+            {"status": app.REFRESH_STATUS_PUBLISHED, "slot_key": "2026-09-16 PM"},
+        )
+        self.assertEqual(completed["label"], "완료")
+        self.assertFalse(completed["active"])
+
+        failed = app.classify_manual_snapshot_refresh_state(
+            state,
+            {"status": "completed", "conclusion": "failure", "id": 1004, "html_url": "https://example.test/run/1004"},
+            {},
+        )
+        self.assertEqual(failed["label"], "실패")
+        self.assertFalse(failed["active"])
 
 
 if __name__ == "__main__":
