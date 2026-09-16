@@ -11870,11 +11870,9 @@ def build_filter_option_maps(
     dict[str, float],
     dict[str, float],
     dict[str, float],
-    dict[str, float],
 ]:
     required_cols = [
         "사이트코드",
-        COUNTRY_DISPLAY_COL,
         "분류별요약",
         CUSTOMER_GROUP_COL,
         "품목코드",
@@ -11887,8 +11885,6 @@ def build_filter_option_maps(
         option_df["부족수량"] = 0
     if "사이트코드" not in option_df.columns:
         option_df["사이트코드"] = "(미지정)"
-    if COUNTRY_DISPLAY_COL not in option_df.columns:
-        option_df[COUNTRY_DISPLAY_COL] = "(국가 미확인)"
     if "분류별요약" not in option_df.columns:
         option_df["분류별요약"] = "(미분류)"
     if CUSTOMER_GROUP_COL not in option_df.columns:
@@ -11901,7 +11897,6 @@ def build_filter_option_maps(
 
     fill_labels = {
         "사이트코드": "(미지정)",
-        COUNTRY_DISPLAY_COL: "(국가 미확인)",
         "분류별요약": "(미분류)",
         CUSTOMER_GROUP_COL: UNCLASSIFIED_SHEET_CATEGORY,
         DEMAND_TYPE_COL: DEMAND_TYPE_ORDER,
@@ -11924,12 +11919,6 @@ def build_filter_option_maps(
     demand_type_sum_map = (
         scoped.groupby(DEMAND_TYPE_COL, as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
     )
-    country_sum_map = (
-        scoped.groupby(COUNTRY_DISPLAY_COL, as_index=True)["부족수량"]
-        .sum()
-        .sort_values(ascending=False)
-        .to_dict()
-    )
     customer_group_sum_map = (
         scoped.groupby(CUSTOMER_GROUP_COL, as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
     )
@@ -11937,7 +11926,6 @@ def build_filter_option_maps(
     return (
         site_sum_map,
         demand_type_sum_map,
-        country_sum_map,
         customer_group_sum_map,
         summary_sum_map,
     )
@@ -11950,7 +11938,6 @@ def filter_data(
     unified_query: str,
     exclude_safe_initial: bool,
     selected_demand_type_options: tuple[str, ...],
-    selected_country_options: tuple[str, ...],
     selected_summary_options: tuple[str, ...],
     selected_customer_group_options: tuple[str, ...],
     only_same_rq_group: bool,
@@ -12010,8 +11997,6 @@ def filter_data(
         base_filtered = base_filtered[~base_filtered["이니셜"].astype(str).str.contains("안전", na=False)]
     if is_specific_pill_selection(selected_demand_type_options):
         base_filtered = base_filtered[base_filtered[DEMAND_TYPE_COL].isin(selected_demand_type_options)]
-    if is_specific_pill_selection(selected_country_options) and COUNTRY_DISPLAY_COL in base_filtered.columns:
-        base_filtered = base_filtered[base_filtered[COUNTRY_DISPLAY_COL].isin(selected_country_options)]
     if is_specific_pill_selection(selected_summary_options) and "분류별요약" in base_filtered.columns:
         base_filtered = base_filtered[base_filtered["분류별요약"].isin(selected_summary_options)]
     if is_specific_pill_selection(selected_customer_group_options) and CUSTOMER_GROUP_COL in base_filtered.columns:
@@ -12078,7 +12063,6 @@ def apply_filters(
         (
             _,
             demand_type_sum_map,
-            country_sum_map,
             customer_group_sum_map,
             summary_sum_map,
         ) = build_filter_option_maps(df, selected_site_option or "전체")
@@ -12086,12 +12070,10 @@ def apply_filters(
         demand_type_order = [DEMAND_TYPE_ORDER, DEMAND_TYPE_SAFETY_STOCK]
         demand_type_options = ["전체"] + [value for value in demand_type_order if value in demand_type_sum_map]
         demand_type_options += [value for value in demand_type_sum_map if value not in demand_type_options]
-        country_options = ["전체"] + list(country_sum_map.keys())
         customer_group_options = ["전체"] + list(customer_group_sum_map.keys())
         summary_options = ["전체"] + list(summary_sum_map.keys())
         scoped_total = float(sum(summary_sum_map.values()))
         demand_type_count_map = {"전체": scoped_total, **demand_type_sum_map}
-        country_count_map = {"전체": scoped_total, **country_sum_map}
         customer_group_count_map = {"전체": scoped_total, **customer_group_sum_map}
         summary_count_map = {"전체": scoped_total, **summary_sum_map}
 
@@ -12108,20 +12090,6 @@ def apply_filters(
                 format_func=lambda x: format_pill_label(x, demand_type_count_map),
                 on_change=sync_multi_pill_state,
                 args=(demand_type_pills_key,),
-            ),
-        )
-        country_pills_key = "flt_order_country_pills"
-        prepare_multi_pill_state(country_pills_key, country_options)
-        selected_country_options = finalize_multi_pill_selection(
-            country_pills_key,
-            st.pills(
-                "국가",
-                options=country_options,
-                selection_mode="multi",
-                key=country_pills_key,
-                format_func=lambda x: format_pill_label(x, country_count_map),
-                on_change=sync_multi_pill_state,
-                args=(country_pills_key,),
             ),
         )
         customer_group_pills_key = "flt_customer_group_pills"
@@ -12176,7 +12144,6 @@ def apply_filters(
         unified_query,
         exclude_safe_initial,
         selected_demand_type_options,
-        selected_country_options,
         selected_summary_options,
         selected_customer_group_options,
         only_same_rq_group,
