@@ -9,6 +9,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
+from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
 from typing import Callable
@@ -81,6 +82,44 @@ DISPLAY_TZ = ZoneInfo("Asia/Seoul")
 ORDER_NO_COL = "수주번호"
 ORDER_RECEIVED_DATE_COL = "접수일"
 PIA_ORDER_CLASS_COL = "PIA구분"
+PLAN_CUSTOMER_COL = "PLAN 거래처명"
+LEGACY_API_CUSTOMER_COL = "API 거래처명"
+ORDER_CUSTOMER_COL = "수주 거래처명"
+FINAL_CUSTOMER_COL = "최종 거래처명"
+CUSTOMER_NAME_SOURCE_COL = "거래처명 출처"
+CUSTOMER_GROUP_COL = "거래처 그룹"
+OPERATION_SEGMENT_COL = "운영구분"
+INITIAL_DOMESTIC_EXPORT_COL = "이니셜 기준 구분"
+COUNTRY_DOMESTIC_EXPORT_COL = "국가 기준 내수/수출구분"
+DOMESTIC_EXPORT_REASON_COL = "내수/수출 판단 근거"
+ORDER_COUNTRY_CODE_COL = "수주 국가코드"
+ORDER_COUNTRY_NAME_COL = "수주 국가명"
+COUNTRY_DISPLAY_COL = "국가"
+COUNTRY_CONFIRMATION_STATUS_COL = "국가 확인상태"
+REGION_COL = "권역"
+REGION_REASON_COL = "권역 판단 근거"
+ORDER_INFO_STATUS_COL = "수주정보 확인상태"
+CUSTOMER_CONFIRMATION_STATUS_COL = "거래처 확인상태"
+CUSTOMER_STATUS_CONFIRMED = "확인"
+CUSTOMER_STATUS_SOURCE_MISSING = "원본 결측"
+CUSTOMER_STATUS_UNREGISTERED = "미등록"
+CUSTOMER_STATUS_MISMATCH = "거래처명 불일치"
+CUSTOMER_SOURCE_ORDER_API = "수주 API"
+CUSTOMER_SOURCE_PLAN_API = "PLAN API cust_name"
+CUSTOMER_SOURCE_MISSING = "거래처 미확인"
+ORDER_INFO_STATUS_MATCHED = "수주 API 연결 성공"
+ORDER_INFO_STATUS_UNMATCHED = "수주번호 미매칭"
+ORDER_INFO_STATUS_DUPLICATE_REVIEW = "수주정보 중복확인"
+ORDER_INFO_STATUS_UNAVAILABLE = "수주 API 조회불가"
+COUNTRY_STATUS_CONFIRMED = "확인"
+COUNTRY_STATUS_MISSING = "국가 결측"
+COUNTRY_STATUS_DUPLICATE_REVIEW = "국가 중복확인"
+COUNTRY_STATUS_UNAVAILABLE = "조회불가"
+DOMESTIC_EXPORT_DOMESTIC = "국내"
+DOMESTIC_EXPORT_EXPORT = "해외"
+DOMESTIC_EXPORT_UNKNOWN = "미확인"
+REGION_UNKNOWN = "권역 미확인"
+OPERATION_SEGMENT_UNKNOWN = "운영구분 미확인"
 LEADJI_REQUIRED_QTY_COL = "[45]하이드레이션/전면검사 필요수량"
 LEADJI_REQUIRED_DUE_COL = "[45]하이드레이션/전면검사 납기일"
 ADHESION_REQUIRED_QTY_COL = "[55]접착/멸균 필요수량"
@@ -141,6 +180,8 @@ SHORTAGE_SNAPSHOT_FIRST = os.getenv("INTEROJO_SHORTAGE_SNAPSHOT_FIRST", "1").str
 SHORTAGE_SNAPSHOT_REFRESH_GRACE_MINUTES = int(os.getenv("INTEROJO_SHORTAGE_SNAPSHOT_REFRESH_GRACE_MINUTES", "60"))
 LOCAL_CACHE_DIR = BASE_DIR / ".local_cache"
 PLAN_API_DISK_CACHE_DIR = LOCAL_CACHE_DIR / "plan_api"
+ORDER_STATUS_DISK_CACHE_DIR = LOCAL_CACHE_DIR / "order_status"
+ORDER_STATUS_MASTER_CACHE_FILE = ORDER_STATUS_DISK_CACHE_DIR / "order_status_master.pkl.gz"
 PLAN_API_KEY_LOCAL_CACHE_FILE = LOCAL_CACHE_DIR / "plan_api_key.txt"
 ALL_ITEM_STATUS_DISK_CACHE_DIR = LOCAL_CACHE_DIR / "all_item_status"
 ALL_ITEM_FLOW_STATUS_DISK_CACHE_DIR = LOCAL_CACHE_DIR / "all_item_flow_status"
@@ -155,6 +196,7 @@ WIP_INVENTORY_REFRESHED_AT_META_KEY = "wip_inventory_refreshed_at"
 WIP_INVENTORY_COLUMNS = ["품목코드", "창고", "재공코드", "재고량"]
 APS_PLAN_META_ENDPOINT = "/api/aps-plan/meta"
 PRODUCT_NAMES_ENDPOINT = "/api/product-names"
+ORDER_STATUS_DETAIL_ENDPOINT = "/api/order-status-detail"
 BOM_EXPLOSION_ENDPOINT = "/api/bom-explosion"
 PRODUCTION_PERFORMANCE_ENDPOINT = "/api/production-performance"
 ITEM_INVENTORY_LEDGER_ENDPOINT = "/api/item-inventory-ledger"
@@ -296,6 +338,7 @@ ALL_ITEM_FLOW_CUSTOMER_ORDER = [
     "from-eyes",
     "EYEQUE",
     "ESSILOR",
+    "Coastal",
     "국내",
     "기타 거래처",
     "거래처 미지정",
@@ -313,6 +356,10 @@ ALL_ITEM_STATUS_OPTIONS = [
 ]
 POWER_VALUE_PATTERN = re.compile(r"([+-]\d{1,2}(?:\.\d{1,2})?)")
 UNCLASSIFIED_SHEET_CATEGORY = "미분류"
+CUSTOMER_FILL_SOURCE_COL = "거래처 보완 출처"
+CUSTOMER_FILL_REASON_COL = "거래처 보완 근거"
+LINKED_P_ROW_CUSTOMER_SOURCE = "P행 연결"
+LINKED_P_ROW_CUSTOMER_REASON = "사이트+수주번호+이니셜+제품명+파워+납기 정확일치"
 INVALID_CATEGORY_VALUES = {"", "-", "nan", "none", "nat", "null", "na", "<na>"}
 PRODUCT_SEARCH_STOPWORDS = {
     "a",
@@ -367,11 +414,45 @@ CUSTOMER_EXACT_CATEGORY_RULES = {
     "PIA Corporation": "PIA 종합",
     "INTEROJO CHINA CO., LTD": "중국(IRIS)",
     "한국알콘": "Alcon",
+    "한국알콘(주)": "Alcon",
+    "ALCON India": "Alcon",
+    "Alcon Services AG, Taiwan Branch": "Alcon",
     "MG Medical Group": "MG MEDICAL",
     "SINCERE Co.,Ltd": "Sincere",
     "T-garden": "T-Garden",
     "CROSSBIRD LIMITED (Feel Good Contacts)": "Feel Good",
     "(주)피피비스튜디오스": "피피비(HAPA)",
+    "from-eyes Co.,ltd.": "from-eyes",
+    "ESSILOR GROUP THE NETHERLAND BV": "ESSILOR",
+    "OPTICAL SUPPLIES Co.": "OPTICAL SUPPLIES",
+    "Coastal Contacts (Clearly)": "Coastal",
+    "Alensa s.r.o": "ALENSA",
+    "Hearts Optical": "HEARTS/TopTrend",
+    "Beautyicon International co., Ltd.": "HEARTS/TopTrend",
+    "OPTIMAX": "MAXVUE/OPTIMAX",
+    "OPHTALMIC France": "OPHTALMIC",
+    "Soleko": "기타 거래처",
+    "Allied Vision Group Inc": "기타 거래처",
+    "BM Trading": "기타 거래처",
+    "El Fady": "기타 거래처",
+    "Future Medical Lab": "기타 거래처",
+    "INTERLENCO, s.a.": "기타 거래처",
+    "ITAL LENT": "기타 거래처",
+    "KODANO S.A.": "기타 거래처",
+    "LEXXOO International GmbH": "기타 거래처",
+    "Lux Optic": "기타 거래처",
+    "MPG / E Kontaktlinse": "기타 거래처",
+    "Marshal Intergroup": "기타 거래처",
+    "Mesmar Optics": "기타 거래처",
+    "NT Logistics (OptiAura LLC)": "기타 거래처",
+    "OPTIC CENTER": "기타 거래처",
+    "Optik Tunggal": "기타 거래처",
+    "POLYVUE DISTRIBUTION": "기타 거래처",
+    "Ruiyi Kang Glasses Co., Ltd.": "기타 거래처",
+    "TOMEY": "기타 거래처",
+    "VISION OPTIC group": "기타 거래처",
+    "Vivazon": "기타 거래처",
+    "Yovshan": "기타 거래처",
 }
 
 CUSTOMER_CATEGORY_RULES = {
@@ -388,6 +469,55 @@ CUSTOMER_CATEGORY_RULES = {
     "Alcon": ["ALCON", "알콘", "한국알콘"],
     "국내": ["국내", "KOREA", "인터로조", "클라렌", "CLALEN", "LENSVERY", "LENS VERY"],
     "MG MEDICAL": ["MG MEDICAL", "MG MEDICAL GROUP"],
+}
+
+DOMESTIC_COUNTRY_CODES = {"KR", "KOR"}
+DOMESTIC_COUNTRY_NAMES = {
+    "대한민국",
+    "한국",
+    "KOREA",
+    "SOUTH KOREA",
+    "REPUBLIC OF KOREA",
+    "KOREA, REPUBLIC OF",
+}
+REGION_COUNTRY_NAME_MAP = {
+    "대한민국": "국내",
+    "한국": "국내",
+    "KOREA": "국내",
+    "SOUTH KOREA": "국내",
+    "REPUBLIC OF KOREA": "국내",
+    "일본": "일본",
+    "중국": "중화권",
+    "홍콩": "중화권",
+    "대만": "중화권",
+    "사우디아라비아": "중동",
+    "아랍에미리트": "중동",
+    "쿠웨이트": "중동",
+    "카타르": "중동",
+    "바레인": "중동",
+    "오만": "중동",
+    "이라크": "중동",
+    "이란": "중동",
+    "요르단": "중동",
+    "이스라엘": "중동",
+    "레바논": "중동",
+    "시리아": "중동",
+    "팔레스타인": "중동",
+    "튀르키예": "중동",
+    "터키": "중동",
+    "독일": "유럽",
+    "이탈리아": "유럽",
+    "프랑스": "유럽",
+    "폴란드": "유럽",
+    "러시아": "유럽",
+    "우크라이나": "유럽",
+    "그리스": "유럽",
+    "체코": "유럽",
+    "영국": "유럽",
+    "네덜란드": "유럽",
+    "스페인": "유럽",
+    "미국": "북미",
+    "캐나다": "북미",
 }
 
 PRODUCT_CATEGORY_RULES = {
@@ -1769,8 +1899,8 @@ PRODUCT_INFO_LOOKUP_COLUMNS = [
     "API 제품명코드",
     "API 제품명",
     "API 제품분류",
-    "API 거래처명",
-    "거래처 그룹",
+    PLAN_CUSTOMER_COL,
+    CUSTOMER_GROUP_COL,
     "제품명 출처",
     "분류 출처",
     "API 매칭상태",
@@ -1827,6 +1957,534 @@ def build_customer_group_from_exact_rule(customer: object) -> tuple[str, str]:
     if category == UNCLASSIFIED_SHEET_CATEGORY:
         return UNCLASSIFIED_SHEET_CATEGORY, "거래처명 완전 일치 기준 없음"
     return category, f"거래처명 완전 일치: {reason}"
+
+
+def classify_operation_segment_from_initial(initial: object) -> tuple[str, str]:
+    text = clean_text_value(initial)
+    normalized = normalize_keyword_key(text)
+    if not normalized:
+        return OPERATION_SEGMENT_UNKNOWN, "이니셜 없음"
+    if "국내" in text:
+        return "국내", "승인된 이니셜 텍스트: 국내"
+    if "중국" in text or "IRIS" in text.upper():
+        return "중국", "승인된 이니셜 텍스트: 중국/IRIS"
+    if "PIA" in text.upper():
+        return "PIA", "승인된 이니셜 텍스트: PIA"
+    if "해외" in text:
+        return "기타", "승인된 이니셜 텍스트: 해외"
+    return OPERATION_SEGMENT_UNKNOWN, "승인된 이니셜 기준 없음"
+
+
+def ensure_plan_customer_column(df: pd.DataFrame) -> pd.DataFrame:
+    result = df.copy()
+    if PLAN_CUSTOMER_COL not in result.columns:
+        if LEGACY_API_CUSTOMER_COL in result.columns:
+            result[PLAN_CUSTOMER_COL] = result[LEGACY_API_CUSTOMER_COL]
+        elif "거래처" in result.columns:
+            result[PLAN_CUSTOMER_COL] = result["거래처"]
+        else:
+            result[PLAN_CUSTOMER_COL] = ""
+    result[PLAN_CUSTOMER_COL] = result[PLAN_CUSTOMER_COL].map(clean_text_value)
+    return result
+
+
+def normalize_order_no_value(value: object) -> str:
+    text = clean_text_value(value).strip()
+    if not text:
+        return ""
+    text = re.sub(r"\s+", "", text)
+    if re.fullmatch(r"\d+\.0+", text):
+        text = text.split(".", 1)[0]
+    elif re.fullmatch(r"\d+(?:\.\d+)?[eE][+-]?\d+", text):
+        try:
+            text = f"{Decimal(text):.0f}"
+        except Exception:
+            pass
+    return text.upper()
+
+
+def classify_initial_domestic_export(initial: object) -> tuple[str, str]:
+    text = clean_text_value(initial)
+    if not text:
+        return DOMESTIC_EXPORT_UNKNOWN, "이니셜 없음"
+    upper = text.upper()
+    if "국내" in text:
+        return DOMESTIC_EXPORT_DOMESTIC, "이니셜 텍스트: 국내"
+    if "해외" in text:
+        return DOMESTIC_EXPORT_EXPORT, "이니셜 텍스트: 해외"
+    if "IRIS" in upper or "중국" in text:
+        return DOMESTIC_EXPORT_EXPORT, "이니셜 텍스트: 중국/IRIS"
+    return DOMESTIC_EXPORT_UNKNOWN, "이니셜 기준 미확인"
+
+
+def classify_country_domestic_export(country_code: object, country_name: object) -> tuple[str, str]:
+    code = clean_text_value(country_code).upper()
+    name = clean_text_value(country_name)
+    name_key = normalize_lookup_key(name)
+    domestic_name_keys = {normalize_lookup_key(value) for value in DOMESTIC_COUNTRY_NAMES}
+    if code in DOMESTIC_COUNTRY_CODES or name_key in domestic_name_keys:
+        return DOMESTIC_EXPORT_DOMESTIC, "수주 국가=대한민국/KR"
+    if is_valid_reference_text(name):
+        return DOMESTIC_EXPORT_EXPORT, "수주 국가명 확인"
+    if is_valid_reference_text(code):
+        return DOMESTIC_EXPORT_EXPORT, "수주 국가코드 확인"
+    return DOMESTIC_EXPORT_UNKNOWN, "수주 국가 결측"
+
+
+def classify_region_from_country(country_code: object, country_name: object) -> tuple[str, str]:
+    code = clean_text_value(country_code).upper()
+    name = clean_text_value(country_name)
+    if not is_valid_reference_text(name) and not is_valid_reference_text(code):
+        return REGION_UNKNOWN, "수주 국가 결측"
+    name_key = normalize_lookup_key(name)
+    for country, region in REGION_COUNTRY_NAME_MAP.items():
+        if name_key == normalize_lookup_key(country):
+            return region, f"국가 exact match: {country}"
+    if code in DOMESTIC_COUNTRY_CODES:
+        return "국내", "국가코드 exact match: KR"
+    return "기타 해외", "권역 기준표 미등록 유효 국가"
+
+
+def ensure_order_status_display_columns(df: pd.DataFrame) -> pd.DataFrame:
+    result = ensure_plan_customer_column(df)
+    defaults = {
+        ORDER_CUSTOMER_COL: "",
+        FINAL_CUSTOMER_COL: "",
+        CUSTOMER_NAME_SOURCE_COL: "",
+        ORDER_COUNTRY_CODE_COL: "",
+        ORDER_COUNTRY_NAME_COL: "",
+        COUNTRY_DISPLAY_COL: "",
+        COUNTRY_CONFIRMATION_STATUS_COL: COUNTRY_STATUS_MISSING,
+        INITIAL_DOMESTIC_EXPORT_COL: DOMESTIC_EXPORT_UNKNOWN,
+        COUNTRY_DOMESTIC_EXPORT_COL: DOMESTIC_EXPORT_UNKNOWN,
+        DOMESTIC_EXPORT_REASON_COL: "수주 국가 결측",
+        REGION_COL: REGION_UNKNOWN,
+        REGION_REASON_COL: "수주 국가 결측",
+        ORDER_INFO_STATUS_COL: ORDER_INFO_STATUS_UNMATCHED,
+    }
+    for col, default in defaults.items():
+        if col not in result.columns:
+            result[col] = default
+        result[col] = result[col].map(clean_text_value)
+    return result
+
+
+def apply_customer_confirmation_columns(df: pd.DataFrame) -> pd.DataFrame:
+    result = ensure_order_status_display_columns(df)
+    order_customer_valid = result[ORDER_CUSTOMER_COL].map(is_valid_reference_text) & result[ORDER_CUSTOMER_COL].ne(
+        ORDER_INFO_STATUS_UNAVAILABLE
+    )
+    plan_customer_valid = result[PLAN_CUSTOMER_COL].map(is_valid_reference_text)
+    final_customer = result[FINAL_CUSTOMER_COL].map(clean_text_value)
+    final_missing = ~final_customer.map(is_valid_reference_text) | final_customer.isin(
+        {CUSTOMER_SOURCE_MISSING, ORDER_INFO_STATUS_UNAVAILABLE}
+    )
+    result.loc[final_missing & order_customer_valid, FINAL_CUSTOMER_COL] = result.loc[
+        final_missing & order_customer_valid, ORDER_CUSTOMER_COL
+    ]
+    result.loc[final_missing & ~order_customer_valid & plan_customer_valid, FINAL_CUSTOMER_COL] = result.loc[
+        final_missing & ~order_customer_valid & plan_customer_valid, PLAN_CUSTOMER_COL
+    ]
+    result.loc[~result[FINAL_CUSTOMER_COL].map(is_valid_reference_text), FINAL_CUSTOMER_COL] = CUSTOMER_SOURCE_MISSING
+
+    source_missing = result[CUSTOMER_NAME_SOURCE_COL].map(clean_text_value).eq("")
+    result.loc[source_missing & order_customer_valid, CUSTOMER_NAME_SOURCE_COL] = CUSTOMER_SOURCE_ORDER_API
+    result.loc[source_missing & ~order_customer_valid & plan_customer_valid, CUSTOMER_NAME_SOURCE_COL] = (
+        CUSTOMER_SOURCE_PLAN_API
+    )
+    result.loc[~result[CUSTOMER_NAME_SOURCE_COL].map(is_valid_reference_text), CUSTOMER_NAME_SOURCE_COL] = (
+        CUSTOMER_SOURCE_MISSING
+    )
+
+    final_valid = (
+        result[FINAL_CUSTOMER_COL].map(is_valid_reference_text)
+        & result[FINAL_CUSTOMER_COL].ne(CUSTOMER_SOURCE_MISSING)
+        & result[FINAL_CUSTOMER_COL].ne(ORDER_INFO_STATUS_UNAVAILABLE)
+    )
+    customer_group = result[FINAL_CUSTOMER_COL].map(lambda value: build_customer_group_from_exact_rule(value)[0])
+    result[CUSTOMER_GROUP_COL] = customer_group
+    result.loc[~final_valid, CUSTOMER_GROUP_COL] = UNCLASSIFIED_SHEET_CATEGORY
+    result.loc[~result[CUSTOMER_GROUP_COL].map(is_valid_reference_text), CUSTOMER_GROUP_COL] = UNCLASSIFIED_SHEET_CATEGORY
+
+    result[CUSTOMER_CONFIRMATION_STATUS_COL] = CUSTOMER_STATUS_CONFIRMED
+    result.loc[~final_valid, CUSTOMER_CONFIRMATION_STATUS_COL] = CUSTOMER_STATUS_SOURCE_MISSING
+    result.loc[
+        final_valid & result[CUSTOMER_GROUP_COL].eq(UNCLASSIFIED_SHEET_CATEGORY),
+        CUSTOMER_CONFIRMATION_STATUS_COL,
+    ] = CUSTOMER_STATUS_UNREGISTERED
+    mismatch_mask = (
+        order_customer_valid
+        & plan_customer_valid
+        & result[ORDER_CUSTOMER_COL].map(normalize_lookup_key).ne(result[PLAN_CUSTOMER_COL].map(normalize_lookup_key))
+    )
+    result.loc[mismatch_mask, CUSTOMER_CONFIRMATION_STATUS_COL] = CUSTOMER_STATUS_MISMATCH
+
+    if "이니셜" in result.columns:
+        operation = result["이니셜"].map(lambda value: classify_operation_segment_from_initial(value)[0])
+        initial_export = result["이니셜"].map(lambda value: classify_initial_domestic_export(value)[0])
+    else:
+        operation = pd.Series(OPERATION_SEGMENT_UNKNOWN, index=result.index, dtype="object")
+        initial_export = pd.Series(DOMESTIC_EXPORT_UNKNOWN, index=result.index, dtype="object")
+    result[OPERATION_SEGMENT_COL] = operation
+    result[INITIAL_DOMESTIC_EXPORT_COL] = initial_export
+    country_display = result[ORDER_COUNTRY_NAME_COL].map(clean_text_value)
+    if ORDER_NO_COL in result.columns:
+        order_key = result[ORDER_NO_COL].map(normalize_order_no_value)
+    else:
+        order_key = pd.Series("", index=result.index, dtype="object")
+    if "품목코드" in result.columns:
+        item_prefix = result["품목코드"].map(normalize_item_code_value).str[:1]
+    else:
+        item_prefix = pd.Series("", index=result.index, dtype="object")
+    safe_stock_mask = item_prefix.eq("P") & ~order_key.map(is_valid_reference_text)
+    result[COUNTRY_DISPLAY_COL] = country_display
+    result.loc[safe_stock_mask, COUNTRY_DISPLAY_COL] = "안전재고"
+    result.loc[~result[OPERATION_SEGMENT_COL].map(is_valid_reference_text), OPERATION_SEGMENT_COL] = (
+        OPERATION_SEGMENT_UNKNOWN
+    )
+    result.loc[~result[INITIAL_DOMESTIC_EXPORT_COL].map(is_valid_reference_text), INITIAL_DOMESTIC_EXPORT_COL] = (
+        DOMESTIC_EXPORT_UNKNOWN
+    )
+    return result.drop(columns=[LEGACY_API_CUSTOMER_COL], errors="ignore")
+
+
+ORDER_MASTER_COLUMNS = [
+    "_수주번호키",
+    ORDER_NO_COL,
+    ORDER_CUSTOMER_COL,
+    ORDER_COUNTRY_CODE_COL,
+    ORDER_COUNTRY_NAME_COL,
+    COUNTRY_CONFIRMATION_STATUS_COL,
+    ORDER_INFO_STATUS_COL,
+    "수주일",
+    "납품일",
+    "변경납품일",
+    "수주상태",
+    "수주상태명",
+    "수주확정여부",
+    "수주확정여부명",
+    "수주 API 추출시각",
+]
+
+
+def empty_order_status_master() -> pd.DataFrame:
+    return pd.DataFrame(columns=ORDER_MASTER_COLUMNS)
+
+
+def unique_nonempty_text_values(series: pd.Series) -> list[str]:
+    values: list[str] = []
+    seen: set[str] = set()
+    for value in series:
+        text = clean_text_value(value)
+        if not is_valid_reference_text(text) or text in seen:
+            continue
+        seen.add(text)
+        values.append(text)
+    return values
+
+
+def first_nonempty_text_value(series: pd.Series) -> str:
+    values = unique_nonempty_text_values(series)
+    return values[0] if values else ""
+
+
+def is_inactive_order_status(status: object, label: object) -> bool:
+    text = f"{clean_text_value(status)} {clean_text_value(label)}"
+    return bool(re.search(r"(취소|삭제|폐기|무효|cancel|delete|deleted|void)", text, flags=re.IGNORECASE))
+
+
+def build_order_status_master_from_raw(raw: pd.DataFrame) -> pd.DataFrame:
+    if not isinstance(raw, pd.DataFrame) or raw.empty:
+        return empty_order_status_master()
+
+    work = raw.copy()
+    work.columns = [str(col).strip() for col in work.columns]
+    columns = work.columns.tolist()
+    order_col = pick_api_column(columns, ["od_no", "OD_NO", "so_id", "SO_ID", "수주번호", "오더번호"])
+    customer_col = pick_api_column(columns, ["cust_nm", "CUST_NM", "cust_name", "CUST_NAME", "거래처명", "거래처"])
+    country_code_col = pick_api_column(columns, ["e_nation", "E_NATION", "country_cd", "COUNTRY_CD", "국가코드"])
+    country_name_col = pick_api_column(columns, ["e_nation_nm", "E_NATION_NM", "country_nm", "COUNTRY_NM", "국가명"])
+    order_date_col = pick_api_column(columns, ["od_dt", "OD_DT", "수주일", "수주일자", "등록일", "등록일자"])
+    delivery_col = pick_api_column(columns, ["deli_date", "DELI_DATE", "납품일", "납기일"])
+    changed_delivery_col = pick_api_column(columns, ["gd_deli_date", "GD_DELI_DATE", "변경납품일", "변경납기일"])
+    status_col = pick_api_column(columns, ["stts", "STTS", "상태", "status"])
+    status_label_col = pick_api_column(columns, ["stts_label", "STTS_LABEL", "상태명", "status_label"])
+    confirm_col = pick_api_column(columns, ["confirm_yn", "CONFIRM_YN", "확정여부"])
+    confirm_label_col = pick_api_column(columns, ["confirm_yn_label", "CONFIRM_YN_LABEL", "확정여부명"])
+    modified_col = pick_api_column(
+        columns,
+        ["updated_at", "UPDATED_AT", "modified_at", "MODIFIED_AT", "수정일", "수정일자", "extracted_at"],
+    )
+    use_col = pick_api_column(columns, ["use_yn", "USE_YN", "사용여부"])
+
+    if order_col is None:
+        return empty_order_status_master()
+
+    def source_series(col: str | None, default: object = "") -> pd.Series:
+        if col is not None and col in work.columns:
+            return work[col].map(clean_text_value)
+        return pd.Series(default, index=work.index, dtype="object")
+
+    normalized = pd.DataFrame(
+        {
+            "_수주번호키": work[order_col].map(normalize_order_no_value),
+            ORDER_NO_COL: source_series(order_col),
+            ORDER_CUSTOMER_COL: source_series(customer_col),
+            ORDER_COUNTRY_CODE_COL: source_series(country_code_col),
+            ORDER_COUNTRY_NAME_COL: source_series(country_name_col),
+            "수주일": source_series(order_date_col),
+            "납품일": source_series(delivery_col),
+            "변경납품일": source_series(changed_delivery_col),
+            "수주상태": source_series(status_col),
+            "수주상태명": source_series(status_label_col),
+            "수주확정여부": source_series(confirm_col),
+            "수주확정여부명": source_series(confirm_label_col),
+            "수주 API 추출시각": source_series(modified_col),
+            "_사용여부": source_series(use_col),
+        }
+    )
+    normalized = normalized[normalized["_수주번호키"].map(is_valid_reference_text)].copy()
+    if normalized.empty:
+        return empty_order_status_master()
+
+    normalized["_active_rank"] = [
+        1 if is_inactive_order_status(status, label) else 0
+        for status, label in zip(normalized["수주상태"], normalized["수주상태명"])
+    ]
+    use_text = normalized["_사용여부"].astype(str).str.upper().str.strip()
+    normalized["_use_rank"] = use_text.map(lambda value: 0 if value in {"", "Y", "1", "TRUE", "S"} else 1)
+    normalized["_modified_dt"] = pd.to_datetime(normalized["수주 API 추출시각"], errors="coerce")
+    normalized["_changed_delivery_rank"] = normalized["변경납품일"].map(lambda value: 0 if is_valid_reference_text(value) else 1)
+
+    rows: list[dict[str, object]] = []
+    for order_key, group in normalized.groupby("_수주번호키", dropna=False, sort=True):
+        country_values = unique_nonempty_text_values(group[ORDER_COUNTRY_NAME_COL])
+        country_code_values = unique_nonempty_text_values(group[ORDER_COUNTRY_CODE_COL])
+        customer_values = unique_nonempty_text_values(group[ORDER_CUSTOMER_COL])
+        country_conflict = len(country_values) > 1 or len(country_code_values) > 1
+        customer_conflict = len(customer_values) > 1
+        review_required = country_conflict or customer_conflict
+
+        selected = (
+            group.sort_values(
+                ["_active_rank", "_use_rank", "_modified_dt", "_changed_delivery_rank"],
+                ascending=[True, True, False, True],
+                na_position="last",
+            )
+            .iloc[0]
+            .to_dict()
+        )
+        selected["_수주번호키"] = order_key
+        selected[ORDER_INFO_STATUS_COL] = (
+            ORDER_INFO_STATUS_DUPLICATE_REVIEW if review_required else ORDER_INFO_STATUS_MATCHED
+        )
+        if customer_conflict:
+            selected[ORDER_CUSTOMER_COL] = ""
+        else:
+            selected[ORDER_CUSTOMER_COL] = first_nonempty_text_value(group[ORDER_CUSTOMER_COL])
+        if country_conflict:
+            selected[ORDER_COUNTRY_CODE_COL] = ""
+            selected[ORDER_COUNTRY_NAME_COL] = ""
+            selected[COUNTRY_CONFIRMATION_STATUS_COL] = COUNTRY_STATUS_DUPLICATE_REVIEW
+        else:
+            selected[ORDER_COUNTRY_CODE_COL] = first_nonempty_text_value(group[ORDER_COUNTRY_CODE_COL])
+            selected[ORDER_COUNTRY_NAME_COL] = first_nonempty_text_value(group[ORDER_COUNTRY_NAME_COL])
+            selected[COUNTRY_CONFIRMATION_STATUS_COL] = (
+                COUNTRY_STATUS_CONFIRMED
+                if is_valid_reference_text(selected[ORDER_COUNTRY_NAME_COL])
+                or is_valid_reference_text(selected[ORDER_COUNTRY_CODE_COL])
+                else COUNTRY_STATUS_MISSING
+            )
+        rows.append(selected)
+
+    master = pd.DataFrame(rows)
+    for col in ORDER_MASTER_COLUMNS:
+        if col not in master.columns:
+            master[col] = ""
+        master[col] = master[col].map(clean_text_value)
+    return master[ORDER_MASTER_COLUMNS].drop_duplicates("_수주번호키", keep="first").reset_index(drop=True)
+
+
+def read_order_status_master_cache() -> pd.DataFrame:
+    if not ORDER_STATUS_MASTER_CACHE_FILE.exists():
+        return empty_order_status_master()
+    try:
+        cached = pd.read_pickle(ORDER_STATUS_MASTER_CACHE_FILE, compression="gzip")
+    except Exception:
+        return empty_order_status_master()
+    if not isinstance(cached, pd.DataFrame):
+        return empty_order_status_master()
+    for col in ORDER_MASTER_COLUMNS:
+        if col not in cached.columns:
+            cached[col] = ""
+    return cached[ORDER_MASTER_COLUMNS].copy()
+
+
+def write_order_status_master_cache(master: pd.DataFrame) -> None:
+    if not isinstance(master, pd.DataFrame) or master.empty:
+        return
+    try:
+        ORDER_STATUS_MASTER_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = ORDER_STATUS_MASTER_CACHE_FILE.with_suffix(
+            ORDER_STATUS_MASTER_CACHE_FILE.suffix + f".{uuid.uuid4().hex}.tmp"
+        )
+        master.to_pickle(temp_path, compression="gzip")
+        temp_path.replace(ORDER_STATUS_MASTER_CACHE_FILE)
+    except Exception:
+        pass
+
+
+def derive_order_status_date_range(df: pd.DataFrame) -> tuple[str, str]:
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return "", ""
+    candidates: list[pd.Series] = []
+    if ORDER_RECEIVED_DATE_COL in df.columns:
+        candidates.append(normalize_order_received_date_series(df[ORDER_RECEIVED_DATE_COL]))
+    if ORDER_NO_COL in df.columns:
+        candidates.append(derive_order_received_date_from_order_no(df[ORDER_NO_COL]))
+    if not candidates:
+        return "", ""
+    combined = pd.concat(candidates, ignore_index=True)
+    parsed = pd.to_datetime(combined, errors="coerce").dropna()
+    if parsed.empty:
+        return "", ""
+    return parsed.min().strftime("%Y-%m-%d"), parsed.max().strftime("%Y-%m-%d")
+
+
+def build_order_status_query_params(date_from: str = "", date_to: str = "") -> dict[str, object]:
+    params: dict[str, object] = {"limit": PLAN_API_DEFAULT_ROW_LIMIT}
+    clean_from = clean_text_value(date_from)
+    clean_to = clean_text_value(date_to)
+    if clean_from:
+        params["date_from"] = clean_from
+    if clean_to:
+        params["date_to"] = clean_to
+    return params
+
+
+@st.cache_data(show_spinner=False, ttl=PLAN_API_CACHE_TTL_SECONDS, max_entries=CACHE_MAX_ENTRIES)
+def load_order_status_master_cached(refresh_key: str, date_from: str = "", date_to: str = "") -> tuple[pd.DataFrame, str]:
+    _ = refresh_key
+    raw, error = read_plan_endpoint_dataframe(
+        ORDER_STATUS_DETAIL_ENDPOINT,
+        build_order_status_query_params(date_from, date_to),
+    )
+    if not error and isinstance(raw, pd.DataFrame) and not raw.empty:
+        master = build_order_status_master_from_raw(raw)
+        if not master.empty:
+            write_order_status_master_cache(master)
+            return master, ""
+        error = "수주 API 응답에서 수주번호 마스터를 생성하지 못했습니다."
+
+    cached = read_order_status_master_cache()
+    if not cached.empty:
+        return cached, f"수주 API 조회 실패로 이전 정상 캐시 사용: {error or '응답 없음'}"
+    return empty_order_status_master(), error or "수주 API 조회불가"
+
+
+def load_order_status_master(date_from: str = "", date_to: str = "") -> tuple[pd.DataFrame, str]:
+    clean_from = clean_text_value(date_from)
+    clean_to = clean_text_value(date_to)
+    if not is_plan_api_configured():
+        cached = read_order_status_master_cache()
+        if not cached.empty:
+            return cached, f"{PLAN_API_KEY_ENV} 미설정으로 이전 정상 수주 캐시 사용"
+        return empty_order_status_master(), f"{PLAN_API_KEY_ENV} 미설정"
+    api_key_hash = hashlib.sha256(get_plan_api_key().encode("utf-8")).hexdigest()[:12]
+    refresh_key = (
+        f"order-status-detail:{get_plan_api_base_url()}:{api_key_hash}:"
+        f"{get_plan_api_updated_at()}:{clean_from}:{clean_to}:{get_plan_api_refresh_nonce()}"
+    )
+    return load_order_status_master_cached(refresh_key, clean_from, clean_to)
+
+
+def apply_order_status_reference(df: pd.DataFrame, order_master: pd.DataFrame | None = None) -> pd.DataFrame:
+    result = ensure_order_status_display_columns(df)
+    if ORDER_NO_COL not in result.columns:
+        result[ORDER_NO_COL] = ""
+    result["_수주번호키"] = result[ORDER_NO_COL].map(normalize_order_no_value)
+
+    master = order_master
+    load_error = ""
+    if master is None:
+        date_from, date_to = derive_order_status_date_range(result)
+        master, load_error = load_order_status_master(date_from, date_to)
+    if not isinstance(master, pd.DataFrame):
+        master = empty_order_status_master()
+    for col in ORDER_MASTER_COLUMNS:
+        if col not in master.columns:
+            master[col] = ""
+    master = master[ORDER_MASTER_COLUMNS].copy()
+    master["_수주번호키"] = master["_수주번호키"].map(normalize_order_no_value)
+    valid_master_key = master["_수주번호키"].map(is_valid_reference_text).astype(bool)
+    master = master.loc[valid_master_key].copy()
+    if master["_수주번호키"].duplicated().any():
+        duplicate_count = int(master["_수주번호키"].duplicated(keep=False).sum())
+        raise ValueError(f"수주 마스터 수주번호 중복으로 병합을 중단했습니다: {duplicate_count:,}행")
+
+    if master.empty:
+        result[ORDER_CUSTOMER_COL] = ORDER_INFO_STATUS_UNAVAILABLE
+        result[ORDER_COUNTRY_CODE_COL] = ORDER_INFO_STATUS_UNAVAILABLE
+        result[ORDER_COUNTRY_NAME_COL] = ORDER_INFO_STATUS_UNAVAILABLE
+        result[COUNTRY_CONFIRMATION_STATUS_COL] = COUNTRY_STATUS_UNAVAILABLE
+        result[ORDER_INFO_STATUS_COL] = ORDER_INFO_STATUS_UNAVAILABLE
+        result[COUNTRY_DOMESTIC_EXPORT_COL] = DOMESTIC_EXPORT_UNKNOWN
+        result[DOMESTIC_EXPORT_REASON_COL] = f"수주 API 조회불가: {load_error}".strip()
+        result[REGION_COL] = REGION_UNKNOWN
+        result[REGION_REASON_COL] = "수주 API 조회불가"
+        return apply_customer_confirmation_columns(result.drop(columns=["_수주번호키"], errors="ignore"))
+
+    before_len = len(result)
+    merged = result.merge(master, on="_수주번호키", how="left", suffixes=("", "_수주마스터"), validate="many_to_one")
+    if len(merged) != before_len:
+        raise ValueError("수주 API 연결 후 행 수가 증가했습니다.")
+
+    for col in ORDER_MASTER_COLUMNS:
+        if col == "_수주번호키":
+            continue
+        master_col = f"{col}_수주마스터"
+        if master_col in merged.columns:
+            merged[col] = merged[master_col].map(clean_text_value)
+            merged = merged.drop(columns=[master_col])
+    unmatched = merged[ORDER_INFO_STATUS_COL].map(clean_text_value).eq("")
+    merged.loc[unmatched & merged["_수주번호키"].map(is_valid_reference_text), ORDER_INFO_STATUS_COL] = (
+        ORDER_INFO_STATUS_UNMATCHED
+    )
+    merged.loc[~merged["_수주번호키"].map(is_valid_reference_text), ORDER_INFO_STATUS_COL] = ORDER_INFO_STATUS_UNMATCHED
+
+    order_customer_valid = merged[ORDER_CUSTOMER_COL].map(is_valid_reference_text) & merged[ORDER_CUSTOMER_COL].ne(
+        ORDER_INFO_STATUS_UNAVAILABLE
+    )
+    plan_customer_valid = merged[PLAN_CUSTOMER_COL].map(is_valid_reference_text)
+    merged[FINAL_CUSTOMER_COL] = CUSTOMER_SOURCE_MISSING
+    merged.loc[order_customer_valid, FINAL_CUSTOMER_COL] = merged.loc[order_customer_valid, ORDER_CUSTOMER_COL]
+    merged.loc[~order_customer_valid & plan_customer_valid, FINAL_CUSTOMER_COL] = merged.loc[
+        ~order_customer_valid & plan_customer_valid, PLAN_CUSTOMER_COL
+    ]
+    merged[CUSTOMER_NAME_SOURCE_COL] = CUSTOMER_SOURCE_MISSING
+    merged.loc[order_customer_valid, CUSTOMER_NAME_SOURCE_COL] = CUSTOMER_SOURCE_ORDER_API
+    merged.loc[~order_customer_valid & plan_customer_valid, CUSTOMER_NAME_SOURCE_COL] = CUSTOMER_SOURCE_PLAN_API
+
+    country_status_missing = merged[COUNTRY_CONFIRMATION_STATUS_COL].map(clean_text_value).eq("")
+    country_has_value = merged[ORDER_COUNTRY_CODE_COL].map(is_valid_reference_text) | merged[
+        ORDER_COUNTRY_NAME_COL
+    ].map(is_valid_reference_text)
+    merged.loc[country_status_missing & country_has_value, COUNTRY_CONFIRMATION_STATUS_COL] = COUNTRY_STATUS_CONFIRMED
+    merged.loc[country_status_missing & ~country_has_value, COUNTRY_CONFIRMATION_STATUS_COL] = COUNTRY_STATUS_MISSING
+
+    country_classification = [
+        classify_country_domestic_export(code, name)
+        for code, name in zip(merged[ORDER_COUNTRY_CODE_COL], merged[ORDER_COUNTRY_NAME_COL])
+    ]
+    merged[COUNTRY_DOMESTIC_EXPORT_COL] = [item[0] for item in country_classification]
+    merged[DOMESTIC_EXPORT_REASON_COL] = [item[1] for item in country_classification]
+    region_classification = [
+        classify_region_from_country(code, name)
+        for code, name in zip(merged[ORDER_COUNTRY_CODE_COL], merged[ORDER_COUNTRY_NAME_COL])
+    ]
+    merged[REGION_COL] = [item[0] for item in region_classification]
+    merged[REGION_REASON_COL] = [item[1] for item in region_classification]
+    return apply_customer_confirmation_columns(merged.drop(columns=["_수주번호키"], errors="ignore"))
 
 
 def resolve_api_product_code_for_item(item_code: object, api_codes: set[str]) -> tuple[str, str]:
@@ -1904,7 +2562,7 @@ def normalize_product_names_api_lookup(raw: pd.DataFrame) -> pd.DataFrame:
     )
     cycle_col = pick_api_column(columns, ["cycle_gu_nm", "CYCLE_GU_NM", "착용주기", "wear_cycle"])
     model_col = pick_api_column(columns, ["model_nm", "MODEL_NM", "모델명"])
-    customer_col = pick_api_column(columns, ["거래처명", "고객명", "customer_name", "cust_nm", "CUST_NM"])
+    customer_col = None
 
     if code_col is None:
         return empty_product_info_lookup()
@@ -1916,11 +2574,11 @@ def normalize_product_names_api_lookup(raw: pd.DataFrame) -> pd.DataFrame:
         info["신규분류_기준"] = work[category_col].map(clean_text_value)
     else:
         info["신규분류_기준"] = ""
-    info["거래처_기준"] = work[customer_col].map(clean_text_value) if customer_col is not None else ""
+    info["거래처_기준"] = ""
     info["API 제품명코드"] = info["제품명코드"]
     info["API 제품명"] = info["제품명_기준"]
     info["API 제품분류"] = info["신규분류_기준"]
-    info["API 거래처명"] = info["거래처_기준"]
+    info[PLAN_CUSTOMER_COL] = info["거래처_기준"]
     info["착용주기"] = work[cycle_col].map(clean_text_value) if cycle_col is not None else ""
     info["모델명"] = work[model_col].map(clean_text_value) if model_col is not None else ""
     info["사용여부"] = work["use_yn"].map(clean_text_value) if "use_yn" in work.columns else ""
@@ -1929,7 +2587,7 @@ def normalize_product_names_api_lookup(raw: pd.DataFrame) -> pd.DataFrame:
     info.loc[~info["제품명_기준"].map(is_valid_reference_text), "제품명 출처"] = ""
     info["분류 출처"] = "API full_gu_nm"
     info.loc[~info["신규분류_기준"].map(is_valid_reference_text), "분류 출처"] = ""
-    info["거래처 그룹"] = info["거래처_기준"].map(lambda value: build_customer_group_from_exact_rule(value)[0])
+    info[CUSTOMER_GROUP_COL] = info["거래처_기준"].map(lambda value: build_customer_group_from_exact_rule(value)[0])
     info["API 매칭상태"] = API_PRODUCT_STATUS_EXACT
     info["API 매칭근거"] = "API /api/product-names nm_cd"
 
@@ -1974,10 +2632,10 @@ def normalize_product_names_api_lookup(raw: pd.DataFrame) -> pd.DataFrame:
         selected["거래처_기준"] = only_value_or_blank(customer_values) or clean_text_value(selected.get("거래처_기준", ""))
         selected["API 제품명"] = selected["제품명_기준"]
         selected["API 제품분류"] = selected["신규분류_기준"]
-        selected["API 거래처명"] = selected["거래처_기준"]
+        selected[PLAN_CUSTOMER_COL] = selected["거래처_기준"]
         selected["제품명 출처"] = "API nm_nm" if is_valid_reference_text(selected["제품명_기준"]) else ""
         selected["분류 출처"] = "API full_gu_nm" if is_valid_reference_text(selected["신규분류_기준"]) else ""
-        selected["거래처 그룹"] = build_customer_group_from_exact_rule(selected["거래처_기준"])[0]
+        selected[CUSTOMER_GROUP_COL] = build_customer_group_from_exact_rule(selected["거래처_기준"])[0]
         if has_conflict:
             selected["API 매칭상태"] = API_PRODUCT_STATUS_DUPLICATE
             selected["API 매칭근거"] = "동일 nm_cd에 서로 다른 API 기준값 존재"
@@ -2085,6 +2743,15 @@ def apply_product_master_reference(
     result.loc[result["API 매칭상태"].eq(API_PRODUCT_STATUS_UNAVAILABLE), "API 매칭근거"] = "API 제품명 기준 조회불가"
     result = result.drop(columns=["_API 코드 매칭근거"], errors="ignore")
 
+    result = ensure_plan_customer_column(result)
+    if "거래처" in result.columns:
+        plan_customer_valid = result[PLAN_CUSTOMER_COL].map(is_valid_reference_text)
+        demand_customer = result["거래처"].map(clean_text_value)
+        demand_customer_valid = demand_customer.map(is_valid_reference_text)
+        fallback_plan_customer = ~plan_customer_valid & demand_customer_valid
+        result.loc[fallback_plan_customer, PLAN_CUSTOMER_COL] = demand_customer.loc[fallback_plan_customer]
+    result = apply_customer_confirmation_columns(result)
+
     api_name_valid = result["API 제품명"].map(is_valid_reference_text)
     exact_name_mask = result["API 매칭상태"].eq(API_PRODUCT_STATUS_EXACT) & api_name_valid
     result.loc[exact_name_mask, product_col] = result.loc[exact_name_mask, "API 제품명"]
@@ -2093,8 +2760,10 @@ def apply_product_master_reference(
     api_category_valid = result["API 제품분류"].map(is_valid_reference_text)
     exact_category_mask = result["API 매칭상태"].eq(API_PRODUCT_STATUS_EXACT) & api_category_valid
     result["분류별요약"] = ""
+    result["제품분류 판단 근거"] = ""
     result.loc[exact_category_mask, "분류별요약"] = result.loc[exact_category_mask, "API 제품분류"]
     result.loc[exact_category_mask, "분류 출처"] = "API full_gu_nm"
+    result.loc[exact_category_mask, "제품분류 판단 근거"] = "API full_gu_nm"
 
     missing_category = ~exact_category_mask
     if missing_category.any():
@@ -2107,7 +2776,16 @@ def apply_product_master_reference(
         inferred_index = inferred.index[inferred_valid]
         result.loc[inferred_index, "분류별요약"] = inferred.loc[inferred_index]
         result.loc[inferred_index, "분류 출처"] = "추정분류"
+        result.loc[inferred_index, "제품분류 판단 근거"] = (
+            "API full_gu_nm 결측/미매칭, "
+            + ", ".join(infer_cols)
+            + " 기반 보조규칙 적용"
+        )
     result.loc[~result["분류별요약"].map(is_valid_reference_text), "분류별요약"] = "제품분류 미확인"
+    category_reason_missing = result["제품분류 판단 근거"].map(clean_text_value).eq("")
+    result.loc[category_reason_missing, "제품분류 판단 근거"] = (
+        "API full_gu_nm 결측/미매칭, 보조규칙 미적용"
+    )
 
     if result.empty:
         result["시트분류"] = pd.Series(dtype="object")
@@ -2120,6 +2798,15 @@ def apply_product_master_reference(
     result["수동시트분류"] = ""
     result["자동분류결과"] = result["시트분류"]
     return result
+
+
+def enrich_loaded_shortage_snapshot_for_display(df: pd.DataFrame) -> pd.DataFrame:
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return df
+    product_info = load_product_names_api_lookup()
+    if not product_info.empty and "품목코드" in df.columns:
+        return apply_order_status_reference(apply_product_master_reference(df, product_info))
+    return apply_order_status_reference(df)
 
 
 def read_aps_plan_operations_dataframe(
@@ -4002,8 +4689,9 @@ def load_cloud_shortage_snapshot(site_filter: str = "전체") -> tuple[pd.DataFr
         published_snapshot_name = get_published_snapshot_set_file_name(snapshot_name)
         published_info_name = get_published_snapshot_set_file_name(info_name)
         published_process_name = get_published_snapshot_set_file_name(process_name)
+    snapshot_df = load_cloud_snapshot_csv(published_snapshot_name)
     return (
-        load_cloud_snapshot_csv(published_snapshot_name),
+        enrich_loaded_shortage_snapshot_for_display(snapshot_df),
         load_cloud_snapshot_csv(published_info_name),
         load_cloud_snapshot_csv(published_process_name),
     )
@@ -5795,7 +6483,15 @@ def collapse_duplicate_p_demand_rows(df: pd.DataFrame) -> pd.DataFrame:
         "누수규격검사 창고",
         "공정재고 합계",
     }
-    joined_text_cols = {"비고", "재작업", "확인구분", "분류 판단 근거"}
+    joined_text_cols = {
+        "비고",
+        "재작업",
+        "확인구분",
+        "분류 판단 근거",
+        "제품분류 판단 근거",
+        CUSTOMER_FILL_SOURCE_COL,
+        CUSTOMER_FILL_REASON_COL,
+    }
 
     def first_non_empty(values: pd.Series) -> object:
         for value in values:
@@ -5839,11 +6535,32 @@ def build_empty_shortage_dashboard_df() -> pd.DataFrame:
         "API 제품명코드",
         "API 제품명",
         "API 제품분류",
-        "API 거래처명",
+        ORDER_CUSTOMER_COL,
+        PLAN_CUSTOMER_COL,
+        FINAL_CUSTOMER_COL,
+        CUSTOMER_NAME_SOURCE_COL,
+        COUNTRY_DISPLAY_COL,
+        ORDER_COUNTRY_CODE_COL,
+        ORDER_COUNTRY_NAME_COL,
+        COUNTRY_CONFIRMATION_STATUS_COL,
+        INITIAL_DOMESTIC_EXPORT_COL,
+        COUNTRY_DOMESTIC_EXPORT_COL,
+        DOMESTIC_EXPORT_REASON_COL,
+        REGION_COL,
+        REGION_REASON_COL,
+        ORDER_INFO_STATUS_COL,
+        CUSTOMER_GROUP_COL,
+        OPERATION_SEGMENT_COL,
+        CUSTOMER_CONFIRMATION_STATUS_COL,
+        "착용주기",
+        "모델명",
         "API 매칭상태",
         "API 매칭근거",
         "제품명 출처",
         "분류 출처",
+        "제품분류 판단 근거",
+        CUSTOMER_FILL_SOURCE_COL,
+        CUSTOMER_FILL_REASON_COL,
         DEMAND_QTY_COL,
         PIA_ORDER_CLASS_COL,
         "파워",
@@ -5913,8 +6630,11 @@ def is_english_customer_name(customer: object) -> bool:
 
 
 def classify_sheet_with_reason(row: pd.Series) -> tuple[str, str]:
-    api_customer = clean_text_value(row.get("API 거래처명", ""))
-    customer = api_customer or row.get("거래처", "")
+    final_customer = clean_text_value(row.get(FINAL_CUSTOMER_COL, ""))
+    plan_customer = clean_text_value(row.get(PLAN_CUSTOMER_COL, "")) or clean_text_value(
+        row.get(LEGACY_API_CUSTOMER_COL, "")
+    )
+    customer = final_customer or plan_customer or row.get("거래처", "")
 
     category, matched_customer = match_exact_customer_category(customer)
     if category != UNCLASSIFIED_SHEET_CATEGORY:
@@ -8567,6 +9287,7 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
     )
     api_product_info = load_product_names_api_lookup()
     grouped_demand = apply_product_master_reference(grouped_demand, api_product_info)
+    grouped_demand = apply_order_status_reference(grouped_demand)
     grouped_demand = grouped_demand.drop(columns=["코드5", "R코드5"])
 
     target_inv = inv_df[inv_df["창고"].isin(TARGET_WAREHOUSES)].copy()
@@ -8868,6 +9589,8 @@ def build_api_shortage_data_from_frames(
         )
         return pd.DataFrame(), empty_info, pd.DataFrame()
 
+    work = enrich_missing_customer_from_linked_p_rows(work)
+
     group_keys = [
         "사이트코드",
         "거래처",
@@ -8895,6 +9618,16 @@ def build_api_shortage_data_from_frames(
         .rename(columns={DEMAND_QTY_COL: "_수요수량"})
     )
     grouped = qty_pivot.merge(demand_qty, on=group_keys, how="left")
+    customer_fill_meta = (
+        work.groupby(group_keys, as_index=False, dropna=False)
+        .agg(
+            {
+                CUSTOMER_FILL_SOURCE_COL: lambda values: ", ".join(unique_valid_text_values(values)),
+                CUSTOMER_FILL_REASON_COL: lambda values: ", ".join(unique_valid_text_values(values)),
+            }
+        )
+    )
+    grouped = grouped.merge(customer_fill_meta, on=group_keys, how="left")
     grouped = grouped.rename(columns={"API납기일": "납기일"})
 
     for col in ["생산수량", "사출생산필요수량", SEPARATION_REQUIRED_QTY_COL, LEADJI_REQUIRED_QTY_COL, ADHESION_REQUIRED_QTY_COL]:
@@ -9007,6 +9740,7 @@ def build_api_shortage_data_from_frames(
     result["원본 제품명"] = result["제품명"].astype(str).replace({"nan": "", "None": ""}).fillna("")
     api_product_info = load_product_names_api_lookup()
     result = apply_product_master_reference(result, api_product_info)
+    result = apply_order_status_reference(result)
     result["시트분류"] = result["시트분류"].map(clean_text_value)
     result.loc[result["시트분류"].str.lower().isin(INVALID_CATEGORY_VALUES), "시트분류"] = UNCLASSIFIED_SHEET_CATEGORY
     result["분류별요약"] = result["분류별요약"].astype(str).str.strip()
@@ -9039,11 +9773,32 @@ def build_api_shortage_data_from_frames(
         "API 제품명코드",
         "API 제품명",
         "API 제품분류",
-        "API 거래처명",
+        ORDER_CUSTOMER_COL,
+        PLAN_CUSTOMER_COL,
+        FINAL_CUSTOMER_COL,
+        CUSTOMER_NAME_SOURCE_COL,
+        COUNTRY_DISPLAY_COL,
+        ORDER_COUNTRY_CODE_COL,
+        ORDER_COUNTRY_NAME_COL,
+        COUNTRY_CONFIRMATION_STATUS_COL,
+        INITIAL_DOMESTIC_EXPORT_COL,
+        COUNTRY_DOMESTIC_EXPORT_COL,
+        DOMESTIC_EXPORT_REASON_COL,
+        REGION_COL,
+        REGION_REASON_COL,
+        ORDER_INFO_STATUS_COL,
+        CUSTOMER_GROUP_COL,
+        OPERATION_SEGMENT_COL,
+        CUSTOMER_CONFIRMATION_STATUS_COL,
+        "착용주기",
+        "모델명",
         "API 매칭상태",
         "API 매칭근거",
         "제품명 출처",
         "분류 출처",
+        "제품분류 판단 근거",
+        CUSTOMER_FILL_SOURCE_COL,
+        CUSTOMER_FILL_REASON_COL,
         "납기일",
         "사출납기일",
         "파워",
@@ -9114,6 +9869,73 @@ def normalize_item_code_value(value: object) -> str:
     if not code or code.lower() in INVALID_CATEGORY_VALUES:
         return ""
     return code
+
+
+def enrich_missing_customer_from_linked_p_rows(work: pd.DataFrame) -> pd.DataFrame:
+    result = work.copy()
+    if CUSTOMER_FILL_SOURCE_COL not in result.columns:
+        result[CUSTOMER_FILL_SOURCE_COL] = ""
+    if CUSTOMER_FILL_REASON_COL not in result.columns:
+        result[CUSTOMER_FILL_REASON_COL] = ""
+    if "거래처" not in result.columns:
+        return result
+
+    result["거래처"] = result["거래처"].map(clean_text_value)
+    required_cols = ["사이트코드", ORDER_NO_COL, "이니셜", "제품명", "API납기일", "품목코드"]
+    if any(col not in result.columns for col in required_cols):
+        return result
+
+    link_cols = ["사이트코드", ORDER_NO_COL, "이니셜", "제품명", "_파워_거래처연결", "API납기일"]
+    result["_품목prefix_거래처연결"] = result["품목코드"].map(normalize_item_code_value).str[:1]
+    result["_파워_거래처연결"] = result["품목코드"].map(extract_power_from_code)
+    for col in ["사이트코드", ORDER_NO_COL, "이니셜", "제품명", "API납기일"]:
+        result[col] = result[col].map(clean_text_value)
+
+    context_present = (
+        result["사이트코드"].map(is_valid_reference_text)
+        & result[ORDER_NO_COL].map(is_valid_reference_text)
+        & result["이니셜"].map(is_valid_reference_text)
+        & result["제품명"].map(is_valid_reference_text)
+        & result["API납기일"].map(is_valid_reference_text)
+        & result["_파워_거래처연결"].map(clean_text_value).ne("-")
+    )
+    customer_present = result["거래처"].map(is_valid_reference_text)
+    p_source = result[
+        context_present
+        & customer_present
+        & result["_품목prefix_거래처연결"].eq("P")
+    ][[*link_cols, "거래처"]].copy()
+    target_index = result.index[
+        context_present
+        & ~customer_present
+        & result["_품목prefix_거래처연결"].isin(["R", "Q", "U"])
+    ]
+    if p_source.empty or target_index.empty:
+        return result.drop(columns=["_품목prefix_거래처연결", "_파워_거래처연결"], errors="ignore")
+
+    p_lookup = (
+        p_source.groupby(link_cols, dropna=False)["거래처"]
+        .agg(unique_valid_text_values)
+        .reset_index()
+    )
+    p_lookup["_거래처후보수"] = p_lookup["거래처"].map(len)
+    p_lookup = p_lookup[p_lookup["_거래처후보수"].eq(1)].copy()
+    if p_lookup.empty:
+        return result.drop(columns=["_품목prefix_거래처연결", "_파워_거래처연결"], errors="ignore")
+    p_lookup["_P행거래처"] = p_lookup["거래처"].map(lambda values: values[0])
+    p_lookup = p_lookup.drop(columns=["거래처", "_거래처후보수"])
+
+    target = result.loc[target_index, link_cols].reset_index()
+    matched = target.merge(p_lookup, on=link_cols, how="left")
+    matched = matched[matched["_P행거래처"].map(is_valid_reference_text)]
+    if matched.empty:
+        return result.drop(columns=["_품목prefix_거래처연결", "_파워_거래처연결"], errors="ignore")
+
+    fill_index = matched["index"].to_numpy()
+    result.loc[fill_index, "거래처"] = matched["_P행거래처"].to_numpy()
+    result.loc[fill_index, CUSTOMER_FILL_SOURCE_COL] = LINKED_P_ROW_CUSTOMER_SOURCE
+    result.loc[fill_index, CUSTOMER_FILL_REASON_COL] = LINKED_P_ROW_CUSTOMER_REASON
+    return result.drop(columns=["_품목prefix_거래처연결", "_파워_거래처연결"], errors="ignore")
 
 
 def normalize_to_master_p_code(value: object) -> str:
@@ -10465,7 +11287,8 @@ def build_all_item_status_snapshot(refresh_key: str, base_dir_str: str | None = 
     all_items = apply_product_master_reference(all_items, product_info, item_col="제품명코드", product_col="제품명")
     all_items["신규분류"] = apply_nonempty_override(all_items["신규분류"], all_items["API 제품분류"])
     all_items["신규분류"] = apply_nonempty_override(all_items["제품군"], all_items["신규분류"])
-    all_items["거래처"] = all_items["API 거래처명"].astype(str).replace({"nan": "", "None": ""}).fillna("")
+    all_items = ensure_plan_customer_column(all_items)
+    all_items["거래처"] = all_items[PLAN_CUSTOMER_COL].astype(str).replace({"nan": "", "None": ""}).fillna("")
     all_items["이니셜"] = ""
     all_items["파워"] = all_items["생산코드"].map(extract_power_from_code)
 
@@ -11023,45 +11846,135 @@ def build_inventory_risk_snapshot(refresh_key: str, base_dir_str: str | None = N
 @st.cache_data(show_spinner=False, max_entries=CACHE_MAX_ENTRIES)
 def build_filter_option_maps(
     df: pd.DataFrame, selected_site_option: str = "전체"
-) -> tuple[dict[str, float], dict[str, float], dict[str, float], dict[str, float]]:
-    process_qty_cols = [
-        "사출생산필요수량",
-        SEPARATION_REQUIRED_QTY_COL,
-        LEADJI_REQUIRED_QTY_COL,
-        ADHESION_REQUIRED_QTY_COL,
+) -> tuple[
+    dict[str, float],
+    dict[str, float],
+    dict[str, float],
+    dict[str, float],
+    dict[str, float],
+    dict[str, float],
+    dict[str, float],
+    dict[str, float],
+    dict[str, float],
+    dict[str, float],
+    dict[str, float],
+]:
+    required_cols = [
+        "사이트코드",
+        COUNTRY_DOMESTIC_EXPORT_COL,
+        REGION_COL,
+        COUNTRY_DISPLAY_COL,
+        "분류별요약",
+        CUSTOMER_GROUP_COL,
+        FINAL_CUSTOMER_COL,
+        CUSTOMER_CONFIRMATION_STATUS_COL,
+        "품목코드",
+        "착용주기",
+        "모델명",
+        "API 매칭상태",
         "부족수량",
     ]
-    required_cols = ["사이트코드", "시트분류", "분류별요약", "API 매칭상태", *process_qty_cols]
-    option_df = df[[c for c in required_cols if c in df.columns]].copy()
-    for qty_col in process_qty_cols:
-        if qty_col not in option_df.columns:
-            option_df[qty_col] = 0
+    source_df = apply_customer_confirmation_columns(df)
+    option_df = source_df[[c for c in required_cols if c in source_df.columns]].copy()
+    if "부족수량" not in option_df.columns:
+        option_df["부족수량"] = 0
     if "사이트코드" not in option_df.columns:
         option_df["사이트코드"] = "(미지정)"
-    if "시트분류" not in option_df.columns:
-        option_df["시트분류"] = "(미분류)"
+    if COUNTRY_DOMESTIC_EXPORT_COL not in option_df.columns:
+        option_df[COUNTRY_DOMESTIC_EXPORT_COL] = DOMESTIC_EXPORT_UNKNOWN
+    if REGION_COL not in option_df.columns:
+        option_df[REGION_COL] = REGION_UNKNOWN
+    if COUNTRY_DISPLAY_COL not in option_df.columns:
+        option_df[COUNTRY_DISPLAY_COL] = "(국가 미확인)"
     if "분류별요약" not in option_df.columns:
         option_df["분류별요약"] = "(미분류)"
+    if CUSTOMER_GROUP_COL not in option_df.columns:
+        option_df[CUSTOMER_GROUP_COL] = UNCLASSIFIED_SHEET_CATEGORY
+    if FINAL_CUSTOMER_COL not in option_df.columns:
+        option_df[FINAL_CUSTOMER_COL] = CUSTOMER_SOURCE_MISSING
+    if CUSTOMER_CONFIRMATION_STATUS_COL not in option_df.columns:
+        option_df[CUSTOMER_CONFIRMATION_STATUS_COL] = CUSTOMER_STATUS_SOURCE_MISSING
+    if "품목코드" not in option_df.columns:
+        option_df["품목코드"] = ""
+    if "착용주기" not in option_df.columns:
+        option_df["착용주기"] = "(미확인)"
+    if "모델명" not in option_df.columns:
+        option_df["모델명"] = "(미확인)"
     if "API 매칭상태" not in option_df.columns:
         option_df["API 매칭상태"] = "(미확인)"
 
-    site_label = option_df["사이트코드"].astype(str).str.strip()
-    option_df["사이트코드"] = site_label.replace({"": "(미지정)", "nan": "(미지정)", "None": "(미지정)"})
-    option_df["필터수량"] = 0.0
-    for qty_col in process_qty_cols:
-        option_df[qty_col] = parse_mixed_numeric(option_df[qty_col])
-        option_df["필터수량"] = option_df["필터수량"] + option_df[qty_col]
+    fill_labels = {
+        "사이트코드": "(미지정)",
+        COUNTRY_DOMESTIC_EXPORT_COL: DOMESTIC_EXPORT_UNKNOWN,
+        REGION_COL: REGION_UNKNOWN,
+        COUNTRY_DISPLAY_COL: "(국가 미확인)",
+        "분류별요약": "(미분류)",
+        CUSTOMER_GROUP_COL: UNCLASSIFIED_SHEET_CATEGORY,
+        FINAL_CUSTOMER_COL: CUSTOMER_SOURCE_MISSING,
+        CUSTOMER_CONFIRMATION_STATUS_COL: CUSTOMER_STATUS_SOURCE_MISSING,
+        "착용주기": "(미확인)",
+        "모델명": "(미확인)",
+        "API 매칭상태": "(미확인)",
+    }
+    for col, label in fill_labels.items():
+        text = option_df[col].astype(str).str.strip()
+        option_df[col] = text.replace({"": label, "nan": label, "None": label, "none": label})
+    option_df["부족수량"] = parse_mixed_numeric(option_df["부족수량"])
+    item_prefix = option_df["품목코드"].map(normalize_item_code_value).str[:1]
+    p_shortage_df = option_df[item_prefix.eq("P") & option_df["부족수량"].gt(0)].copy()
 
-    site_sum_map = option_df.groupby("사이트코드", as_index=True)["필터수량"].sum().sort_values(ascending=False).to_dict()
+    site_sum_map = (
+        p_shortage_df.groupby("사이트코드", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
+    )
 
-    scoped = option_df
+    scoped = p_shortage_df
     if selected_site_option and selected_site_option != "전체":
         scoped = scoped[scoped["사이트코드"] == selected_site_option]
 
-    sheet_sum_map = scoped.groupby("시트분류", as_index=True)["필터수량"].sum().sort_values(ascending=False).to_dict()
-    summary_sum_map = scoped.groupby("분류별요약", as_index=True)["필터수량"].sum().sort_values(ascending=False).to_dict()
-    api_status_sum_map = scoped.groupby("API 매칭상태", as_index=True)["필터수량"].sum().sort_values(ascending=False).to_dict()
-    return site_sum_map, sheet_sum_map, summary_sum_map, api_status_sum_map
+    domestic_export_sum_map = (
+        scoped.groupby(COUNTRY_DOMESTIC_EXPORT_COL, as_index=True)["부족수량"]
+        .sum()
+        .sort_values(ascending=False)
+        .to_dict()
+    )
+    region_sum_map = (
+        scoped.groupby(REGION_COL, as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
+    )
+    country_sum_map = (
+        scoped.groupby(COUNTRY_DISPLAY_COL, as_index=True)["부족수량"]
+        .sum()
+        .sort_values(ascending=False)
+        .to_dict()
+    )
+    customer_group_sum_map = (
+        scoped.groupby(CUSTOMER_GROUP_COL, as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
+    )
+    final_customer_sum_map = (
+        scoped.groupby(FINAL_CUSTOMER_COL, as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
+    )
+    summary_sum_map = scoped.groupby("분류별요약", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
+    wear_cycle_sum_map = scoped.groupby("착용주기", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
+    model_sum_map = scoped.groupby("모델명", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
+    api_status_sum_map = scoped.groupby("API 매칭상태", as_index=True)["부족수량"].sum().sort_values(ascending=False).to_dict()
+    customer_status_sum_map = (
+        scoped.groupby(CUSTOMER_CONFIRMATION_STATUS_COL, as_index=True)["부족수량"]
+        .sum()
+        .sort_values(ascending=False)
+        .to_dict()
+    )
+    return (
+        site_sum_map,
+        domestic_export_sum_map,
+        region_sum_map,
+        country_sum_map,
+        customer_group_sum_map,
+        final_customer_sum_map,
+        summary_sum_map,
+        wear_cycle_sum_map,
+        model_sum_map,
+        api_status_sum_map,
+        customer_status_sum_map,
+    )
 
 
 @st.cache_data(show_spinner=False, max_entries=CACHE_MAX_ENTRIES)
@@ -11070,14 +11983,21 @@ def filter_data(
     selected_site_option: str,
     unified_query: str,
     exclude_safe_initial: bool,
-    selected_sheet_options: tuple[str, ...],
+    selected_domestic_export_options: tuple[str, ...],
+    selected_region_options: tuple[str, ...],
+    selected_country_options: tuple[str, ...],
     selected_summary_options: tuple[str, ...],
+    selected_customer_group_options: tuple[str, ...],
+    selected_final_customer_options: tuple[str, ...],
+    selected_wear_cycle_options: tuple[str, ...],
+    selected_model_options: tuple[str, ...],
     selected_api_status_options: tuple[str, ...],
+    selected_customer_status_options: tuple[str, ...],
     only_same_rq_group: bool,
     only_with_stock: bool,
     only_rework_available: bool,
 ) -> pd.DataFrame:
-    base_filtered = df.copy()
+    base_filtered = apply_customer_confirmation_columns(df)
     if "사이트코드" not in base_filtered.columns:
         base_filtered["사이트코드"] = "(미지정)"
     site_label = base_filtered["사이트코드"].astype(str).str.strip()
@@ -11099,7 +12019,21 @@ def filter_data(
             "API 제품명코드",
             "API 제품명",
             "API 제품분류",
-            "API 거래처명",
+            ORDER_CUSTOMER_COL,
+            PLAN_CUSTOMER_COL,
+            FINAL_CUSTOMER_COL,
+            CUSTOMER_NAME_SOURCE_COL,
+            ORDER_COUNTRY_CODE_COL,
+            ORDER_COUNTRY_NAME_COL,
+            COUNTRY_DISPLAY_COL,
+            COUNTRY_CONFIRMATION_STATUS_COL,
+            INITIAL_DOMESTIC_EXPORT_COL,
+            COUNTRY_DOMESTIC_EXPORT_COL,
+            REGION_COL,
+            ORDER_INFO_STATUS_COL,
+            CUSTOMER_GROUP_COL,
+            OPERATION_SEGMENT_COL,
+            CUSTOMER_CONFIRMATION_STATUS_COL,
             "API 매칭상태",
             "비고",
             "재작업",
@@ -11113,12 +12047,36 @@ def filter_data(
     base_filtered = filter_with_terms_any(base_filtered, search_cols, unified_query)
     if exclude_safe_initial and "이니셜" in base_filtered.columns:
         base_filtered = base_filtered[~base_filtered["이니셜"].astype(str).str.contains("안전", na=False)]
-    if is_specific_pill_selection(selected_sheet_options) and "시트분류" in base_filtered.columns:
-        base_filtered = base_filtered[base_filtered["시트분류"].isin(selected_sheet_options)]
+    if (
+        is_specific_pill_selection(selected_domestic_export_options)
+        and COUNTRY_DOMESTIC_EXPORT_COL in base_filtered.columns
+    ):
+        base_filtered = base_filtered[
+            base_filtered[COUNTRY_DOMESTIC_EXPORT_COL].isin(selected_domestic_export_options)
+        ]
+    if is_specific_pill_selection(selected_region_options) and REGION_COL in base_filtered.columns:
+        base_filtered = base_filtered[base_filtered[REGION_COL].isin(selected_region_options)]
+    if is_specific_pill_selection(selected_country_options) and COUNTRY_DISPLAY_COL in base_filtered.columns:
+        base_filtered = base_filtered[base_filtered[COUNTRY_DISPLAY_COL].isin(selected_country_options)]
     if is_specific_pill_selection(selected_summary_options) and "분류별요약" in base_filtered.columns:
         base_filtered = base_filtered[base_filtered["분류별요약"].isin(selected_summary_options)]
+    if is_specific_pill_selection(selected_customer_group_options) and CUSTOMER_GROUP_COL in base_filtered.columns:
+        base_filtered = base_filtered[base_filtered[CUSTOMER_GROUP_COL].isin(selected_customer_group_options)]
+    if is_specific_pill_selection(selected_final_customer_options) and FINAL_CUSTOMER_COL in base_filtered.columns:
+        base_filtered = base_filtered[base_filtered[FINAL_CUSTOMER_COL].isin(selected_final_customer_options)]
+    if is_specific_pill_selection(selected_wear_cycle_options) and "착용주기" in base_filtered.columns:
+        base_filtered = base_filtered[base_filtered["착용주기"].isin(selected_wear_cycle_options)]
+    if is_specific_pill_selection(selected_model_options) and "모델명" in base_filtered.columns:
+        base_filtered = base_filtered[base_filtered["모델명"].isin(selected_model_options)]
     if is_specific_pill_selection(selected_api_status_options) and "API 매칭상태" in base_filtered.columns:
         base_filtered = base_filtered[base_filtered["API 매칭상태"].isin(selected_api_status_options)]
+    if (
+        is_specific_pill_selection(selected_customer_status_options)
+        and CUSTOMER_CONFIRMATION_STATUS_COL in base_filtered.columns
+    ):
+        base_filtered = base_filtered[
+            base_filtered[CUSTOMER_CONFIRMATION_STATUS_COL].isin(selected_customer_status_options)
+        ]
     if only_same_rq_group and {"R코드5", "Q코드5", "P코드5"}.issubset(base_filtered.columns):
         p_count_per_group = base_filtered.groupby(["R코드5", "Q코드5"])["P코드5"].transform("nunique")
         base_filtered = base_filtered[p_count_per_group >= 2]
@@ -11145,7 +12103,7 @@ def apply_filters(
         st.caption(f"앱 버전: {APP_CACHE_VERSION}")
         default_scope_caption = st.empty()
 
-        site_sum_map, _, _, _ = build_filter_option_maps(df, "전체")
+        site_sum_map, *_ = build_filter_option_maps(df, "전체")
         site_options = ["전체"] + list(site_sum_map.keys())
         site_count_map = {"전체": float(sum(site_sum_map.values())), **site_sum_map}
         locked_site_text = clean_text_value(locked_site_filter)
@@ -11178,45 +12136,111 @@ def apply_filters(
                 format_func=lambda x: format_pill_label(x, site_count_map),
             )
 
-        st.divider()
-        unified_query = st.text_input(
-            "통합 검색",
-            value="",
-            key="flt_unified_query",
-            placeholder="사이트/거래처/품목/RQ 코드",
-            help="콤마(,)로 여러 키워드를 입력하면 OR 조건으로 검색합니다.",
-        ).strip()
+        (
+            _,
+            domestic_export_sum_map,
+            region_sum_map,
+            country_sum_map,
+            customer_group_sum_map,
+            final_customer_sum_map,
+            summary_sum_map,
+            wear_cycle_sum_map,
+            model_sum_map,
+            api_status_sum_map,
+            customer_status_sum_map,
+        ) = build_filter_option_maps(df, selected_site_option or "전체")
 
-        only_with_stock = st.checkbox("공정재고만", value=False, key="flt_only_stock")
-        only_rework_available = st.checkbox("재작업만", value=False, key="flt_only_rework_available")
-        exclude_safe_initial = st.checkbox("안전 이니셜 제외", value=False, key="flt_exclude_safe_initial")
-        only_same_rq_group = st.checkbox("동일 RQ그룹만(R5/Q5, P5종류2+)", value=False, key="flt_only_same_rq_group")
-
-        _, sheet_sum_map, summary_sum_map, api_status_sum_map = build_filter_option_maps(
-            df, selected_site_option or "전체"
-        )
-
-        sheet_options = ["전체"] + list(sheet_sum_map.keys())
+        domestic_export_options = ["전체"] + list(domestic_export_sum_map.keys())
+        region_options = ["전체"] + list(region_sum_map.keys())
+        country_options = ["전체"] + list(country_sum_map.keys())
+        customer_group_options = ["전체"] + list(customer_group_sum_map.keys())
+        final_customer_options = ["전체"] + list(final_customer_sum_map.keys())
         summary_options = ["전체"] + list(summary_sum_map.keys())
+        wear_cycle_options = ["전체"] + list(wear_cycle_sum_map.keys())
+        model_options = ["전체"] + list(model_sum_map.keys())
         api_status_options = ["전체"] + list(api_status_sum_map.keys())
-        scoped_total = float(sum(sheet_sum_map.values()))
-        sheet_count_map = {"전체": scoped_total, **sheet_sum_map}
+        customer_status_options = ["전체"] + list(customer_status_sum_map.keys())
+        scoped_total = float(sum(summary_sum_map.values()))
+        domestic_export_count_map = {"전체": scoped_total, **domestic_export_sum_map}
+        region_count_map = {"전체": scoped_total, **region_sum_map}
+        country_count_map = {"전체": scoped_total, **country_sum_map}
+        customer_group_count_map = {"전체": scoped_total, **customer_group_sum_map}
+        final_customer_count_map = {"전체": scoped_total, **final_customer_sum_map}
         summary_count_map = {"전체": scoped_total, **summary_sum_map}
+        wear_cycle_count_map = {"전체": scoped_total, **wear_cycle_sum_map}
+        model_count_map = {"전체": scoped_total, **model_sum_map}
         api_status_count_map = {"전체": scoped_total, **api_status_sum_map}
+        customer_status_count_map = {"전체": scoped_total, **customer_status_sum_map}
 
         st.divider()
-        sheet_pills_key = "flt_sheet_pills"
-        prepare_multi_pill_state(sheet_pills_key, sheet_options)
-        selected_sheet_options = finalize_multi_pill_selection(
-            sheet_pills_key,
+        domestic_export_pills_key = "flt_domestic_export_pills"
+        prepare_multi_pill_state(domestic_export_pills_key, domestic_export_options)
+        selected_domestic_export_options = finalize_multi_pill_selection(
+            domestic_export_pills_key,
             st.pills(
-                "시트 분류",
-                options=sheet_options,
+                "내수/수출구분",
+                options=domestic_export_options,
                 selection_mode="multi",
-                key=sheet_pills_key,
-                format_func=lambda x: format_pill_label(x, sheet_count_map),
+                key=domestic_export_pills_key,
+                format_func=lambda x: format_pill_label(x, domestic_export_count_map),
                 on_change=sync_multi_pill_state,
-                args=(sheet_pills_key,),
+                args=(domestic_export_pills_key,),
+            ),
+        )
+        region_pills_key = "flt_region_pills"
+        prepare_multi_pill_state(region_pills_key, region_options)
+        selected_region_options = finalize_multi_pill_selection(
+            region_pills_key,
+            st.pills(
+                REGION_COL,
+                options=region_options,
+                selection_mode="multi",
+                key=region_pills_key,
+                format_func=lambda x: format_pill_label(x, region_count_map),
+                on_change=sync_multi_pill_state,
+                args=(region_pills_key,),
+            ),
+        )
+        country_pills_key = "flt_order_country_pills"
+        prepare_multi_pill_state(country_pills_key, country_options)
+        selected_country_options = finalize_multi_pill_selection(
+            country_pills_key,
+            st.pills(
+                "국가",
+                options=country_options,
+                selection_mode="multi",
+                key=country_pills_key,
+                format_func=lambda x: format_pill_label(x, country_count_map),
+                on_change=sync_multi_pill_state,
+                args=(country_pills_key,),
+            ),
+        )
+        customer_group_pills_key = "flt_customer_group_pills"
+        prepare_multi_pill_state(customer_group_pills_key, customer_group_options)
+        selected_customer_group_options = finalize_multi_pill_selection(
+            customer_group_pills_key,
+            st.pills(
+                "거래처 그룹",
+                options=customer_group_options,
+                selection_mode="multi",
+                key=customer_group_pills_key,
+                format_func=lambda x: format_pill_label(x, customer_group_count_map),
+                on_change=sync_multi_pill_state,
+                args=(customer_group_pills_key,),
+            ),
+        )
+        final_customer_pills_key = "flt_final_customer_pills"
+        prepare_multi_pill_state(final_customer_pills_key, final_customer_options)
+        selected_final_customer_options = finalize_multi_pill_selection(
+            final_customer_pills_key,
+            st.pills(
+                FINAL_CUSTOMER_COL,
+                options=final_customer_options,
+                selection_mode="multi",
+                key=final_customer_pills_key,
+                format_func=lambda x: format_pill_label(x, final_customer_count_map),
+                on_change=sync_multi_pill_state,
+                args=(final_customer_pills_key,),
             ),
         )
         summary_pills_key = "flt_summary_pills"
@@ -11224,13 +12248,41 @@ def apply_filters(
         selected_summary_options = finalize_multi_pill_selection(
             summary_pills_key,
             st.pills(
-                "분류별 요약",
+                "제품군",
                 options=summary_options,
                 selection_mode="multi",
                 key=summary_pills_key,
                 format_func=lambda x: format_pill_label(x, summary_count_map),
                 on_change=sync_multi_pill_state,
                 args=(summary_pills_key,),
+            ),
+        )
+        wear_cycle_pills_key = "flt_wear_cycle_pills"
+        prepare_multi_pill_state(wear_cycle_pills_key, wear_cycle_options)
+        selected_wear_cycle_options = finalize_multi_pill_selection(
+            wear_cycle_pills_key,
+            st.pills(
+                "착용주기",
+                options=wear_cycle_options,
+                selection_mode="multi",
+                key=wear_cycle_pills_key,
+                format_func=lambda x: format_pill_label(x, wear_cycle_count_map),
+                on_change=sync_multi_pill_state,
+                args=(wear_cycle_pills_key,),
+            ),
+        )
+        model_pills_key = "flt_model_pills"
+        prepare_multi_pill_state(model_pills_key, model_options)
+        selected_model_options = finalize_multi_pill_selection(
+            model_pills_key,
+            st.pills(
+                "모델명",
+                options=model_options,
+                selection_mode="multi",
+                key=model_pills_key,
+                format_func=lambda x: format_pill_label(x, model_count_map),
+                on_change=sync_multi_pill_state,
+                args=(model_pills_key,),
             ),
         )
         api_status_pills_key = "flt_api_status_pills"
@@ -11247,6 +12299,34 @@ def apply_filters(
                 args=(api_status_pills_key,),
             ),
         )
+        customer_status_pills_key = "flt_customer_status_pills"
+        prepare_multi_pill_state(customer_status_pills_key, customer_status_options)
+        selected_customer_status_options = finalize_multi_pill_selection(
+            customer_status_pills_key,
+            st.pills(
+                CUSTOMER_CONFIRMATION_STATUS_COL,
+                options=customer_status_options,
+                selection_mode="multi",
+                key=customer_status_pills_key,
+                format_func=lambda x: format_pill_label(x, customer_status_count_map),
+                on_change=sync_multi_pill_state,
+                args=(customer_status_pills_key,),
+            ),
+        )
+
+        st.divider()
+        unified_query = st.text_input(
+            "통합 검색",
+            value="",
+            key="flt_unified_query",
+            placeholder="사이트/수주/거래처/국가/품목/RQ 코드",
+            help="콤마(,)로 여러 키워드를 입력하면 OR 조건으로 검색합니다.",
+        ).strip()
+
+        only_with_stock = st.checkbox("공정재고만", value=False, key="flt_only_stock")
+        only_rework_available = st.checkbox("재작업만", value=False, key="flt_only_rework_available")
+        exclude_safe_initial = st.checkbox("안전 이니셜 제외", value=False, key="flt_exclude_safe_initial")
+        only_same_rq_group = st.checkbox("동일 RQ그룹만(R5/Q5, P5종류2+)", value=False, key="flt_only_same_rq_group")
         st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
         if data_base_dir is not None and show_reference_dates:
             render_sidebar_reference_dates(data_base_dir, source_label)
@@ -11256,9 +12336,16 @@ def apply_filters(
         selected_site_option or "전체",
         unified_query,
         exclude_safe_initial,
-        selected_sheet_options,
+        selected_domestic_export_options,
+        selected_region_options,
+        selected_country_options,
         selected_summary_options,
+        selected_customer_group_options,
+        selected_final_customer_options,
+        selected_wear_cycle_options,
+        selected_model_options,
         selected_api_status_options,
+        selected_customer_status_options,
         only_same_rq_group,
         only_with_stock,
         only_rework_available,
@@ -12794,9 +13881,29 @@ def render_shortage_dashboard(
         "원본 제품명",
         "API 제품명코드",
         "API 제품분류",
+        ORDER_CUSTOMER_COL,
+        PLAN_CUSTOMER_COL,
+        FINAL_CUSTOMER_COL,
+        CUSTOMER_NAME_SOURCE_COL,
+        COUNTRY_DISPLAY_COL,
+        ORDER_COUNTRY_CODE_COL,
+        ORDER_COUNTRY_NAME_COL,
+        COUNTRY_CONFIRMATION_STATUS_COL,
+        INITIAL_DOMESTIC_EXPORT_COL,
+        COUNTRY_DOMESTIC_EXPORT_COL,
+        DOMESTIC_EXPORT_REASON_COL,
+        REGION_COL,
+        REGION_REASON_COL,
+        ORDER_INFO_STATUS_COL,
+        CUSTOMER_GROUP_COL,
+        OPERATION_SEGMENT_COL,
+        CUSTOMER_CONFIRMATION_STATUS_COL,
+        "착용주기",
+        "모델명",
         "API 매칭상태",
         "분류 출처",
         "API 매칭근거",
+        "제품분류 판단 근거",
         PIA_ORDER_CLASS_COL,
         ORDER_RECEIVED_DATE_COL,
         "파워",
@@ -12848,9 +13955,28 @@ def render_shortage_dashboard(
                 "API 제품명코드",
                 "API 제품명",
                 "API 제품분류",
-                "API 거래처명",
+                ORDER_CUSTOMER_COL,
+                PLAN_CUSTOMER_COL,
+                FINAL_CUSTOMER_COL,
+                CUSTOMER_NAME_SOURCE_COL,
+                COUNTRY_DISPLAY_COL,
+                ORDER_COUNTRY_CODE_COL,
+                ORDER_COUNTRY_NAME_COL,
+                COUNTRY_CONFIRMATION_STATUS_COL,
+                INITIAL_DOMESTIC_EXPORT_COL,
+                COUNTRY_DOMESTIC_EXPORT_COL,
+                DOMESTIC_EXPORT_REASON_COL,
+                REGION_COL,
+                REGION_REASON_COL,
+                ORDER_INFO_STATUS_COL,
+                CUSTOMER_GROUP_COL,
+                OPERATION_SEGMENT_COL,
+                CUSTOMER_CONFIRMATION_STATUS_COL,
+                "착용주기",
+                "모델명",
                 "API 매칭상태",
                 "API 매칭근거",
+                "제품분류 판단 근거",
                 "R코드 제품명",
                 "분류별요약",
                 "시트분류",
