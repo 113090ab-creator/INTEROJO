@@ -1,9 +1,5 @@
 {
-<<<<<<< HEAD
-  "checked_at": "2026-09-16 09:58:30",
-=======
-  "checked_at": "2026-09-15 21:29:28",
->>>>>>> 24b6b272cf89595f026f34ac5606a12a8e8eb527
+  "checked_at": "2026-09-16 10:18:54",
   "status": "PUBLISHED",
   "api_updated_at": "2026-09-16 07:33:02",
   "wip_api_updated_at": "2026-09-16 07:47:30",
@@ -17,18 +13,8 @@
     "S관",
     "전체"
   ],
-<<<<<<< HEAD
-  "results": {
-    "WIP": "staged rows=30,592 updated_at=2026-09-16 07:47:30",
-    "C관": "staged rows=4,471 updated_at=2026-09-16 07:33:02",
-    "A관": "staged rows=957 updated_at=2026-09-16 07:33:02",
-    "S관": "staged rows=4,706 updated_at=2026-09-16 07:33:02",
-    "전체": "staged rows=10,134 updated_at=2026-09-16 07:33:02"
-  },
-=======
   "skipped": true,
   "reason": "target validated snapshot set is already published",
->>>>>>> 24b6b272cf89595f026f34ac5606a12a8e8eb527
   "current_set": {
     "set_id": "aps_20260916_am_plan073302_wip074730_734bf493",
     "slot_key": "2026-09-16 AM",
