@@ -126,11 +126,11 @@ PLAN_API_KEY_ENV = "PLAN_API_KEY"
 PLAN_API_BASE_URL_ENV = "PLAN_API_BASE_URL"
 PLAN_API_FORCE_ENABLED_ENV = "INTEROJO_FORCE_PLAN_API"
 LOCAL_SECRET_DISCOVERY_DISABLED_ENV = "INTEROJO_DISABLE_LOCAL_SECRET_DISCOVERY"
-PLAN_API_TIMEOUT_SECONDS = int(os.getenv("PLAN_API_TIMEOUT_SECONDS", "30"))
+PLAN_API_TIMEOUT_SECONDS = int(os.getenv("PLAN_API_TIMEOUT_SECONDS", "120"))
 APS_WIP_API_TIMEOUT_SECONDS = int(os.getenv("APS_WIP_API_TIMEOUT_SECONDS", "180"))
 PLAN_API_DEFAULT_ROW_LIMIT = 0
 PLAN_API_CACHE_TTL_SECONDS = 300
-PLAN_API_RETRY_ATTEMPTS = int(os.getenv("PLAN_API_RETRY_ATTEMPTS", "1"))
+PLAN_API_RETRY_ATTEMPTS = int(os.getenv("PLAN_API_RETRY_ATTEMPTS", "3"))
 PLAN_API_RETRY_STATUS_CODES = {429, 500, 502, 503, 504, 520, 522, 524}
 SHORTAGE_SNAPSHOT_FIRST = os.getenv("INTEROJO_SHORTAGE_SNAPSHOT_FIRST", "1").strip().lower() not in {
     "0",
@@ -1756,7 +1756,30 @@ def read_plan_api_dataframe(endpoint: str, params: dict[str, object] | None = No
     )
 
 
-PRODUCT_INFO_LOOKUP_COLUMNS = ["제품명코드", "제품명_기준", "신규분류_기준", "거래처_기준"]
+API_PRODUCT_STATUS_EXACT = "API 정확매칭"
+API_PRODUCT_STATUS_UNMATCHED = "API 미매칭"
+API_PRODUCT_STATUS_DUPLICATE = "API 중복확인"
+API_PRODUCT_STATUS_UNAVAILABLE = "API 조회불가"
+API_PRODUCT_STATUS_NOT_APPLICABLE = "API 미대상"
+PRODUCT_INFO_LOOKUP_COLUMNS = [
+    "제품명코드",
+    "제품명_기준",
+    "신규분류_기준",
+    "거래처_기준",
+    "API 제품명코드",
+    "API 제품명",
+    "API 제품분류",
+    "API 거래처명",
+    "거래처 그룹",
+    "제품명 출처",
+    "분류 출처",
+    "API 매칭상태",
+    "API 매칭근거",
+    "착용주기",
+    "모델명",
+    "사용여부",
+    "상태",
+]
 
 
 def empty_product_info_lookup() -> pd.DataFrame:
@@ -1766,6 +1789,86 @@ def empty_product_info_lookup() -> pd.DataFrame:
 def is_valid_reference_text(value: object) -> bool:
     text = clean_text_value(value)
     return bool(text) and text.lower() not in INVALID_CATEGORY_VALUES
+
+
+def ensure_product_info_lookup_columns(info: pd.DataFrame) -> pd.DataFrame:
+    frame = info.copy() if isinstance(info, pd.DataFrame) else empty_product_info_lookup()
+    for col in PRODUCT_INFO_LOOKUP_COLUMNS:
+        if col not in frame.columns:
+            frame[col] = ""
+    for col in PRODUCT_INFO_LOOKUP_COLUMNS:
+        if col != "제품명코드":
+            frame[col] = frame[col].map(clean_text_value)
+    frame["제품명코드"] = frame["제품명코드"].map(normalize_item_code_value)
+    frame["API 제품명코드"] = frame["API 제품명코드"].map(normalize_item_code_value)
+    missing_api_code = frame["API 제품명코드"].eq("")
+    frame.loc[missing_api_code, "API 제품명코드"] = frame.loc[missing_api_code, "제품명코드"]
+    return frame[PRODUCT_INFO_LOOKUP_COLUMNS].copy()
+
+
+def unique_valid_text_values(series: pd.Series) -> list[str]:
+    values: list[str] = []
+    seen: set[str] = set()
+    for value in series:
+        text = clean_text_value(value)
+        if not is_valid_reference_text(text) or text in seen:
+            continue
+        seen.add(text)
+        values.append(text)
+    return values
+
+
+def only_value_or_blank(values: list[str]) -> str:
+    return values[0] if len(values) == 1 else ""
+
+
+def build_customer_group_from_exact_rule(customer: object) -> tuple[str, str]:
+    category, reason = match_exact_customer_category(customer)
+    if category == UNCLASSIFIED_SHEET_CATEGORY:
+        return UNCLASSIFIED_SHEET_CATEGORY, "거래처명 완전 일치 기준 없음"
+    return category, f"거래처명 완전 일치: {reason}"
+
+
+def resolve_api_product_code_for_item(item_code: object, api_codes: set[str]) -> tuple[str, str]:
+    code = normalize_item_code_value(item_code)
+    if not code:
+        return "", "품목코드 없음"
+    if not code.startswith("P"):
+        return "", "P 제품코드 아님"
+    if not api_codes:
+        return "", "API 제품명 기준 없음"
+    if code in api_codes:
+        return code, "품목코드가 API nm_cd와 완전 일치"
+
+    candidates: list[str] = []
+    prefix_matches = sorted(
+        (api_code for api_code in api_codes if api_code and code.startswith(api_code)),
+        key=lambda value: (len(value), value),
+        reverse=True,
+    )
+    candidates.extend(prefix_matches)
+
+    before_power = re.split(r"(?=[+-]\d{1,2}(?:\.\d{1,2})?)", code, maxsplit=1)[0]
+    before_power = before_power.rstrip(".-/")
+    if before_power:
+        candidates.append(before_power)
+
+    alpha_suffix = re.match(r"^(P\d{4}[A-Z]+)", code)
+    if alpha_suffix:
+        candidates.append(alpha_suffix.group(1))
+    base_code = re.match(r"^(P\d{4})", code)
+    if base_code:
+        candidates.append(base_code.group(1))
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        normalized = normalize_item_code_value(candidate)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        if normalized in api_codes:
+            return normalized, f"API nm_cd 후보 일치: {normalized}"
+    return "", "API nm_cd 매칭 후보 없음"
 
 
 def build_product_names_api_reference_key() -> str:
@@ -1799,31 +1902,36 @@ def normalize_product_names_api_lookup(raw: pd.DataFrame) -> pd.DataFrame:
             "생산제품군",
         ],
     )
-    fallback_category_cols = [
-        col
-        for col in [
-            pick_api_column(columns, ["cycle_gu_nm", "CYCLE_GU_NM", "착용주기", "wear_cycle"]),
-            pick_api_column(columns, ["model_nm", "MODEL_NM", "모델명"]),
-        ]
-        if col is not None and col != category_col
-    ]
+    cycle_col = pick_api_column(columns, ["cycle_gu_nm", "CYCLE_GU_NM", "착용주기", "wear_cycle"])
+    model_col = pick_api_column(columns, ["model_nm", "MODEL_NM", "모델명"])
     customer_col = pick_api_column(columns, ["거래처명", "고객명", "customer_name", "cust_nm", "CUST_NM"])
 
     if code_col is None:
         return empty_product_info_lookup()
 
     info = pd.DataFrame(index=work.index)
-    info["제품명코드"] = work[code_col].map(normalize_item_code_value).str[:5]
+    info["제품명코드"] = work[code_col].map(normalize_item_code_value)
     info["제품명_기준"] = work[name_col].map(clean_text_value) if name_col is not None else ""
     if category_col is not None:
         info["신규분류_기준"] = work[category_col].map(clean_text_value)
     else:
         info["신규분류_기준"] = ""
-    for fallback_col in fallback_category_cols:
-        fallback = work[fallback_col].map(clean_text_value)
-        missing = ~info["신규분류_기준"].map(is_valid_reference_text)
-        info.loc[missing, "신규분류_기준"] = fallback[missing]
     info["거래처_기준"] = work[customer_col].map(clean_text_value) if customer_col is not None else ""
+    info["API 제품명코드"] = info["제품명코드"]
+    info["API 제품명"] = info["제품명_기준"]
+    info["API 제품분류"] = info["신규분류_기준"]
+    info["API 거래처명"] = info["거래처_기준"]
+    info["착용주기"] = work[cycle_col].map(clean_text_value) if cycle_col is not None else ""
+    info["모델명"] = work[model_col].map(clean_text_value) if model_col is not None else ""
+    info["사용여부"] = work["use_yn"].map(clean_text_value) if "use_yn" in work.columns else ""
+    info["상태"] = work["stts"].map(clean_text_value) if "stts" in work.columns else ""
+    info["제품명 출처"] = "API nm_nm"
+    info.loc[~info["제품명_기준"].map(is_valid_reference_text), "제품명 출처"] = ""
+    info["분류 출처"] = "API full_gu_nm"
+    info.loc[~info["신규분류_기준"].map(is_valid_reference_text), "분류 출처"] = ""
+    info["거래처 그룹"] = info["거래처_기준"].map(lambda value: build_customer_group_from_exact_rule(value)[0])
+    info["API 매칭상태"] = API_PRODUCT_STATUS_EXACT
+    info["API 매칭근거"] = "API /api/product-names nm_cd"
 
     info["_use_rank"] = (
         0
@@ -1842,9 +1950,41 @@ def normalize_product_names_api_lookup(raw: pd.DataFrame) -> pd.DataFrame:
     ].copy()
     if info.empty:
         return empty_product_info_lookup()
-    info = info.sort_values(["_category_rank", "_use_rank", "_status_rank", "제품명코드"])
-    info = info.drop_duplicates(subset=["제품명코드"], keep="first")
-    return info[PRODUCT_INFO_LOOKUP_COLUMNS].reset_index(drop=True)
+
+    rows: list[dict[str, object]] = []
+    for code, group in info.sort_values(["_category_rank", "_use_rank", "_status_rank", "제품명코드"]).groupby(
+        "제품명코드", sort=True
+    ):
+        best_rank = group[["_category_rank", "_use_rank", "_status_rank"]].iloc[0].to_dict()
+        rank_scope = group[
+            (group["_category_rank"] == best_rank["_category_rank"])
+            & (group["_use_rank"] == best_rank["_use_rank"])
+            & (group["_status_rank"] == best_rank["_status_rank"])
+        ].copy()
+        name_values = unique_valid_text_values(rank_scope["제품명_기준"])
+        group_values = unique_valid_text_values(rank_scope["신규분류_기준"])
+        customer_values = unique_valid_text_values(rank_scope["거래처_기준"])
+        has_conflict = len(name_values) > 1 or len(group_values) > 1 or len(customer_values) > 1
+
+        selected = rank_scope.iloc[0].to_dict()
+        selected["제품명_기준"] = only_value_or_blank(name_values) or clean_text_value(selected.get("제품명_기준", ""))
+        selected["신규분류_기준"] = only_value_or_blank(group_values) or clean_text_value(
+            selected.get("신규분류_기준", "")
+        )
+        selected["거래처_기준"] = only_value_or_blank(customer_values) or clean_text_value(selected.get("거래처_기준", ""))
+        selected["API 제품명"] = selected["제품명_기준"]
+        selected["API 제품분류"] = selected["신규분류_기준"]
+        selected["API 거래처명"] = selected["거래처_기준"]
+        selected["제품명 출처"] = "API nm_nm" if is_valid_reference_text(selected["제품명_기준"]) else ""
+        selected["분류 출처"] = "API full_gu_nm" if is_valid_reference_text(selected["신규분류_기준"]) else ""
+        selected["거래처 그룹"] = build_customer_group_from_exact_rule(selected["거래처_기준"])[0]
+        if has_conflict:
+            selected["API 매칭상태"] = API_PRODUCT_STATUS_DUPLICATE
+            selected["API 매칭근거"] = "동일 nm_cd에 서로 다른 API 기준값 존재"
+        rows.append(selected)
+
+    normalized = pd.DataFrame(rows)
+    return ensure_product_info_lookup_columns(normalized).reset_index(drop=True)
 
 
 def load_product_names_api_lookup() -> pd.DataFrame:
@@ -1866,36 +2006,120 @@ def load_product_names_api_lookup() -> pd.DataFrame:
 
 
 def merge_product_info_lookups(local_info: pd.DataFrame, api_info: pd.DataFrame) -> pd.DataFrame:
-    local = local_info.copy() if isinstance(local_info, pd.DataFrame) else empty_product_info_lookup()
-    api = api_info.copy() if isinstance(api_info, pd.DataFrame) else empty_product_info_lookup()
-    for frame in [local, api]:
-        for col in PRODUCT_INFO_LOOKUP_COLUMNS:
-            if col not in frame.columns:
-                frame[col] = ""
-        frame["제품명코드"] = frame["제품명코드"].map(normalize_item_code_value).str[:5]
-        for col in ["제품명_기준", "신규분류_기준", "거래처_기준"]:
-            frame[col] = frame[col].map(clean_text_value)
-    local = local[local["제품명코드"].str.startswith("P", na=False)].drop_duplicates("제품명코드", keep="first")
-    api = api[api["제품명코드"].str.startswith("P", na=False)].drop_duplicates("제품명코드", keep="first")
-    if local.empty:
-        return api[PRODUCT_INFO_LOOKUP_COLUMNS].reset_index(drop=True)
-    if api.empty:
-        return local[PRODUCT_INFO_LOOKUP_COLUMNS].reset_index(drop=True)
+    _ = local_info
+    api = ensure_product_info_lookup_columns(api_info)
+    api = api[api["제품명코드"].str.startswith("P", na=False)].copy()
+    return api.drop_duplicates("제품명코드", keep="first")[PRODUCT_INFO_LOOKUP_COLUMNS].reset_index(drop=True)
 
-    combined = local.set_index("제품명코드")
-    for _, row in api.iterrows():
-        code = row["제품명코드"]
-        if code not in combined.index:
-            combined.loc[code, ["제품명_기준", "신규분류_기준", "거래처_기준"]] = [
-                row["제품명_기준"],
-                row["신규분류_기준"],
-                row["거래처_기준"],
-            ]
-            continue
-        for col in ["제품명_기준", "신규분류_기준", "거래처_기준"]:
-            if is_valid_reference_text(row[col]):
-                combined.loc[code, col] = row[col]
-    return combined.reset_index()[PRODUCT_INFO_LOOKUP_COLUMNS]
+
+def build_product_info_lookup_maps(product_info: pd.DataFrame) -> tuple[dict[str, str], dict[str, str]]:
+    info = ensure_product_info_lookup_columns(product_info)
+    if info.empty:
+        return {}, {}
+    usable = info[
+        info["제품명코드"].str.startswith("P", na=False)
+        & info["API 매칭상태"].ne(API_PRODUCT_STATUS_DUPLICATE)
+    ].copy()
+    name_map = {
+        row["제품명코드"]: row["제품명_기준"]
+        for _, row in usable.iterrows()
+        if is_valid_reference_text(row.get("제품명_기준", ""))
+    }
+    group_map = {
+        row["제품명코드"]: row["신규분류_기준"]
+        for _, row in usable.iterrows()
+        if is_valid_reference_text(row.get("신규분류_기준", ""))
+    }
+    return name_map, group_map
+
+
+def apply_product_master_reference(
+    df: pd.DataFrame,
+    product_info: pd.DataFrame,
+    item_col: str = "품목코드",
+    product_col: str = "제품명",
+) -> pd.DataFrame:
+    result = df.copy()
+    if item_col not in result.columns:
+        result[item_col] = ""
+    if product_col not in result.columns:
+        result[product_col] = ""
+    if "원본 제품명" not in result.columns:
+        result["원본 제품명"] = result[product_col].astype(str).replace({"nan": "", "None": ""}).fillna("")
+
+    info = ensure_product_info_lookup_columns(product_info)
+    api_codes = set(info.loc[info["제품명코드"].str.startswith("P", na=False), "제품명코드"])
+    resolved = result[item_col].map(lambda value: resolve_api_product_code_for_item(value, api_codes))
+    result["API 제품명코드"] = resolved.map(lambda item: item[0])
+    result["_API 코드 매칭근거"] = resolved.map(lambda item: item[1])
+
+    enrich_cols = [col for col in PRODUCT_INFO_LOOKUP_COLUMNS if col not in {"제품명코드", "API 제품명코드"}]
+    result = result.drop(columns=[col for col in enrich_cols if col in result.columns], errors="ignore")
+    merge_info = info.drop(columns=["API 제품명코드"], errors="ignore").rename(columns={"제품명코드": "API 제품명코드"})
+    merge_info = merge_info[["API 제품명코드", *enrich_cols]].drop_duplicates("API 제품명코드", keep="first")
+    result = result.merge(merge_info, on="API 제품명코드", how="left")
+
+    for col in enrich_cols:
+        if col not in result.columns:
+            result[col] = ""
+        result[col] = result[col].map(clean_text_value)
+
+    normalized_item = result[item_col].map(normalize_item_code_value)
+    p_mask = normalized_item.str.startswith("P", na=False)
+    matched_mask = result["API 제품명코드"].map(clean_text_value).ne("")
+    if info.empty:
+        result["API 매칭상태"] = API_PRODUCT_STATUS_UNAVAILABLE
+        result.loc[~p_mask, "API 매칭상태"] = API_PRODUCT_STATUS_NOT_APPLICABLE
+    else:
+        result["API 매칭상태"] = result["API 매칭상태"].replace("", API_PRODUCT_STATUS_EXACT)
+        result.loc[p_mask & ~matched_mask, "API 매칭상태"] = API_PRODUCT_STATUS_UNMATCHED
+        result.loc[~p_mask, "API 매칭상태"] = API_PRODUCT_STATUS_NOT_APPLICABLE
+    code_reason = result["_API 코드 매칭근거"].map(clean_text_value)
+    product_reason = result["API 매칭근거"].map(clean_text_value)
+    result["API 매칭근거"] = code_reason
+    duplicate_reason = product_reason.ne("") & result["API 매칭상태"].eq(API_PRODUCT_STATUS_DUPLICATE)
+    result.loc[duplicate_reason, "API 매칭근거"] = (
+        code_reason.loc[duplicate_reason] + "; " + product_reason.loc[duplicate_reason]
+    )
+    result.loc[result["API 매칭상태"].eq(API_PRODUCT_STATUS_UNMATCHED), "API 매칭근거"] = "API nm_cd 매칭 후보 없음"
+    result.loc[result["API 매칭상태"].eq(API_PRODUCT_STATUS_UNAVAILABLE), "API 매칭근거"] = "API 제품명 기준 조회불가"
+    result = result.drop(columns=["_API 코드 매칭근거"], errors="ignore")
+
+    api_name_valid = result["API 제품명"].map(is_valid_reference_text)
+    exact_name_mask = result["API 매칭상태"].eq(API_PRODUCT_STATUS_EXACT) & api_name_valid
+    result.loc[exact_name_mask, product_col] = result.loc[exact_name_mask, "API 제품명"]
+    result[product_col] = result[product_col].replace({"": "-", "nan": "-", "None": "-"}).fillna("-")
+
+    api_category_valid = result["API 제품분류"].map(is_valid_reference_text)
+    exact_category_mask = result["API 매칭상태"].eq(API_PRODUCT_STATUS_EXACT) & api_category_valid
+    result["분류별요약"] = ""
+    result.loc[exact_category_mask, "분류별요약"] = result.loc[exact_category_mask, "API 제품분류"]
+    result.loc[exact_category_mask, "분류 출처"] = "API full_gu_nm"
+
+    missing_category = ~exact_category_mask
+    if missing_category.any():
+        infer_cols = [col for col in [product_col, "원본 제품명", item_col, "R코드"] if col in result.columns]
+        inferred = result.loc[missing_category, infer_cols].apply(
+            lambda row: infer_product_group_summary(*row.tolist()),
+            axis=1,
+        )
+        inferred_valid = inferred.map(is_valid_reference_text)
+        inferred_index = inferred.index[inferred_valid]
+        result.loc[inferred_index, "분류별요약"] = inferred.loc[inferred_index]
+        result.loc[inferred_index, "분류 출처"] = "추정분류"
+    result.loc[~result["분류별요약"].map(is_valid_reference_text), "분류별요약"] = "제품분류 미확인"
+
+    if result.empty:
+        result["시트분류"] = pd.Series(dtype="object")
+        result["분류 판단 근거"] = pd.Series(dtype="object")
+    else:
+        classification = result.apply(lambda row: classify_sheet_with_reason(row), axis=1, result_type="expand")
+        result["시트분류"] = classification[0].map(clean_text_value)
+        result["분류 판단 근거"] = classification[1].map(clean_text_value)
+    result.loc[result["시트분류"].str.lower().isin(INVALID_CATEGORY_VALUES), "시트분류"] = UNCLASSIFIED_SHEET_CATEGORY
+    result["수동시트분류"] = ""
+    result["자동분류결과"] = result["시트분류"]
+    return result
 
 
 def read_aps_plan_operations_dataframe(
@@ -5611,6 +5835,15 @@ def build_empty_shortage_dashboard_df() -> pd.DataFrame:
         "Q코드",
         "U코드",
         "제품명",
+        "원본 제품명",
+        "API 제품명코드",
+        "API 제품명",
+        "API 제품분류",
+        "API 거래처명",
+        "API 매칭상태",
+        "API 매칭근거",
+        "제품명 출처",
+        "분류 출처",
         DEMAND_QTY_COL,
         PIA_ORDER_CLASS_COL,
         "파워",
@@ -5680,30 +5913,14 @@ def is_english_customer_name(customer: object) -> bool:
 
 
 def classify_sheet_with_reason(row: pd.Series) -> tuple[str, str]:
-    customer = row.get("거래처", "")
-    product_name = row.get("제품명", "")
-    combined_text = f"{clean_text_value(customer)} {clean_text_value(product_name)}"
-
-    category, keyword = match_keyword_category(combined_text, SINCERE_2WEEK_RULES)
-    if category != UNCLASSIFIED_SHEET_CATEGORY:
-        return category, f"거래처/제품명에 {keyword} 포함"
+    api_customer = clean_text_value(row.get("API 거래처명", ""))
+    customer = api_customer or row.get("거래처", "")
 
     category, matched_customer = match_exact_customer_category(customer)
     if category != UNCLASSIFIED_SHEET_CATEGORY:
         return category, f"거래처명 완전 일치: {matched_customer}"
 
-    category, keyword = match_keyword_category(customer, CUSTOMER_CATEGORY_RULES)
-    if category != UNCLASSIFIED_SHEET_CATEGORY:
-        return category, f"거래처명 키워드 매칭: {keyword}"
-
-    category, keyword = match_keyword_category(product_name, PRODUCT_CATEGORY_RULES)
-    if category != UNCLASSIFIED_SHEET_CATEGORY:
-        return category, f"제품명 보조 키워드 매칭: {keyword}"
-
-    if is_english_customer_name(customer):
-        return "기타 해외", "영문 거래처명 기준 기타 해외 분류"
-
-    return UNCLASSIFIED_SHEET_CATEGORY, "거래처명 기준 분류 불가"
+    return UNCLASSIFIED_SHEET_CATEGORY, "거래처명 완전 일치 기준 없음"
 
 
 def classify_sheet(row: pd.Series) -> str:
@@ -6679,26 +6896,12 @@ def load_reference_maps_bundle(
             & (ref_df[name_col] != "")
             & (ref_df[name_col].str.lower() != "nan")
         ]
-        ref_df["코드5"] = ref_df[code_col].str[:5]
-        ref_df = ref_df.drop_duplicates(subset=["코드5"], keep="first")
-        product_name_map = ref_df.set_index("코드5")[name_col].to_dict()
-
-        if group_col is not None:
-            group_df = ref_df[(ref_df[group_col] != "") & (ref_df[group_col].str.lower() != "nan")]
-            product_group_map = group_df.set_index("코드5")[group_col].to_dict()
+        # 제품명/제품분류는 /api/product-names만 기준으로 사용한다.
+        # 로컬 기준 엑셀의 첫 번째 행 강제 매핑은 유지하지 않는다.
 
     api_product_info = load_product_names_api_lookup()
     if not api_product_info.empty:
-        for _, row in api_product_info.iterrows():
-            code5 = normalize_item_code_value(row.get("제품명코드", ""))[:5]
-            if not code5.startswith("P"):
-                continue
-            name_value = clean_text_value(row.get("제품명_기준", ""))
-            group_value = clean_text_value(row.get("신규분류_기준", ""))
-            if is_valid_reference_text(name_value):
-                product_name_map[code5] = name_value
-            if is_valid_reference_text(group_value):
-                product_group_map[code5] = group_value
+        product_name_map, product_group_map = build_product_info_lookup_maps(api_product_info)
 
     # 2) 분류정보 시트 기반 (시트분류 + R/Q 맵 + R코드명 우선)
     group_sheet = find_sheet({"코드", "시트이름"}, preferred_name="분류정보")
@@ -8215,7 +8418,7 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
         .rename(columns={"생산수량": "부족수량"})
     )
     grouped_demand["코드5"] = grouped_demand["품목코드"].str[:5]
-    grouped_demand["제품명"] = grouped_demand["코드5"].map(product_name_map).fillna(grouped_demand["제품명"])
+    grouped_demand["원본 제품명"] = grouped_demand["제품명"].astype(str).replace({"nan": "", "None": ""}).fillna("")
     grouped_demand["제품명"] = grouped_demand["제품명"].replace({"": "-", "nan": "-", "None": "-"}).fillna("-")
 
     api_bom_maps = load_api_bom_maps_for_code5s(
@@ -8362,10 +8565,8 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
         ],
         index=grouped_demand.index,
     )
-    grouped_demand["분류별요약"] = grouped_demand["코드5"].map(product_group_map)
-    grouped_demand = apply_inferred_product_group_summary(grouped_demand)
-    grouped_demand["분류별요약"] = grouped_demand["분류별요약"].fillna("기타")
-    grouped_demand["시트분류"] = grouped_demand["코드5"].map(sheet2_group_map)
+    api_product_info = load_product_names_api_lookup()
+    grouped_demand = apply_product_master_reference(grouped_demand, api_product_info)
     grouped_demand = grouped_demand.drop(columns=["코드5", "R코드5"])
 
     target_inv = inv_df[inv_df["창고"].isin(TARGET_WAREHOUSES)].copy()
@@ -8446,78 +8647,10 @@ def preprocess_data(refresh_key: str, base_dir_str: str | None = None) -> tuple[
     for col in ["사출창고", "분리창고", "검사접착창고", "검사접착재작업창고", "누수규격검사 창고", "공정재고 합계"]:
         result[col] = result[col].fillna(0)
 
-    # 분류 필터 정합성 보정:
-    # P코드는 코드5(Pxxxx) 기준 매핑을 그대로 사용하고,
-    # R/Q/U 등 비-P코드는 같은 R코드5를 공유하는 P코드의 분류를 이어받는다.
-    result["코드5"] = result["품목코드"].astype(str).str[:5]
-    result["분류별요약"] = result["코드5"].map(product_group_map)
-    result = apply_inferred_product_group_summary(result)
-    result["시트분류"] = result["코드5"].map(sheet2_group_map)
-    result["R코드5"] = result["R코드"].astype(str).str[:5]
-
-    item_prefix = result["품목코드"].astype(str).str.upper().str[:1]
-    p_scope = result[(item_prefix == "P") & result["R코드5"].str.startswith("R", na=False)].copy()
-    if not p_scope.empty:
-        p_scope["부족수량_num"] = parse_mixed_numeric(p_scope["부족수량"])
-        p_scope = p_scope.sort_values(["부족수량_num", "품목코드"], ascending=[False, True])
-
-        p_sheet_scope = p_scope[p_scope["시트분류"].notna()].copy()
-        p_sheet_scope["시트분류"] = p_sheet_scope["시트분류"].astype(str).str.strip()
-        p_sheet_scope = p_sheet_scope[
-            (p_sheet_scope["시트분류"] != "")
-            & (p_sheet_scope["시트분류"].str.lower() != "nan")
-            & (p_sheet_scope["시트분류"].str.lower() != "none")
-        ]
-        r_to_sheet = p_sheet_scope.drop_duplicates(subset=["R코드5"], keep="first").set_index("R코드5")["시트분류"].to_dict()
-
-        p_group_scope = p_scope[p_scope["분류별요약"].notna()].copy()
-        p_group_scope["분류별요약"] = p_group_scope["분류별요약"].astype(str).str.strip()
-        p_group_scope = p_group_scope[
-            (p_group_scope["분류별요약"] != "")
-            & (p_group_scope["분류별요약"].str.lower() != "nan")
-            & (p_group_scope["분류별요약"].str.lower() != "none")
-        ]
-        r_to_group = (
-            p_group_scope.drop_duplicates(subset=["R코드5"], keep="first").set_index("R코드5")["분류별요약"].to_dict()
-        )
-    else:
-        r_to_sheet = {}
-        r_to_group = {}
-
-    non_p_mask = item_prefix != "P"
-    result.loc[non_p_mask, "시트분류"] = result.loc[non_p_mask, "시트분류"].fillna(
-        result.loc[non_p_mask, "R코드5"].map(r_to_sheet)
-    )
-    result.loc[non_p_mask, "분류별요약"] = result.loc[non_p_mask, "분류별요약"].fillna(
-        result.loc[non_p_mask, "R코드5"].map(r_to_group)
-    )
-
-    result["수동시트분류"] = result["시트분류"].map(clean_sheet_category)
-    if result.empty:
-        result["자동분류결과"] = pd.Series(dtype="object")
-        result["분류 판단 근거"] = pd.Series(dtype="object")
-    else:
-        auto_classification = result.apply(
-            lambda row: classify_sheet_with_reason(row),
-            axis=1,
-            result_type="expand",
-        )
-        result["자동분류결과"] = auto_classification[0]
-        result["분류 판단 근거"] = auto_classification[1]
-
-    manual_mask = result["수동시트분류"].map(clean_sheet_category) != ""
-    result["시트분류"] = result["자동분류결과"]
-    result.loc[manual_mask, "시트분류"] = result.loc[manual_mask, "수동시트분류"]
-    result.loc[manual_mask, "분류 판단 근거"] = "수동 분류값 적용"
-    pia_kr_mask = result["제품명"].astype(str).str.contains("PIA_KR", case=False, na=False, regex=False)
-    result.loc[pia_kr_mask, "시트분류"] = "국내"
-    result.loc[pia_kr_mask, "분류 판단 근거"] = "PIA_KR 제품명 기준 국내 분류"
-
     result["시트분류"] = result["시트분류"].map(clean_text_value)
     result.loc[result["시트분류"].str.lower().isin(INVALID_CATEGORY_VALUES), "시트분류"] = UNCLASSIFIED_SHEET_CATEGORY
     result["분류별요약"] = result["분류별요약"].astype(str).str.strip()
-    result.loc[result["분류별요약"].str.lower().isin({"", "nan", "none"}), "분류별요약"] = "기타"
-    result = result.drop(columns=["코드5"], errors="ignore")
+    result.loc[result["분류별요약"].str.lower().isin({"", "nan", "none"}), "분류별요약"] = "제품분류 미확인"
 
     result["파워"] = result["품목코드"].map(extract_power_from_code)
     result["납기일"] = pd.to_datetime(result["납기일"], errors="coerce").dt.strftime("%Y-%m-%d")
@@ -8871,30 +9004,13 @@ def build_api_shortage_data_from_frames(
         + result["누수규격검사 창고"]
     )
 
-    result["분류별요약"] = code5.map(product_group_map)
-    result = apply_inferred_product_group_summary(result)
-    result["시트분류"] = code5.map(sheet2_group_map)
-    result["수동시트분류"] = result["시트분류"].map(clean_sheet_category)
-    if result.empty:
-        result["자동분류결과"] = pd.Series(dtype="object")
-        result["분류 판단 근거"] = pd.Series(dtype="object")
-    else:
-        auto_classification = result.apply(
-            lambda row: classify_sheet_with_reason(row),
-            axis=1,
-            result_type="expand",
-        )
-        result["자동분류결과"] = auto_classification[0]
-        result["분류 판단 근거"] = auto_classification[1]
-
-    manual_mask = result["수동시트분류"].map(clean_sheet_category) != ""
-    result["시트분류"] = result["자동분류결과"]
-    result.loc[manual_mask, "시트분류"] = result.loc[manual_mask, "수동시트분류"]
-    result.loc[manual_mask, "분류 판단 근거"] = "수동 분류값 적용"
+    result["원본 제품명"] = result["제품명"].astype(str).replace({"nan": "", "None": ""}).fillna("")
+    api_product_info = load_product_names_api_lookup()
+    result = apply_product_master_reference(result, api_product_info)
     result["시트분류"] = result["시트분류"].map(clean_text_value)
     result.loc[result["시트분류"].str.lower().isin(INVALID_CATEGORY_VALUES), "시트분류"] = UNCLASSIFIED_SHEET_CATEGORY
     result["분류별요약"] = result["분류별요약"].astype(str).str.strip()
-    result.loc[result["분류별요약"].str.lower().isin(INVALID_CATEGORY_VALUES), "분류별요약"] = "기타"
+    result.loc[result["분류별요약"].str.lower().isin(INVALID_CATEGORY_VALUES), "분류별요약"] = "제품분류 미확인"
 
     result["파워"] = result["품목코드"].map(extract_power_from_code)
     rework_source = find_rework_production_source_file(data_base_dir)
@@ -8919,6 +9035,15 @@ def build_api_shortage_data_from_frames(
         "Q코드",
         "U코드",
         "제품명",
+        "원본 제품명",
+        "API 제품명코드",
+        "API 제품명",
+        "API 제품분류",
+        "API 거래처명",
+        "API 매칭상태",
+        "API 매칭근거",
+        "제품명 출처",
+        "분류 출처",
         "납기일",
         "사출납기일",
         "파워",
@@ -9408,36 +9533,9 @@ def read_all_item_master(master_path_str: str, refresh_key: str) -> pd.DataFrame
 @st.cache_data(show_spinner=False, max_entries=CACHE_MAX_ENTRIES)
 def load_product_info_lookup(base_dir_str: str, reference_refresh_key: str) -> pd.DataFrame:
     _ = reference_refresh_key
-    ref_path = find_product_name_reference_file(Path(base_dir_str))
+    _ = base_dir_str
     api_info = load_product_names_api_lookup()
-    if ref_path is None:
-        return api_info if not api_info.empty else empty_product_info_lookup()
-
-    wanted_columns = {"제품명코드", "제품명", "분류요약", "거래처명"}
-    try:
-        info = pd.read_excel(
-            ref_path,
-            sheet_name="제품명정보",
-            usecols=lambda c: str(c).strip() in wanted_columns,
-        )
-    except Exception:
-        return api_info if not api_info.empty else empty_product_info_lookup()
-
-    info.columns = [str(c).strip() for c in info.columns]
-    for col in wanted_columns:
-        if col not in info.columns:
-            info[col] = ""
-    info["제품명코드"] = info["제품명코드"].map(normalize_item_code_value).str[:5]
-    info = info[info["제품명코드"].str.startswith("P", na=False)].copy()
-    info = info.drop_duplicates(subset=["제품명코드"], keep="first")
-    local_info = info.rename(
-        columns={
-            "제품명": "제품명_기준",
-            "분류요약": "신규분류_기준",
-            "거래처명": "거래처_기준",
-        }
-    )[PRODUCT_INFO_LOOKUP_COLUMNS]
-    return merge_product_info_lookups(local_info, api_info)
+    return api_info if not api_info.empty else empty_product_info_lookup()
 
 
 def build_target_stock_lookup(inv_df: pd.DataFrame) -> tuple[dict[str, dict[str, float]], pd.DataFrame]:
@@ -10354,7 +10452,7 @@ def build_all_item_status_snapshot(refresh_key: str, base_dir_str: str | None = 
     all_items = pd.DataFrame(
         {
             "생산코드": master["품목코드"].map(normalize_item_code_value),
-            "제품명코드": master["제품명코드"].map(normalize_item_code_value).str[:5],
+            "제품명코드": master["제품명코드"].map(normalize_item_code_value),
             "제품명": master["제품명"].astype(str).str.strip(),
             "제품군": master["제품군"].astype(str).str.strip(),
             "신규분류": master["신규분류"].astype(str).str.strip(),
@@ -10364,17 +10462,10 @@ def build_all_item_status_snapshot(refresh_key: str, base_dir_str: str | None = 
 
     reference_refresh_key = build_reference_refresh_key(data_base_dir)
     product_info = load_product_info_lookup(str(data_base_dir), reference_refresh_key)
-    if not product_info.empty:
-        all_items = all_items.merge(product_info, on="제품명코드", how="left")
-    else:
-        all_items["제품명_기준"] = ""
-        all_items["신규분류_기준"] = ""
-        all_items["거래처_기준"] = ""
-
-    all_items["제품명"] = apply_nonempty_override(all_items["제품명_기준"], all_items["제품명"])
-    all_items["신규분류"] = apply_nonempty_override(all_items["신규분류_기준"], all_items["신규분류"])
+    all_items = apply_product_master_reference(all_items, product_info, item_col="제품명코드", product_col="제품명")
+    all_items["신규분류"] = apply_nonempty_override(all_items["신규분류"], all_items["API 제품분류"])
     all_items["신규분류"] = apply_nonempty_override(all_items["제품군"], all_items["신규분류"])
-    all_items["거래처"] = all_items["거래처_기준"].astype(str).replace({"nan": "", "None": ""}).fillna("")
+    all_items["거래처"] = all_items["API 거래처명"].astype(str).replace({"nan": "", "None": ""}).fillna("")
     all_items["이니셜"] = ""
     all_items["파워"] = all_items["생산코드"].map(extract_power_from_code)
 
@@ -10932,7 +11023,7 @@ def build_inventory_risk_snapshot(refresh_key: str, base_dir_str: str | None = N
 @st.cache_data(show_spinner=False, max_entries=CACHE_MAX_ENTRIES)
 def build_filter_option_maps(
     df: pd.DataFrame, selected_site_option: str = "전체"
-) -> tuple[dict[str, float], dict[str, float], dict[str, float]]:
+) -> tuple[dict[str, float], dict[str, float], dict[str, float], dict[str, float]]:
     process_qty_cols = [
         "사출생산필요수량",
         SEPARATION_REQUIRED_QTY_COL,
@@ -10940,7 +11031,7 @@ def build_filter_option_maps(
         ADHESION_REQUIRED_QTY_COL,
         "부족수량",
     ]
-    required_cols = ["사이트코드", "시트분류", "분류별요약", *process_qty_cols]
+    required_cols = ["사이트코드", "시트분류", "분류별요약", "API 매칭상태", *process_qty_cols]
     option_df = df[[c for c in required_cols if c in df.columns]].copy()
     for qty_col in process_qty_cols:
         if qty_col not in option_df.columns:
@@ -10951,6 +11042,8 @@ def build_filter_option_maps(
         option_df["시트분류"] = "(미분류)"
     if "분류별요약" not in option_df.columns:
         option_df["분류별요약"] = "(미분류)"
+    if "API 매칭상태" not in option_df.columns:
+        option_df["API 매칭상태"] = "(미확인)"
 
     site_label = option_df["사이트코드"].astype(str).str.strip()
     option_df["사이트코드"] = site_label.replace({"": "(미지정)", "nan": "(미지정)", "None": "(미지정)"})
@@ -10967,7 +11060,8 @@ def build_filter_option_maps(
 
     sheet_sum_map = scoped.groupby("시트분류", as_index=True)["필터수량"].sum().sort_values(ascending=False).to_dict()
     summary_sum_map = scoped.groupby("분류별요약", as_index=True)["필터수량"].sum().sort_values(ascending=False).to_dict()
-    return site_sum_map, sheet_sum_map, summary_sum_map
+    api_status_sum_map = scoped.groupby("API 매칭상태", as_index=True)["필터수량"].sum().sort_values(ascending=False).to_dict()
+    return site_sum_map, sheet_sum_map, summary_sum_map, api_status_sum_map
 
 
 @st.cache_data(show_spinner=False, max_entries=CACHE_MAX_ENTRIES)
@@ -10978,6 +11072,7 @@ def filter_data(
     exclude_safe_initial: bool,
     selected_sheet_options: tuple[str, ...],
     selected_summary_options: tuple[str, ...],
+    selected_api_status_options: tuple[str, ...],
     only_same_rq_group: bool,
     only_with_stock: bool,
     only_rework_available: bool,
@@ -11000,6 +11095,12 @@ def filter_data(
             "거래처",
             "품목코드",
             "제품명",
+            "원본 제품명",
+            "API 제품명코드",
+            "API 제품명",
+            "API 제품분류",
+            "API 거래처명",
+            "API 매칭상태",
             "비고",
             "재작업",
             "R코드 제품명",
@@ -11016,6 +11117,8 @@ def filter_data(
         base_filtered = base_filtered[base_filtered["시트분류"].isin(selected_sheet_options)]
     if is_specific_pill_selection(selected_summary_options) and "분류별요약" in base_filtered.columns:
         base_filtered = base_filtered[base_filtered["분류별요약"].isin(selected_summary_options)]
+    if is_specific_pill_selection(selected_api_status_options) and "API 매칭상태" in base_filtered.columns:
+        base_filtered = base_filtered[base_filtered["API 매칭상태"].isin(selected_api_status_options)]
     if only_same_rq_group and {"R코드5", "Q코드5", "P코드5"}.issubset(base_filtered.columns):
         p_count_per_group = base_filtered.groupby(["R코드5", "Q코드5"])["P코드5"].transform("nunique")
         base_filtered = base_filtered[p_count_per_group >= 2]
@@ -11042,7 +11145,7 @@ def apply_filters(
         st.caption(f"앱 버전: {APP_CACHE_VERSION}")
         default_scope_caption = st.empty()
 
-        site_sum_map, _, _ = build_filter_option_maps(df, "전체")
+        site_sum_map, _, _, _ = build_filter_option_maps(df, "전체")
         site_options = ["전체"] + list(site_sum_map.keys())
         site_count_map = {"전체": float(sum(site_sum_map.values())), **site_sum_map}
         locked_site_text = clean_text_value(locked_site_filter)
@@ -11089,13 +11192,17 @@ def apply_filters(
         exclude_safe_initial = st.checkbox("안전 이니셜 제외", value=False, key="flt_exclude_safe_initial")
         only_same_rq_group = st.checkbox("동일 RQ그룹만(R5/Q5, P5종류2+)", value=False, key="flt_only_same_rq_group")
 
-        _, sheet_sum_map, summary_sum_map = build_filter_option_maps(df, selected_site_option or "전체")
+        _, sheet_sum_map, summary_sum_map, api_status_sum_map = build_filter_option_maps(
+            df, selected_site_option or "전체"
+        )
 
         sheet_options = ["전체"] + list(sheet_sum_map.keys())
         summary_options = ["전체"] + list(summary_sum_map.keys())
+        api_status_options = ["전체"] + list(api_status_sum_map.keys())
         scoped_total = float(sum(sheet_sum_map.values()))
         sheet_count_map = {"전체": scoped_total, **sheet_sum_map}
         summary_count_map = {"전체": scoped_total, **summary_sum_map}
+        api_status_count_map = {"전체": scoped_total, **api_status_sum_map}
 
         st.divider()
         sheet_pills_key = "flt_sheet_pills"
@@ -11126,6 +11233,20 @@ def apply_filters(
                 args=(summary_pills_key,),
             ),
         )
+        api_status_pills_key = "flt_api_status_pills"
+        prepare_multi_pill_state(api_status_pills_key, api_status_options)
+        selected_api_status_options = finalize_multi_pill_selection(
+            api_status_pills_key,
+            st.pills(
+                "API 매칭상태",
+                options=api_status_options,
+                selection_mode="multi",
+                key=api_status_pills_key,
+                format_func=lambda x: format_pill_label(x, api_status_count_map),
+                on_change=sync_multi_pill_state,
+                args=(api_status_pills_key,),
+            ),
+        )
         st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
         if data_base_dir is not None and show_reference_dates:
             render_sidebar_reference_dates(data_base_dir, source_label)
@@ -11137,6 +11258,7 @@ def apply_filters(
         exclude_safe_initial,
         selected_sheet_options,
         selected_summary_options,
+        selected_api_status_options,
         only_same_rq_group,
         only_with_stock,
         only_rework_available,
@@ -12669,6 +12791,12 @@ def render_shortage_dashboard(
         "R코드",
         "Q코드",
         "제품명",
+        "원본 제품명",
+        "API 제품명코드",
+        "API 제품분류",
+        "API 매칭상태",
+        "분류 출처",
+        "API 매칭근거",
         PIA_ORDER_CLASS_COL,
         ORDER_RECEIVED_DATE_COL,
         "파워",
@@ -12716,6 +12844,13 @@ def render_shortage_dashboard(
                 "Q코드",
                 "U코드",
                 "제품명",
+                "원본 제품명",
+                "API 제품명코드",
+                "API 제품명",
+                "API 제품분류",
+                "API 거래처명",
+                "API 매칭상태",
+                "API 매칭근거",
                 "R코드 제품명",
                 "분류별요약",
                 "시트분류",
