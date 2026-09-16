@@ -179,6 +179,40 @@ class RefreshSnapshotStatusTests(unittest.TestCase):
 
         self.assertEqual(self.read_status()["status"], app.REFRESH_STATUS_FAILED)
 
+    def test_status_file_includes_github_run_metadata_when_available(self) -> None:
+        env_values = {
+            "GITHUB_RUN_ID": "987654321",
+            "GITHUB_RUN_ATTEMPT": "2",
+            "GITHUB_RUN_NUMBER": "44",
+            "GITHUB_WORKFLOW": "Refresh APS snapshots",
+            "GITHUB_JOB": "refresh",
+            "GITHUB_REPOSITORY": "113090ab-creator/INTEROJO",
+            "GITHUB_SERVER_URL": "https://github.com",
+        }
+        original = {key: os.environ.get(key) for key in env_values}
+        try:
+            os.environ.update(env_values)
+            refresh_snapshot.write_status(
+                app,
+                app.REFRESH_STATUS_BUILDING,
+                slot_key="2026-09-09 AM",
+                api_updated_at="2026-09-09 07:55:00",
+                wip_api_updated_at="2026-09-09 08:12:00",
+            )
+        finally:
+            for key, value in original.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        status = self.read_status()
+        self.assertEqual(status["run_id"], "987654321")
+        self.assertEqual(status["run_attempt"], "2")
+        self.assertEqual(status["run_number"], "44")
+        self.assertEqual(status["workflow"], "Refresh APS snapshots")
+        self.assertEqual(status["run_url"], "https://github.com/113090ab-creator/INTEROJO/actions/runs/987654321")
+
     def test_operational_target_slot_examples(self) -> None:
         cases = [
             ("2026-09-09 08:20:00", "2026-09-09 AM"),

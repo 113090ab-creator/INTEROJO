@@ -67,6 +67,7 @@ APS_REFRESH_SLOT_WINDOWS = {
     "AM": {"start_minute": 8 * 60, "end_minute": 9 * 60 + 55},
     "PM": {"start_minute": 16 * 60, "end_minute": 17 * 60 + 55},
 }
+APS_REFRESH_ACTIVE_STALE_MINUTES = 130
 STREAMLIT_CLOUD_RUNTIME = (
     bool(os.environ.get("STREAMLIT_CLOUD"))
     or bool(os.environ.get("STREAMLIT_SHARING_MODE"))
@@ -4226,6 +4227,40 @@ def get_snapshot_status_event_time(status: dict[str, object]) -> datetime | None
     return None
 
 
+def get_snapshot_status_age_minutes(status: dict[str, object], now: datetime | None = None) -> float | None:
+    event_time = get_snapshot_status_event_time(status)
+    if event_time is None:
+        return None
+    current = normalize_display_datetime(now)
+    return max(0.0, (current - event_time).total_seconds() / 60)
+
+
+def is_active_snapshot_refresh_status(status_text: str) -> bool:
+    return status_text in {
+        REFRESH_STATUS_CHECKING,
+        REFRESH_STATUS_READY,
+        REFRESH_STATUS_BUILDING,
+        REFRESH_STATUS_VALIDATING,
+        REFRESH_STATUS_PUBLISHING,
+    }
+
+
+def is_waiting_snapshot_refresh_status(status_text: str) -> bool:
+    return status_text in {REFRESH_STATUS_WAITING_FOR_PLAN, REFRESH_STATUS_WAITING_FOR_WIP}
+
+
+def get_stale_refresh_status_display(status: dict[str, object], now: datetime | None = None) -> str:
+    status_text = normalize_snapshot_refresh_status(status.get("status", ""))
+    age_minutes = get_snapshot_status_age_minutes(status, now)
+    if age_minutes is None or age_minutes <= APS_REFRESH_ACTIVE_STALE_MINUTES:
+        return ""
+    if is_active_snapshot_refresh_status(status_text):
+        return SNAPSHOT_UI_STATUS_FAILED
+    if is_waiting_snapshot_refresh_status(status_text):
+        return SNAPSHOT_UI_STATUS_DELAYED
+    return ""
+
+
 def get_current_snapshot_set_event_time(
     current_set: dict[str, object],
     manifest: dict[str, object],
@@ -4381,25 +4416,20 @@ def get_snapshot_operational_ui_state(now: datetime | None = None) -> dict[str, 
     status_slot = get_refresh_status_slot_key(status)
     status_relevant = not status_slot or snapshot_slot_is_at_least(status_slot, target_slot)
     if status_relevant:
+        stale_display_status = get_stale_refresh_status_display(status, now)
+        if stale_display_status:
+            return build_snapshot_ui_state(stale_display_status, target_slot, published_slot)
         if status_text == REFRESH_STATUS_FAILED:
             return build_snapshot_ui_state(SNAPSHOT_UI_STATUS_FAILED, target_slot, published_slot)
         if status_text == REFRESH_STATUS_DELAYED:
             return build_snapshot_ui_state(SNAPSHOT_UI_STATUS_DELAYED, target_slot, published_slot)
-        if status_text in {
-            REFRESH_STATUS_CHECKING,
-            REFRESH_STATUS_WAITING_FOR_PLAN,
-            REFRESH_STATUS_WAITING_FOR_WIP,
-            REFRESH_STATUS_READY,
-            REFRESH_STATUS_BUILDING,
-            REFRESH_STATUS_VALIDATING,
-            REFRESH_STATUS_PUBLISHING,
-        }:
+        if is_active_snapshot_refresh_status(status_text) or is_waiting_snapshot_refresh_status(status_text):
             if bool(target.get("window_expired")):
                 return build_snapshot_ui_state(SNAPSHOT_UI_STATUS_DELAYED, target_slot, published_slot)
             return build_snapshot_ui_state(SNAPSHOT_UI_STATUS_REFRESHING, target_slot, published_slot)
 
-    if bool(target.get("window_started")) and not bool(target.get("window_expired")):
-        return build_snapshot_ui_state(SNAPSHOT_UI_STATUS_REFRESHING, target_slot, published_slot)
+    if bool(target.get("window_started")):
+        return build_snapshot_ui_state(SNAPSHOT_UI_STATUS_DELAYED, target_slot, published_slot)
     return build_snapshot_ui_state(SNAPSHOT_UI_STATUS_DELAYED, target_slot, published_slot)
 
 
@@ -4410,6 +4440,8 @@ def normalize_snapshot_refresh_status(value: object) -> str:
         "PENDING": REFRESH_STATUS_WAITING_FOR_WIP,
         "PENDING_API_UPDATE": REFRESH_STATUS_WAITING_FOR_PLAN,
         "PENDING_WIP_UPDATE": REFRESH_STATUS_WAITING_FOR_WIP,
+        "RUNNING": REFRESH_STATUS_BUILDING,
+        "IN_PROGRESS": REFRESH_STATUS_BUILDING,
         "FAILED": REFRESH_STATUS_FAILED,
         "API_FAILED": REFRESH_STATUS_FAILED,
         "VALIDATION_FAILED": REFRESH_STATUS_FAILED,
@@ -4429,9 +4461,9 @@ def get_snapshot_refresh_display_status(status: dict[str, object]) -> str:
     status_text = normalize_snapshot_refresh_status(status.get("status", ""))
     if status_text == REFRESH_STATUS_PUBLISHED:
         return SNAPSHOT_UI_STATUS_LATEST
-    if status_text in {REFRESH_STATUS_CHECKING, REFRESH_STATUS_READY, REFRESH_STATUS_BUILDING, REFRESH_STATUS_VALIDATING, REFRESH_STATUS_PUBLISHING}:
+    if is_active_snapshot_refresh_status(status_text):
         return SNAPSHOT_UI_STATUS_REFRESHING
-    if status_text in {REFRESH_STATUS_WAITING_FOR_PLAN, REFRESH_STATUS_WAITING_FOR_WIP}:
+    if is_waiting_snapshot_refresh_status(status_text):
         return SNAPSHOT_UI_STATUS_REFRESHING
     if status_text == REFRESH_STATUS_DELAYED:
         return SNAPSHOT_UI_STATUS_DELAYED

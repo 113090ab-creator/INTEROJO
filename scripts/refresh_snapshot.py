@@ -197,6 +197,30 @@ def build_observed_metadata_payload(
     return preserve_same_slot_observed_metadata(app, payload, existing)
 
 
+def build_github_run_metadata() -> dict[str, object]:
+    run_id = clean_status_value(os.environ.get("GITHUB_RUN_ID", ""))
+    repository = clean_status_value(os.environ.get("GITHUB_REPOSITORY", ""))
+    server_url = clean_status_value(os.environ.get("GITHUB_SERVER_URL", "https://github.com")) or "https://github.com"
+    metadata: dict[str, object] = {}
+    env_map = {
+        "run_id": "GITHUB_RUN_ID",
+        "run_attempt": "GITHUB_RUN_ATTEMPT",
+        "run_number": "GITHUB_RUN_NUMBER",
+        "workflow": "GITHUB_WORKFLOW",
+        "job": "GITHUB_JOB",
+        "actor": "GITHUB_ACTOR",
+        "ref_name": "GITHUB_REF_NAME",
+        "sha": "GITHUB_SHA",
+    }
+    for target_key, env_name in env_map.items():
+        value = clean_status_value(os.environ.get(env_name, ""))
+        if value:
+            metadata[target_key] = value
+    if run_id and repository:
+        metadata["run_url"] = f"{server_url.rstrip('/')}/{repository}/actions/runs/{run_id}"
+    return metadata
+
+
 def write_status(app, status: str, **payload: object) -> None:
     import snapshot_storage
 
@@ -207,6 +231,7 @@ def write_status(app, status: str, **payload: object) -> None:
     status_payload: dict[str, object] = {
         "checked_at": datetime.now(app.DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S"),
         "status": status,
+        **build_github_run_metadata(),
         **payload,
     }
     current_manifest = app.get_published_snapshot_set_manifest()
