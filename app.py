@@ -146,6 +146,26 @@ REWORK_PRODUCTION_DEMAND_COLUMNS = (
     "납기일",
     "부족수량",
 )
+SHORTAGE_MAIN_TABLE_DISPLAY_COLUMNS = [
+    "API 제품분류",
+    "거래처",
+    "이니셜",
+    "품목코드",
+    "R코드",
+    "Q코드",
+    "제품명",
+    "파워",
+    "납기일",
+    "부족수량",
+    "사출 부족수량",
+    "사출창고",
+    "분리창고",
+    "검사접착창고",
+    "검사접착재작업창고",
+    "누수규격검사 창고",
+    "공정재고 합계",
+    "비고",
+]
 
 WAREHOUSE_MAP = {
     "사출창고": "사출창고",
@@ -7812,6 +7832,14 @@ def format_pill_label(option: str, value_map: dict[str, float]) -> str:
     return f"{option} ({value:,.0f})"
 
 
+def select_shortage_main_table_display_columns(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    if not isinstance(df, pd.DataFrame):
+        return pd.DataFrame(), SHORTAGE_MAIN_TABLE_DISPLAY_COLUMNS.copy()
+    visible_columns = [col for col in SHORTAGE_MAIN_TABLE_DISPLAY_COLUMNS if col in df.columns]
+    missing_columns = [col for col in SHORTAGE_MAIN_TABLE_DISPLAY_COLUMNS if col not in df.columns]
+    return df.loc[:, visible_columns].copy(), missing_columns
+
+
 def _multi_pill_previous_key(key: str) -> str:
     return f"{key}__previous_selection"
 
@@ -14143,6 +14171,7 @@ def render_shortage_dashboard(
             insert_idx = p_detail_columns.index("부족수량") + 1 if "부족수량" in p_detail_columns else len(p_detail_columns)
             p_detail_columns.insert(insert_idx, "사출 부족수량")
         p_detail_columns = move_columns_to_end(p_detail_columns, ["비고"])
+        p_detail_columns = [col for col in p_detail_columns if col in p_view.columns]
         sort_columns = ["표시부족수량", "부족수량", "사출 부족수량", "이니셜", "거래처"]
         sort_ascending = [False, False, False, True, True]
         if direct_query and "이니셜" in p_view.columns:
@@ -14223,7 +14252,10 @@ def render_shortage_dashboard(
             render_dashboard_kpi("누수규격 재고", f"{kpi_totals['누수규격검사 창고']:,.0f}", "stock")
         p_table_total_count = len(p_table_ui)
         result_caption.caption(f"표시 {len(p_table_ui):,}건 / 전체 {p_table_total_count:,}건")
-        p_table_display_source, _ = limit_dataframe_for_display(p_table_ui)
+        p_table_screen_source, missing_display_columns = select_shortage_main_table_display_columns(p_table_ui)
+        if missing_display_columns:
+            st.caption("화면 테이블 누락 컬럼: " + ", ".join(missing_display_columns))
+        p_table_display_source, _ = limit_dataframe_for_display(p_table_screen_source)
         caption_limited_rows(len(p_table_ui), len(p_table_display_source))
         p_display_columns = p_table_display_source.columns.tolist()
         p_table_display = format_numeric_columns_for_display(p_table_display_source)
