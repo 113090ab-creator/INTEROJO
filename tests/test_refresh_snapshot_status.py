@@ -84,6 +84,13 @@ class RefreshSnapshotStatusTests(unittest.TestCase):
         fake = SlotDecisionApp("2026-09-09 PM", "2026-09-09 PM")
         self.assertTrue(refresh_snapshot.target_snapshot_set_is_published(fake, "2026-09-09 PM"))
 
+    def test_refresh_workflow_uses_target_crons_and_internal_retry(self) -> None:
+        workflow = (PROJECT_ROOT / ".github" / "workflows" / "refresh_snapshot.yml").read_text(encoding="utf-8")
+        self.assertIn('cron: "20 23 * * *"', workflow)
+        self.assertIn('cron: "30 7 * * *"', workflow)
+        self.assertIn("SNAPSHOT_REFRESH_MAX_ATTEMPTS", workflow)
+        self.assertIn("for attempt in $(seq 1", workflow)
+
     def test_same_slot_metadata_does_not_regress_to_missing_value(self) -> None:
         self.write_status_file(
             {
