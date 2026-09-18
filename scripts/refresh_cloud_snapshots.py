@@ -34,6 +34,16 @@ VSS_MANAGED_APS_SNAPSHOT_NAMES = frozenset(
         "process_map_ssite.csv.gz",
     }
 )
+SNAPSHOT_META_CONFLICT_MARKER_PREFIXES = ("<<<<<<<", "=======", ">>>>>>>")
+
+
+def clean_meta_text(value: object) -> str:
+    return str(value or "").strip()
+
+
+def is_snapshot_meta_conflict_marker(value: object) -> bool:
+    text = clean_meta_text(value)
+    return any(text.startswith(marker) for marker in SNAPSHOT_META_CONFLICT_MARKER_PREFIXES)
 
 
 def is_vss_managed_aps_snapshot_name(name: str) -> bool:
@@ -62,6 +72,11 @@ def load_existing_meta(snapshot_dir: Path) -> dict[str, str]:
         return {}
     if meta.empty or not {"key", "value"}.issubset(meta.columns):
         return {}
+    meta = meta[["key", "value"]].copy()
+    meta["key"] = meta["key"].map(clean_meta_text)
+    meta["value"] = meta["value"].map(clean_meta_text)
+    meta = meta[meta["key"].ne("") & ~meta["key"].map(is_snapshot_meta_conflict_marker)]
+    meta = meta.drop_duplicates(subset=["key"], keep="last")
     return {str(row["key"]): str(row["value"]) for _, row in meta.iterrows()}
 
 

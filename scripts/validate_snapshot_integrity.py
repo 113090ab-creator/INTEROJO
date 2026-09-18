@@ -10,6 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SNAPSHOT_DIR = PROJECT_ROOT / "cloud_snapshots"
 CURRENT_SNAPSHOT_SET_NAME = "current_snapshot_set.json"
 STATUS_NAME = "aps_snapshot_refresh_status.json"
+META_NAME = "snapshot_meta.csv"
 MANIFEST_NAME = "manifest.json"
 SETS_DIR_NAME = "sets"
 CONFLICT_MARKERS = ("<<<<<<<", "=======", ">>>>>>>")
@@ -44,6 +45,15 @@ def read_json_file(path: Path) -> dict[str, object]:
     if not isinstance(payload, dict):
         raise SnapshotIntegrityError(f"JSON file must contain an object: {path}")
     return payload
+
+
+def validate_no_conflict_markers(path: Path) -> None:
+    if not path.exists():
+        return
+    text = path.read_text(encoding="utf-8-sig")
+    for marker in CONFLICT_MARKERS:
+        if marker in text:
+            raise SnapshotIntegrityError(f"git conflict marker found in {path}: {marker}")
 
 
 def clean_text(value: object) -> str:
@@ -117,6 +127,7 @@ def validate_status(snapshot_dir: Path, current: dict[str, object]) -> None:
 def validate_snapshot_integrity(snapshot_dir: Path) -> None:
     if not snapshot_dir.exists():
         raise SnapshotIntegrityError(f"snapshot directory does not exist: {snapshot_dir}")
+    validate_no_conflict_markers(snapshot_dir / META_NAME)
     validate_all_json_files(snapshot_dir)
     current, _manifest = validate_current_set(snapshot_dir)
     validate_status(snapshot_dir, current)

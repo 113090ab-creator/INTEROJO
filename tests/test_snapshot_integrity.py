@@ -70,6 +70,15 @@ class SnapshotIntegrityTests(unittest.TestCase):
         with self.assertRaises(validate_snapshot_integrity.SnapshotIntegrityError):
             self.validate()
 
+    def test_conflict_marker_in_snapshot_meta_fails(self) -> None:
+        (self.snapshot_dir / "snapshot_meta.csv").write_text(
+            "key,value\n<<<<<<< HEAD,\ndata_updated_at,2026-09-15 15:58:34\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaises(validate_snapshot_integrity.SnapshotIntegrityError):
+            self.validate()
+
     def test_invalid_current_json_fails(self) -> None:
         (self.snapshot_dir / "current_snapshot_set.json").write_text("{not-json", encoding="utf-8")
 

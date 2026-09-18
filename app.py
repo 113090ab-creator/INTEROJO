@@ -3803,6 +3803,7 @@ VSS_MANAGED_META_KEYS = frozenset(
         WIP_INVENTORY_REFRESHED_AT_META_KEY,
     }
 )
+SNAPSHOT_META_CONFLICT_MARKER_PREFIXES = ("<<<<<<<", "=======", ">>>>>>>")
 _VSS_PRODUCTION_WRITE_DEPTH = 0
 
 
@@ -3833,6 +3834,23 @@ def assert_vss_production_meta_write_allowed(key: object) -> None:
 def shortage_snapshot_meta_key(site_filter: str = "전체") -> str:
     site = normalize_shortage_snapshot_site_filter(site_filter)
     return "data_updated_at" if site == "전체" else f"data_updated_at_{site}"
+
+
+def is_snapshot_meta_conflict_marker(value: object) -> bool:
+    text = clean_text_value(value)
+    return any(text.startswith(marker) for marker in SNAPSHOT_META_CONFLICT_MARKER_PREFIXES)
+
+
+def sanitize_cloud_snapshot_meta_frame(meta: pd.DataFrame) -> pd.DataFrame:
+    if not isinstance(meta, pd.DataFrame) or not {"key", "value"}.issubset(meta.columns):
+        return pd.DataFrame(columns=["key", "value"])
+    clean_meta = meta[["key", "value"]].copy()
+    clean_meta["key"] = clean_meta["key"].map(clean_text_value)
+    clean_meta["value"] = clean_meta["value"].map(clean_text_value)
+    clean_meta = clean_meta[
+        clean_meta["key"].ne("") & ~clean_meta["key"].map(is_snapshot_meta_conflict_marker)
+    ].copy()
+    return clean_meta.drop_duplicates(subset=["key"], keep="last").reset_index(drop=True)
 
 
 def build_cloud_snapshot_refresh_key(*names: str) -> str:
@@ -3900,13 +3918,10 @@ def parse_cloud_snapshot_meta_bytes(data: bytes) -> dict[str, str]:
         meta = pd.read_csv(BytesIO(data), encoding="utf-8-sig")
     except Exception:
         return {}
-    if meta.empty or not {"key", "value"}.issubset(meta.columns):
+    meta = sanitize_cloud_snapshot_meta_frame(meta)
+    if meta.empty:
         return {}
-    return {
-        clean_text_value(row.get("key", "")): clean_text_value(row.get("value", ""))
-        for row in meta.to_dict("records")
-        if clean_text_value(row.get("key", ""))
-    }
+    return {row["key"]: row["value"] for row in meta.to_dict("records")}
 
 
 def parse_cloud_snapshot_json_bytes(data: bytes) -> dict[str, object]:
@@ -4001,11 +4016,7 @@ def write_cloud_snapshot_meta_value(key: str, value: str) -> bool:
     if not clean_key:
         return False
     assert_vss_production_meta_write_allowed(clean_key)
-    meta = load_cloud_snapshot_csv(CLOUD_SNAPSHOT_META_NAME)
-    if not {"key", "value"}.issubset(meta.columns):
-        meta = pd.DataFrame(columns=["key", "value"])
-    meta = meta[["key", "value"]].copy()
-    meta["key"] = meta["key"].map(clean_text_value)
+    meta = sanitize_cloud_snapshot_meta_frame(load_cloud_snapshot_csv(CLOUD_SNAPSHOT_META_NAME))
     if clean_key in set(meta["key"]):
         meta.loc[meta["key"] == clean_key, "value"] = clean_text_value(value)
     else:
