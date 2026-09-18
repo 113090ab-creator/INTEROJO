@@ -1,9 +1,28 @@
 {
+<<<<<<< HEAD
   "checked_at": "2026-09-18 09:02:26",
   "status": "BUILDING",
   "api_updated_at": "2026-09-18 07:49:04",
   "wip_api_updated_at": "2026-09-18 08:05:14",
   "slot_key": "2026-09-18 AM",
+=======
+  "checked_at": "2026-09-18 04:41:00",
+  "status": "PUBLISHED",
+  "run_id": "35266202166",
+  "run_attempt": "1",
+  "run_number": "314",
+  "workflow": "Keep Streamlit Alive",
+  "job": "refresh-aps-snapshots",
+  "actor": "113090ab-creator",
+  "ref_name": "main",
+  "sha": "5fa22549977eb8497e5a4e6effe0edff705112f6",
+  "run_url": "https://github.com/113090ab-creator/INTEROJO/actions/runs/35266202166",
+  "api_updated_at": "2026-09-17 12:51:49",
+  "wip_api_updated_at": "2026-09-17 13:11:53",
+  "slot_key": "2026-09-17 PM",
+  "set_id": "aps_20260917_pm_plan125149_wip131153_f4248eaa",
+  "published_at": "2026-09-17 14:11:53",
+>>>>>>> a285171d2fd3d48132e9f852888955ab95d0e00f
   "storage": "로컬 cloud_snapshots 폴더",
   "sites": [
     "C관",
@@ -11,6 +30,11 @@
     "S관",
     "전체"
   ],
+<<<<<<< HEAD
+=======
+  "skipped": true,
+  "reason": "target validated snapshot set is already published",
+>>>>>>> a285171d2fd3d48132e9f852888955ab95d0e00f
   "current_set": {
     "set_id": "aps_20260917_pm_plan125149_wip131153_f4248eaa",
     "slot_key": "2026-09-17 PM",
