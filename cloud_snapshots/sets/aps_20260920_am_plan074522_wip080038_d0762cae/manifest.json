@@ -1,0 +1,122 @@
+{
+  "set_id": "aps_20260920_am_plan074522_wip080038_d0762cae",
+  "slot_key": "2026-09-20 AM",
+  "plan_updated_at": "2026-09-20 07:45:22",
+  "wip_updated_at": "2026-09-20 08:00:38",
+  "created_at": "2026-09-20 10:20:17",
+  "sites": [
+    "C관",
+    "A관",
+    "S관",
+    "전체"
+  ],
+  "sources": {
+    "plan": {
+      "label": "APS API (2026-09-20 07:45:22)"
+    },
+    "wip": {
+      "label": "APS WIP 정리 스냅샷 (2026-09-20 08:00:38; WH_NAME 사출창고, 분리창고, 검사접착, 누수규격검사)"
+    }
+  },
+  "files": {
+    "wip_inventory_snapshot.csv.gz": {
+      "path": "sets/aps_20260920_am_plan074522_wip080038_d0762cae/wip_inventory_snapshot.csv.gz",
+      "rows": 30040,
+      "checksum": "84704ff154c722bb351033a09a5a5c2610d11e8159dee072d39165585dbd7a34"
+    },
+    "aps_plan_operations_csite.csv.gz": {
+      "path": "sets/aps_20260920_am_plan074522_wip080038_d0762cae/aps_plan_operations_csite.csv.gz",
+      "rows": 7475,
+      "checksum": "48ca15321dd563475aaa047eb65d05ff919cbc736fafae742fa1fc17f9131b26"
+    },
+    "shortage_snapshot_csite.csv.gz": {
+      "path": "sets/aps_20260920_am_plan074522_wip080038_d0762cae/shortage_snapshot_csite.csv.gz",
+      "rows": 3661,
+      "checksum": "02f7f49040e58f36d4ef0baff4a95946fa665f5820b9df4b7936fd23b083adfb"
+    },
+    "shortage_file_info_csite.csv.gz": {
+      "path": "sets/aps_20260920_am_plan074522_wip080038_d0762cae/shortage_file_info_csite.csv.gz",
+      "rows": 1,
+      "checksum": "ae9e9863792273bcd24c4783b8088b732c263e13333bf71b33969afa6d0691f3"
+    },
+    "process_map_csite.csv.gz": {
+      "path": "sets/aps_20260920_am_plan074522_wip080038_d0762cae/process_map_csite.csv.gz",
+      "rows": 5,
+      "checksum": "6f4d6e689475dc1ff8fc0ae5aeccbc9db84fa7fea03ce25db42e3bd3cbdf9789"
+    },
+    "aps_plan_operations_asite.csv.gz": {
+      "path": "sets/aps_20260920_am_plan074522_wip080038_d0762cae/aps_plan_operations_asite.csv.gz",
+      "rows": 3250,
+      "checksum": "90ab18e2d504acf528e44b1b454e4389a489b7dd716d69e5a79ff2357acc6f48"
+    },
+    "shortage_snapshot_asite.csv.gz": {
+      "path": "sets/aps_20260920_am_plan074522_wip080038_d0762cae/shortage_snapshot_asite.csv.gz",
+      "rows": 1078,
+      "checksum": "4082b1ff97292d99365cf78e16b2ff063804dc3d370c61185b37dec6478a337f"
+    },
+    "shortage_file_info_asite.csv.gz": {
+      "path": "sets/aps_20260920_am_plan074522_wip080038_d0762cae/shortage_file_info_asite.csv.gz",
+      "rows": 1,
+      "checksum": "f2d827fc71ddb040a9956316aaa6f82fffbca97dd82f08e4d077568f6c07c468"
+    },
+    "process_map_asite.csv.gz": {
+      "path": "sets/aps_20260920_am_plan074522_wip080038_d0762cae/process_map_asite.csv.gz",
+      "rows": 5,
+      "checksum": "ff7624ba13be4dcada707e1020d24af2f389e0ab68d872222967fbc6f5e643f0"
+    },
+    "aps_plan_operations_ssite.csv.gz": {
+      "path": "sets/aps_20260920_am_plan074522_wip080038_d0762cae/aps_plan_operations_ssite.csv.gz",
+      "rows": 15262,
+      "checksum": "547d0c50ad6f5c3072d64fdb71735b15bc141f6e0cc4aafc51112dc9c137bcd8"
+    },
+    "shortage_snapshot_ssite.csv.gz": {
+      "path": "sets/aps_20260920_am_plan074522_wip080038_d0762cae/shortage_snapshot_ssite.csv.gz",
+      "rows": 5255,
+      "checksum": "3e3b927b4412b80e6cc17a38fd8a1cdfe62a9fb6f46345d02335e79e004016cd"
+    },
+    "shortage_file_info_ssite.csv.gz": {
+      "path": "sets/aps_20260920_am_plan074522_wip080038_d0762cae/shortage_file_info_ssite.csv.gz",
+      "rows": 1,
+      "checksum": "831c5800d823ec2b4b6b1517e9c97073daad15fd1579c88ff1fef1869d9a932f"
+    },
+    "process_map_ssite.csv.gz": {
+      "path": "sets/aps_20260920_am_plan074522_wip080038_d0762cae/process_map_ssite.csv.gz",
+      "rows": 5,
+      "checksum": "9f57382e7af30d9214aaefc42ebe915d3f123e71701e14c4caaa2b9afeeef46f"
+    },
+    "aps_plan_operations.csv.gz": {
+      "path": "sets/aps_20260920_am_plan074522_wip080038_d0762cae/aps_plan_operations.csv.gz",
+      "rows": 25987,
+      "checksum": "2c80d0f020be999d57a068989c659df156a968ecb2151c8518c8ffcc4078aa68"
+    },
+    "shortage_snapshot.csv.gz": {
+      "path": "sets/aps_20260920_am_plan074522_wip080038_d0762cae/shortage_snapshot.csv.gz",
+      "rows": 9994,
+      "checksum": "793e0809edcf56501266ddb3d338a475c7522c27ac542c60f05ef125664b15d1"
+    },
+    "shortage_file_info.csv.gz": {
+      "path": "sets/aps_20260920_am_plan074522_wip080038_d0762cae/shortage_file_info.csv.gz",
+      "rows": 1,
+      "checksum": "ace1e0f071173bd7100e8418bafdfe39add87537a86074ddcb784c1732912794"
+    },
+    "process_map.csv.gz": {
+      "path": "sets/aps_20260920_am_plan074522_wip080038_d0762cae/process_map.csv.gz",
+      "rows": 5,
+      "checksum": "781a08264289099b71aff500741e069e26f359a2e875fc535f60685413130020"
+    }
+  },
+  "row_counts": {
+    "wip": 30040,
+    "plan_C관": 7475,
+    "shortage_C관": 3661,
+    "plan_A관": 3250,
+    "shortage_A관": 1078,
+    "plan_S관": 15262,
+    "shortage_S관": 5255,
+    "plan_전체": 25987,
+    "shortage_전체": 9994
+  },
+  "validation": {
+    "status": "passed"
+  }
+}
