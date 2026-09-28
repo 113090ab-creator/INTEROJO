@@ -1,32 +1,39 @@
 {
-  "checked_at": "2026-09-28 04:42:14",
-  "status": "DELAYED",
-  "run_id": "36345259414",
+  "checked_at": "2026-09-28 09:06:14",
+  "status": "PUBLISHED",
+  "run_id": "36360553325",
   "run_attempt": "1",
-  "run_number": "344",
-  "workflow": "Keep Streamlit Alive",
-  "job": "refresh-aps-snapshots",
+  "run_number": "121",
+  "workflow": "Refresh APS snapshots",
+  "job": "refresh",
   "actor": "113090ab-creator",
   "ref_name": "main",
-  "sha": "b5e65ea5424c2cb4b44b7fa3a52b6813fe0e1dc8",
-  "run_url": "https://github.com/113090ab-creator/INTEROJO/actions/runs/36345259414",
-  "reason": "APS WIP API 조회 실패: wh_name=사출창고: API response did not contain data rows.",
-  "waiting_for": "",
-  "api_updated_at": "2026-09-27 16:24:44",
-  "wip_api_updated_at": "2026-09-27 16:37:56",
-  "slot_key": "2026-09-27 PM",
+  "sha": "4001f1dcbb5e42340e78502b1b91eb50bd693a86",
+  "run_url": "https://github.com/113090ab-creator/INTEROJO/actions/runs/36360553325",
+  "api_updated_at": "2026-09-28 08:03:33",
+  "wip_api_updated_at": "2026-09-28 08:20:34",
+  "slot_key": "2026-09-28 AM",
+  "set_id": "aps_20260928_am_plan080333_wip082034_f8aca3fb",
+  "published_at": "2026-09-28 09:06:14",
+  "storage": "로컬 cloud_snapshots 폴더",
   "sites": [
     "C관",
     "A관",
     "S관",
     "전체"
   ],
-  "storage": "local-or-remote",
+  "results": {
+    "WIP": "staged rows=29,788 updated_at=2026-09-28 08:20:34",
+    "C관": "staged rows=3,162 updated_at=2026-09-28 08:03:33",
+    "A관": "staged rows=956 updated_at=2026-09-28 08:03:33",
+    "S관": "staged rows=16,911 updated_at=2026-09-28 08:03:33",
+    "전체": "staged rows=21,029 updated_at=2026-09-28 08:03:33"
+  },
   "current_set": {
-    "set_id": "aps_20260927_am_plan073931_wip075428_0c550034",
-    "slot_key": "2026-09-27 AM",
-    "plan_updated_at": "2026-09-27 07:39:31",
-    "wip_updated_at": "2026-09-27 07:54:28",
-    "created_at": "2026-09-27 10:38:49"
+    "set_id": "aps_20260928_am_plan080333_wip082034_f8aca3fb",
+    "slot_key": "2026-09-28 AM",
+    "plan_updated_at": "2026-09-28 08:03:33",
+    "wip_updated_at": "2026-09-28 08:20:34",
+    "created_at": "2026-09-28 09:06:09"
   }
 }
