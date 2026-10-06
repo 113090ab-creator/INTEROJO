@@ -168,6 +168,49 @@ SHORTAGE_MAIN_TABLE_DISPLAY_COLUMNS = [
     "공정재고 합계",
     "비고",
 ]
+SHORTAGE_EXCEL_DOWNLOAD_COLUMNS = [
+    "거래처",
+    "이니셜",
+    "품목코드",
+    "R코드",
+    "Q코드",
+    "원본 제품명",
+    "API 제품명코드",
+    "API 제품분류",
+    PIA_ORDER_CLASS_COL,
+    ORDER_RECEIVED_DATE_COL,
+    "파워",
+    "납기일",
+    "부족수량",
+    "사출 부족수량",
+    "사출창고",
+    "분리창고",
+    "검사접착창고",
+    "검사접착재작업창고",
+    "누수규격검사 창고",
+    "공정재고 합계",
+    "비고",
+]
+SHORTAGE_EXCEL_DOWNLOAD_ALIAS_COLUMNS = {
+    "품목코드": ["생산코드"],
+    "R코드": ["사출코드"],
+    "Q코드": ["분리코드"],
+    "원본 제품명": ["제품명"],
+    "API 제품명코드": ["제품명코드"],
+    "API 제품분류": ["분류별요약", "제품대분류", "신규분류"],
+    "부족수량": ["생산부족수량", "부족수량합계"],
+    "사출 부족수량": [
+        "사출부족수량",
+        "사출생산필요수량",
+        "사출 생산 필요수량 합계",
+        "사출부족수량합계",
+    ],
+    "사출창고": ["사출재고", "사출창고 합계"],
+    "분리창고": ["분리재고", "분리창고 합계"],
+    "검사접착창고": ["검사접착재고"],
+    "누수규격검사 창고": ["누수규격검사", "누수규격재고"],
+    "공정재고 합계": ["공정재고합계", "공정재고"],
+}
 
 WAREHOUSE_MAP = {
     "사출창고": "사출창고",
@@ -7910,6 +7953,29 @@ def select_shortage_main_table_display_columns(df: pd.DataFrame) -> tuple[pd.Dat
     return df.loc[:, visible_columns], missing_columns
 
 
+def build_shortage_excel_download_frame(df: pd.DataFrame) -> pd.DataFrame:
+    if not isinstance(df, pd.DataFrame):
+        return pd.DataFrame(columns=SHORTAGE_EXCEL_DOWNLOAD_COLUMNS)
+
+    source = df.copy()
+    if PIA_ORDER_CLASS_COL not in source.columns:
+        source = add_pia_order_classification(source)
+
+    output = pd.DataFrame(index=source.index)
+    source_columns = source.columns.tolist()
+    for target_col in SHORTAGE_EXCEL_DOWNLOAD_COLUMNS:
+        candidate_columns = [target_col, *SHORTAGE_EXCEL_DOWNLOAD_ALIAS_COLUMNS.get(target_col, [])]
+        source_col = pick_first_existing_column(source_columns, candidate_columns)
+        if source_col is None:
+            output[target_col] = ""
+            continue
+        output[target_col] = source[source_col]
+
+    if "비고" in output.columns:
+        output["비고"] = clean_display_text_series(output["비고"])
+    return output.reset_index(drop=True)
+
+
 def _multi_pill_previous_key(key: str) -> str:
     return f"{key}__previous_selection"
 
@@ -14363,7 +14429,7 @@ def render_shortage_dashboard(
         with PerfTimer("shortage_main_table_excel_button", rows=len(p_table_ui), cols=len(p_table_ui.columns)):
             render_lazy_excel_download_button(
                 "엑셀 다운로드",
-                p_table_ui,
+                build_shortage_excel_download_frame(p_table_ui),
                 "생산현황",
                 f"shortage_production_{download_stamp}.xlsx",
                 "download_shortage_tab_p",
@@ -14404,7 +14470,7 @@ def render_shortage_dashboard(
         )
         render_lazy_excel_download_button(
             "엑셀 다운로드",
-            r_summary,
+            build_shortage_excel_download_frame(r_summary),
             "사출생산현황",
             f"shortage_injection_summary_{download_stamp}.xlsx",
             "download_shortage_tab_r",
@@ -14501,7 +14567,7 @@ def render_shortage_dashboard(
             st.info("표시할 RQ 그룹 데이터가 없습니다.")
             render_lazy_excel_download_button(
                 "엑셀 다운로드",
-                pd.DataFrame(columns=detail_columns),
+                build_shortage_excel_download_frame(pd.DataFrame(columns=detail_columns)),
                 "사출분리공용",
                 f"shortage_shared_rq_{download_stamp}.xlsx",
                 "download_shortage_tab_rq_empty",
@@ -14544,7 +14610,7 @@ def render_shortage_dashboard(
             )
             render_lazy_excel_download_button(
                 "엑셀 다운로드",
-                rq_table_ui,
+                build_shortage_excel_download_frame(rq_table_ui),
                 "사출분리공용",
                 f"shortage_shared_rq_{download_stamp}.xlsx",
                 "download_shortage_tab_rq",
