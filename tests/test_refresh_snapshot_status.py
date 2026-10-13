@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest import mock
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -107,6 +108,66 @@ class RefreshSnapshotStatusTests(unittest.TestCase):
 
     def test_http_429_is_transient_source_error(self) -> None:
         self.assertTrue(refresh_snapshot.is_transient_source_error("API 응답 오류(HTTP 429)"))
+
+    def test_snapshot_waiting_defaults_to_non_retryable(self) -> None:
+        waiting = refresh_snapshot.SnapshotWaiting(
+            app.REFRESH_STATUS_DELAYED,
+            "PLAN/WIP 대기",
+            "2026-10-13 14:57:59",
+            "2026-10-13 15:10:04",
+            "2026-10-13 PM",
+        )
+        self.assertFalse(waiting.retryable)
+
+    def test_snapshot_waiting_can_request_workflow_retry(self) -> None:
+        waiting = refresh_snapshot.SnapshotWaiting(
+            app.REFRESH_STATUS_DELAYED,
+            "APS API 서버 오류(HTTP 429)",
+            "2026-10-13 14:57:59",
+            "2026-10-13 15:10:04",
+            "2026-10-13 PM",
+            retryable=True,
+        )
+        self.assertTrue(waiting.retryable)
+
+    def test_retryable_snapshot_waiting_returns_nonzero_from_main(self) -> None:
+        waiting = refresh_snapshot.SnapshotWaiting(
+            app.REFRESH_STATUS_DELAYED,
+            "APS API 서버 오류(HTTP 429)",
+            "2026-10-13 14:57:59",
+            "2026-10-13 15:10:04",
+            "2026-10-13 PM",
+            retryable=True,
+        )
+
+        with (
+            mock.patch.object(sys, "argv", ["refresh_snapshot.py"]),
+            mock.patch.object(refresh_snapshot, "configure_logging"),
+            mock.patch.object(refresh_snapshot, "load_app_module", return_value=app),
+            mock.patch.object(refresh_snapshot, "refresh_snapshots", side_effect=waiting),
+        ):
+            self.assertEqual(refresh_snapshot.main(), 1)
+
+        self.assertEqual(self.read_status()["status"], app.REFRESH_STATUS_DELAYED)
+
+    def test_non_retryable_snapshot_waiting_returns_zero_from_main(self) -> None:
+        waiting = refresh_snapshot.SnapshotWaiting(
+            app.REFRESH_STATUS_WAITING_FOR_WIP,
+            "WIP 같은 회차 데이터를 기다립니다.",
+            "2026-10-13 14:57:59",
+            "-",
+            "2026-10-13 PM",
+        )
+
+        with (
+            mock.patch.object(sys, "argv", ["refresh_snapshot.py"]),
+            mock.patch.object(refresh_snapshot, "configure_logging"),
+            mock.patch.object(refresh_snapshot, "load_app_module", return_value=app),
+            mock.patch.object(refresh_snapshot, "refresh_snapshots", side_effect=waiting),
+        ):
+            self.assertEqual(refresh_snapshot.main(), 0)
+
+        self.assertEqual(self.read_status()["status"], app.REFRESH_STATUS_WAITING_FOR_WIP)
 
     def test_streamlit_runtime_ignores_github_snapshot_storage_settings(self) -> None:
         original_runtime = app.STREAMLIT_CLOUD_RUNTIME

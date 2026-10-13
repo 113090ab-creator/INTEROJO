@@ -50,12 +50,14 @@ class SnapshotWaiting(RuntimeError):
         plan_updated_at: str,
         wip_updated_at: str,
         slot_key: str = "",
+        retryable: bool = False,
     ) -> None:
         super().__init__(message)
         self.status = status
         self.plan_updated_at = plan_updated_at
         self.wip_updated_at = wip_updated_at
         self.slot_key = slot_key
+        self.retryable = retryable
 
 
 def configure_logging() -> None:
@@ -569,7 +571,14 @@ def refresh_snapshots(
             )
             if waiting_status:
                 status = maybe_delayed_status(app, waiting_status, plan_updated_at, wip_updated_at)
-                raise SnapshotWaiting(status, reason, plan_updated_at, wip_updated_at, slot_key) from exc
+                raise SnapshotWaiting(
+                    status,
+                    reason,
+                    plan_updated_at,
+                    wip_updated_at,
+                    slot_key,
+                    retryable=True,
+                ) from exc
             raise
 
         write_status(
@@ -684,7 +693,7 @@ def main() -> int:
             sites=[app.normalize_shortage_snapshot_site_filter(site) for site in sites],
             storage="remote" if args.require_remote_storage else "local-or-remote",
         )
-        return 0
+        return 1 if exc.retryable else 0
     except Exception as exc:
         reason = clean_log_text(exc)
         logging.exception("snapshot refresh failed: %s", reason)
