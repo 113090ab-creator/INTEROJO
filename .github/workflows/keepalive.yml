@@ -61,12 +61,12 @@ jobs:
           status=1
           for attempt in $(seq 1 "$SNAPSHOT_REFRESH_MAX_ATTEMPTS"); do
             echo "APS snapshot refresh attempt ${attempt}/${SNAPSHOT_REFRESH_MAX_ATTEMPTS}"
-            python scripts/refresh_snapshot.py \
+            if python scripts/refresh_snapshot.py \
               --only-if-stale \
-              --sites "C관,A관,S관,전체"
-            status=$?
-            if [ "$status" -eq 0 ]; then
+              --sites "C관,A관,S관,전체"; then
               exit 0
+            else
+              status=$?
             fi
             if [ "$attempt" -lt "$SNAPSHOT_REFRESH_MAX_ATTEMPTS" ]; then
               echo "APS snapshot refresh failed or pending; retrying in ${SNAPSHOT_REFRESH_RETRY_SECONDS} seconds."

@@ -94,7 +94,19 @@ class RefreshSnapshotStatusTests(unittest.TestCase):
         self.assertIn('cron: "0-30/10 8 * * *"', workflow)
         self.assertIn("SNAPSHOT_REFRESH_MAX_ATTEMPTS", workflow)
         self.assertIn("for attempt in $(seq 1", workflow)
+        self.assertIn("if python scripts/refresh_snapshot.py", workflow)
+        self.assertNotIn("status=$?\n            if [ \"$status\" -eq 0 ]", workflow)
         self.assertIn("--only-if-stale", workflow)
+
+    def test_keepalive_refresh_workflow_retries_under_bash_errexit(self) -> None:
+        workflow = (PROJECT_ROOT / ".github" / "workflows" / "keepalive.yml").read_text(encoding="utf-8")
+        self.assertIn("SNAPSHOT_REFRESH_MAX_ATTEMPTS", workflow)
+        self.assertIn("for attempt in $(seq 1", workflow)
+        self.assertIn("if python scripts/refresh_snapshot.py", workflow)
+        self.assertNotIn("status=$?\n            if [ \"$status\" -eq 0 ]", workflow)
+
+    def test_http_429_is_transient_source_error(self) -> None:
+        self.assertTrue(refresh_snapshot.is_transient_source_error("API 응답 오류(HTTP 429)"))
 
     def test_streamlit_runtime_ignores_github_snapshot_storage_settings(self) -> None:
         original_runtime = app.STREAMLIT_CLOUD_RUNTIME

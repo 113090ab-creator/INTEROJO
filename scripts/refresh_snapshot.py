@@ -378,6 +378,7 @@ def is_transient_source_error(error_text: object) -> bool:
         "HTTP 524",
         "HTTP 520",
         "HTTP 522",
+        "HTTP 429",
         "HTTP 503",
         "did not contain data rows",
         "response was truncated",
