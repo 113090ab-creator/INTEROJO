@@ -30,10 +30,15 @@ class ProductApiReferenceTests(unittest.TestCase):
         self.assertEqual(dict(zip(lookup["제품명코드"], lookup["제품명_기준"])), {"P1234": "BASE", "P1234A": "VARIANT"})
 
     def test_demand_code_resolves_only_against_actual_api_codes(self) -> None:
-        code, reason = app.resolve_api_product_code_for_item("P1100S8.90-00.00", {"P1100", "P1200"})
+        code, reason = app.resolve_api_product_code_for_item("P1100", {"P1100", "P1200"})
 
         self.assertEqual(code, "P1100")
-        self.assertIn("API nm_cd", reason)
+        self.assertIn("완전 일치", reason)
+
+        code, reason = app.resolve_api_product_code_for_item("P1100S8.90-00.00", {"P1100", "P1200"})
+
+        self.assertEqual(code, "")
+        self.assertIn("완전 일치 없음", reason)
 
     def test_product_master_enrichment_marks_unmatched_and_preserves_original_name(self) -> None:
         api_info = app.normalize_product_names_api_lookup(
@@ -49,9 +54,9 @@ class ProductApiReferenceTests(unittest.TestCase):
         )
         demand = pd.DataFrame(
             {
-                "품목코드": ["P1100S8.90-00.00", "P9999-01.00"],
-                "제품명": ["OLD_NAME", "UNMATCHED_NAME"],
-                "거래처": ["PIA Co.,Ltd.", "Unknown Customer"],
+                "품목코드": ["P1100", "P1100S8.90-00.00", "P9999-01.00"],
+                "제품명": ["OLD_NAME", "VARIANT_NAME", "UNMATCHED_NAME"],
+                "거래처": ["PIA Co.,Ltd.", "PIA Co.,Ltd.", "Unknown Customer"],
             }
         )
 
@@ -64,8 +69,11 @@ class ProductApiReferenceTests(unittest.TestCase):
         self.assertEqual(enriched.loc[0, "분류별요약"], "1-Day_Sph")
         self.assertEqual(enriched.loc[0, "제품분류 판단 근거"], "API full_gu_nm")
         self.assertEqual(enriched.loc[0, "시트분류"], "PIA 종합")
-        self.assertEqual(enriched.loc[1, "제품명"], "UNMATCHED_NAME")
+        self.assertEqual(enriched.loc[1, "제품명"], "VARIANT_NAME")
         self.assertEqual(enriched.loc[1, "API 매칭상태"], app.API_PRODUCT_STATUS_UNMATCHED)
+        self.assertEqual(enriched.loc[1, "API 제품명코드"], "")
+        self.assertEqual(enriched.loc[2, "제품명"], "UNMATCHED_NAME")
+        self.assertEqual(enriched.loc[2, "API 매칭상태"], app.API_PRODUCT_STATUS_UNMATCHED)
 
     def test_product_master_uses_plan_api_customer_when_product_api_has_no_customer(self) -> None:
         api_info = app.normalize_product_names_api_lookup(
@@ -79,12 +87,28 @@ class ProductApiReferenceTests(unittest.TestCase):
                 }
             )
         )
-        demand = pd.DataFrame({"품목코드": ["P2026A-01.00"], "제품명": ["OLD_PRODUCT"], "거래처": ["한국알콘"]})
+        demand = pd.DataFrame({"품목코드": ["P2026"], "제품명": ["OLD_PRODUCT"], "거래처": ["한국알콘"]})
 
         enriched = app.apply_product_master_reference(demand, api_info)
 
         self.assertEqual(enriched.loc[0, app.PLAN_CUSTOMER_COL], "한국알콘")
         self.assertEqual(enriched.loc[0, app.CUSTOMER_GROUP_COL], "Alcon")
+
+    def test_display_filter_hides_p_rows_without_exact_api_match(self) -> None:
+        display = pd.DataFrame(
+            {
+                "품목코드": ["P7544A-01.00CHO3", "P1100", "R7544-01.00CHO3"],
+                "API 매칭상태": [
+                    app.API_PRODUCT_STATUS_UNMATCHED,
+                    app.API_PRODUCT_STATUS_EXACT,
+                    app.API_PRODUCT_STATUS_NOT_APPLICABLE,
+                ],
+            }
+        )
+
+        filtered = app.filter_api_exact_product_rows_for_display(display)
+
+        self.assertEqual(filtered["품목코드"].tolist(), ["P1100", "R7544-01.00CHO3"])
 
     def test_customer_classification_uses_exact_match_only(self) -> None:
         category, reason = app.classify_sheet_with_reason(pd.Series({"거래처": "PIA unknown", "제품명": "PIA_KR TEST"}))

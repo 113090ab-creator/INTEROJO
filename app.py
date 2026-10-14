@@ -2576,36 +2576,7 @@ def resolve_api_product_code_for_item(item_code: object, api_codes: set[str]) ->
         return "", "API 제품명 기준 없음"
     if code in api_codes:
         return code, "품목코드가 API nm_cd와 완전 일치"
-
-    candidates: list[str] = []
-    prefix_matches = sorted(
-        (api_code for api_code in api_codes if api_code and code.startswith(api_code)),
-        key=lambda value: (len(value), value),
-        reverse=True,
-    )
-    candidates.extend(prefix_matches)
-
-    before_power = re.split(r"(?=[+-]\d{1,2}(?:\.\d{1,2})?)", code, maxsplit=1)[0]
-    before_power = before_power.rstrip(".-/")
-    if before_power:
-        candidates.append(before_power)
-
-    alpha_suffix = re.match(r"^(P\d{4}[A-Z]+)", code)
-    if alpha_suffix:
-        candidates.append(alpha_suffix.group(1))
-    base_code = re.match(r"^(P\d{4})", code)
-    if base_code:
-        candidates.append(base_code.group(1))
-
-    seen: set[str] = set()
-    for candidate in candidates:
-        normalized = normalize_item_code_value(candidate)
-        if not normalized or normalized in seen:
-            continue
-        seen.add(normalized)
-        if normalized in api_codes:
-            return normalized, f"API nm_cd 후보 일치: {normalized}"
-    return "", "API nm_cd 매칭 후보 없음"
+    return "", "API nm_cd 완전 일치 없음"
 
 
 def build_product_names_api_reference_key() -> str:
@@ -2818,7 +2789,7 @@ def apply_product_master_reference(
     result.loc[duplicate_reason, "API 매칭근거"] = (
         code_reason.loc[duplicate_reason] + "; " + product_reason.loc[duplicate_reason]
     )
-    result.loc[result["API 매칭상태"].eq(API_PRODUCT_STATUS_UNMATCHED), "API 매칭근거"] = "API nm_cd 매칭 후보 없음"
+    result.loc[result["API 매칭상태"].eq(API_PRODUCT_STATUS_UNMATCHED), "API 매칭근거"] = "API nm_cd 완전 일치 없음"
     result.loc[result["API 매칭상태"].eq(API_PRODUCT_STATUS_UNAVAILABLE), "API 매칭근거"] = "API 제품명 기준 조회불가"
     result = result.drop(columns=["_API 코드 매칭근거"], errors="ignore")
 
@@ -2877,6 +2848,18 @@ def apply_product_master_reference(
     result["수동시트분류"] = ""
     result["자동분류결과"] = result["시트분류"]
     return result
+
+
+def filter_api_exact_product_rows_for_display(df: pd.DataFrame) -> pd.DataFrame:
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return df
+    if "품목코드" not in df.columns or "API 매칭상태" not in df.columns:
+        return df
+
+    item_code = df["품목코드"].map(normalize_item_code_value)
+    p_product = item_code.str.startswith("P", na=False)
+    exact_api_match = df["API 매칭상태"].map(clean_text_value).eq(API_PRODUCT_STATUS_EXACT)
+    return df.loc[~p_product | exact_api_match].copy()
 
 
 def enrich_loaded_shortage_snapshot_for_display(df: pd.DataFrame) -> pd.DataFrame:
@@ -14230,6 +14213,7 @@ def render_shortage_dashboard(
             | (p_view[ADHESION_REQUIRED_QTY_COL] > 0)
             | (p_view[DEMAND_QTY_COL] > 0)
         ]
+        p_view = filter_api_exact_product_rows_for_display(p_view)
         p_view["표시부족수량"] = (
             p_view["부족수량"]
             + p_view["사출 부족수량"]
@@ -14491,6 +14475,7 @@ def render_shortage_dashboard(
         rq_filtered = filtered.copy()
         if "품목코드" in rq_filtered.columns:
             rq_filtered = rq_filtered[rq_filtered["품목코드"].astype(str).str.upper().str.startswith("P")]
+        rq_filtered = filter_api_exact_product_rows_for_display(rq_filtered)
         if "부족수량" in rq_filtered.columns:
             rq_filtered["부족수량"] = parse_mixed_numeric(rq_filtered["부족수량"])
         else:
