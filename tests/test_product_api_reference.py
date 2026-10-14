@@ -97,9 +97,11 @@ class ProductApiReferenceTests(unittest.TestCase):
     def test_display_filter_hides_p_rows_without_exact_api_match(self) -> None:
         display = pd.DataFrame(
             {
-                "품목코드": ["P7544A-01.00CHO3", "P1100", "R7544-01.00CHO3"],
+                "품목코드": ["P7544A-01.00CHO3", "P7544", "P1100", "R7544-01.00CHO3"],
+                "수요품목코드": ["T7544A-01.00CHO3", "T7544A-01.00CHO3", "P1100", "T7544A-01.00CHO3"],
                 "API 매칭상태": [
                     app.API_PRODUCT_STATUS_UNMATCHED,
+                    app.API_PRODUCT_STATUS_EXACT,
                     app.API_PRODUCT_STATUS_EXACT,
                     app.API_PRODUCT_STATUS_NOT_APPLICABLE,
                 ],

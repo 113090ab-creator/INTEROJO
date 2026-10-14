@@ -2859,7 +2859,12 @@ def filter_api_exact_product_rows_for_display(df: pd.DataFrame) -> pd.DataFrame:
     item_code = df["품목코드"].map(normalize_item_code_value)
     p_product = item_code.str.startswith("P", na=False)
     exact_api_match = df["API 매칭상태"].map(clean_text_value).eq(API_PRODUCT_STATUS_EXACT)
-    return df.loc[~p_product | exact_api_match].copy()
+    exact_demand_item_match = pd.Series(True, index=df.index)
+    if "수요품목코드" in df.columns:
+        demand_item_code = df["수요품목코드"].map(normalize_item_code_value)
+        demand_item_present = demand_item_code.ne("")
+        exact_demand_item_match = ~demand_item_present | item_code.eq(demand_item_code)
+    return df.loc[~p_product | (exact_api_match & exact_demand_item_match)].copy()
 
 
 def enrich_loaded_shortage_snapshot_for_display(df: pd.DataFrame) -> pd.DataFrame:
@@ -6549,6 +6554,7 @@ def collapse_duplicate_p_demand_rows(df: pd.DataFrame) -> pd.DataFrame:
         "거래처",
         "이니셜",
         "품목코드",
+        "수요품목코드",
         "R코드",
         "Q코드",
         "제품명",
@@ -6646,6 +6652,7 @@ def build_empty_shortage_dashboard_df() -> pd.DataFrame:
         ORDER_RECEIVED_DATE_COL,
         "이니셜",
         "품목코드",
+        "수요품목코드",
         "R코드",
         "Q코드",
         "U코드",
@@ -9758,6 +9765,7 @@ def build_api_shortage_data_from_frames(
         ORDER_RECEIVED_DATE_COL,
         "이니셜",
         "품목코드",
+        "수요품목코드",
         "제품명",
         "API납기일",
     ]
@@ -13906,6 +13914,7 @@ def render_shortage_dashboard(
                 "거래처",
                 "이니셜",
                 "품목코드",
+                "수요품목코드",
                 "R코드",
                 "Q코드",
                 "U코드",
