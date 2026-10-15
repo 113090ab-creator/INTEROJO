@@ -2850,23 +2850,6 @@ def apply_product_master_reference(
     return result
 
 
-def filter_api_exact_product_rows_for_display(df: pd.DataFrame) -> pd.DataFrame:
-    if not isinstance(df, pd.DataFrame) or df.empty:
-        return df
-    if "품목코드" not in df.columns or "API 매칭상태" not in df.columns:
-        return df
-
-    item_code = df["품목코드"].map(normalize_item_code_value)
-    p_product = item_code.str.startswith("P", na=False)
-    exact_api_match = df["API 매칭상태"].map(clean_text_value).eq(API_PRODUCT_STATUS_EXACT)
-    exact_demand_item_match = pd.Series(True, index=df.index)
-    if "수요품목코드" in df.columns:
-        demand_item_code = df["수요품목코드"].map(normalize_item_code_value)
-        demand_item_present = demand_item_code.ne("")
-        exact_demand_item_match = ~demand_item_present | item_code.eq(demand_item_code)
-    return df.loc[~p_product | (exact_api_match & exact_demand_item_match)].copy()
-
-
 def enrich_loaded_shortage_snapshot_for_display(df: pd.DataFrame) -> pd.DataFrame:
     if not isinstance(df, pd.DataFrame) or df.empty:
         return df
@@ -14222,7 +14205,6 @@ def render_shortage_dashboard(
             | (p_view[ADHESION_REQUIRED_QTY_COL] > 0)
             | (p_view[DEMAND_QTY_COL] > 0)
         ]
-        p_view = filter_api_exact_product_rows_for_display(p_view)
         p_view["표시부족수량"] = (
             p_view["부족수량"]
             + p_view["사출 부족수량"]
@@ -14484,7 +14466,6 @@ def render_shortage_dashboard(
         rq_filtered = filtered.copy()
         if "품목코드" in rq_filtered.columns:
             rq_filtered = rq_filtered[rq_filtered["품목코드"].astype(str).str.upper().str.startswith("P")]
-        rq_filtered = filter_api_exact_product_rows_for_display(rq_filtered)
         if "부족수량" in rq_filtered.columns:
             rq_filtered["부족수량"] = parse_mixed_numeric(rq_filtered["부족수량"])
         else:

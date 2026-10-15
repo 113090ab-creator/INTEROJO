@@ -94,24 +94,6 @@ class ProductApiReferenceTests(unittest.TestCase):
         self.assertEqual(enriched.loc[0, app.PLAN_CUSTOMER_COL], "한국알콘")
         self.assertEqual(enriched.loc[0, app.CUSTOMER_GROUP_COL], "Alcon")
 
-    def test_display_filter_hides_p_rows_without_exact_api_match(self) -> None:
-        display = pd.DataFrame(
-            {
-                "품목코드": ["P7544A-01.00CHO3", "P7544", "P1100", "R7544-01.00CHO3"],
-                "수요품목코드": ["T7544A-01.00CHO3", "T7544A-01.00CHO3", "P1100", "T7544A-01.00CHO3"],
-                "API 매칭상태": [
-                    app.API_PRODUCT_STATUS_UNMATCHED,
-                    app.API_PRODUCT_STATUS_EXACT,
-                    app.API_PRODUCT_STATUS_EXACT,
-                    app.API_PRODUCT_STATUS_NOT_APPLICABLE,
-                ],
-            }
-        )
-
-        filtered = app.filter_api_exact_product_rows_for_display(display)
-
-        self.assertEqual(filtered["품목코드"].tolist(), ["P1100", "R7544-01.00CHO3"])
-
     def test_customer_classification_uses_exact_match_only(self) -> None:
         category, reason = app.classify_sheet_with_reason(pd.Series({"거래처": "PIA unknown", "제품명": "PIA_KR TEST"}))
 
