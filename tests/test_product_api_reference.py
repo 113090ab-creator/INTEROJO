@@ -13,6 +13,50 @@ import app  # noqa: E402
 
 
 class ProductApiReferenceTests(unittest.TestCase):
+    def test_category_falls_back_to_api_name_without_replacing_product_identity(self) -> None:
+        info = app.normalize_product_names_api_lookup(pd.DataFrame({
+            "nm_cd": ["P3015", "S030", "S180"],
+            "nm_nm": ["1-DAY58_Micure", "Clalen 1Day_30팩", "Clalen 1Day_80팩"],
+            "full_gu_nm": ["1-Day_Sph"] * 3,
+        }))
+        demand = pd.DataFrame({
+            "품목코드": ["P3015A-03.75", "P3015A-03.25"],
+            "제품명": ["Clalen 1Day_30팩", "Clalen 1Day_80팩"],
+        })
+        result = app.apply_product_master_reference(demand, info)
+        self.assertEqual(result["API 제품분류"].tolist(), ["1-Day_Sph"] * 2)
+        self.assertEqual(result["분류별요약"].tolist(), ["1-Day_Sph"] * 2)
+        self.assertEqual(result["제품명"].tolist(), demand["제품명"].tolist())
+        self.assertEqual(result["API 제품명코드"].tolist(), ["", ""])
+        self.assertTrue(result["제품분류 판단 근거"].str.contains("제품명 완전 일치").all())
+
+    def test_ambiguous_api_name_does_not_assign_category(self) -> None:
+        info = app.normalize_product_names_api_lookup(pd.DataFrame({
+            "nm_cd": ["S030", "A030"], "nm_nm": ["SAME", "SAME"],
+            "full_gu_nm": ["1-Day_Sph", "1-Day_Toric"],
+        }))
+        result = app.apply_api_product_categories(pd.DataFrame({"품목코드": ["P9999A-01.00"], "제품명": ["SAME"], "API 제품분류": [0]}), info)
+        self.assertEqual(result.loc[0, "API 제품분류"], "")
+
+    def test_exact_code_category_takes_priority_over_name(self) -> None:
+        info = app.normalize_product_names_api_lookup(pd.DataFrame({
+            "nm_cd": ["P1234", "S030"], "nm_nm": ["CODE_NAME", "OLD_NAME"],
+            "full_gu_nm": ["1-Day_Toric", "1-Day_Sph"],
+        }))
+        result = app.apply_api_product_categories(pd.DataFrame({"품목코드": ["P1234"], "제품명": ["OLD_NAME"]}), info)
+        self.assertEqual(result.loc[0, "API 제품분류"], "1-Day_Toric")
+
+    def test_snapshot_category_is_refreshed_from_api_and_zero_is_not_displayed(self) -> None:
+        info = app.normalize_product_names_api_lookup(pd.DataFrame({
+            "nm_cd": ["S180"], "nm_nm": ["Clalen 1Day_80팩"], "full_gu_nm": ["1-Day_Sph"],
+        }))
+        snapshot = pd.DataFrame({"품목코드": ["P3015A-03.75"], "제품명": ["Clalen 1Day_80팩"], "API 제품분류": [0]})
+        with mock.patch.object(app, "load_product_names_api_lookup", return_value=info):
+            result = app.enrich_loaded_shortage_snapshot_for_display(snapshot)
+        self.assertEqual(result.loc[0, "API 제품분류"], "1-Day_Sph")
+        display = app.format_numeric_columns_for_display(pd.DataFrame({"API 제품분류": [None, 0, "0.0", "1-Day_Sph"]}))
+        self.assertEqual(display["API 제품분류"].tolist(), ["", "", "", "1-Day_Sph"])
+
     def test_product_api_lookup_keeps_full_nm_cd_without_first_five_dedupe(self) -> None:
         raw = pd.DataFrame(
             {

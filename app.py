@@ -2584,7 +2584,7 @@ def build_product_names_api_reference_key() -> str:
         return "product-names-api:disabled"
     api_key_hash = hashlib.sha256(get_plan_api_key().encode("utf-8")).hexdigest()[:12]
     return (
-        f"product-names-api:{get_plan_api_base_url()}:{api_key_hash}:"
+        f"product-names-api-v2-name-category:{get_plan_api_base_url()}:{api_key_hash}:"
         f"{get_plan_api_updated_at()}:{get_plan_api_refresh_nonce()}"
     )
 
@@ -2621,7 +2621,7 @@ def normalize_product_names_api_lookup(raw: pd.DataFrame) -> pd.DataFrame:
     info["제품명코드"] = work[code_col].map(normalize_item_code_value)
     info["제품명_기준"] = work[name_col].map(clean_text_value) if name_col is not None else ""
     if category_col is not None:
-        info["신규분류_기준"] = work[category_col].map(clean_text_value)
+        info["신규분류_기준"] = work[category_col].map(clean_api_product_category)
     else:
         info["신규분류_기준"] = ""
     info["거래처_기준"] = ""
@@ -2653,7 +2653,7 @@ def normalize_product_names_api_lookup(raw: pd.DataFrame) -> pd.DataFrame:
     )
     info["_category_rank"] = info["신규분류_기준"].map(lambda value: 0 if is_valid_reference_text(value) else 1)
     info = info[
-        info["제품명코드"].str.startswith("P", na=False)
+        info["제품명코드"].ne("")
         & ~info["제품명코드"].str.lower().isin(INVALID_CATEGORY_VALUES)
     ].copy()
     if info.empty:
@@ -2741,6 +2741,55 @@ def build_product_info_lookup_maps(product_info: pd.DataFrame) -> tuple[dict[str
     return name_map, group_map
 
 
+def clean_api_product_category(value: object) -> str:
+    text = clean_text_value(value)
+    return "" if text.casefold() in {"0", "0.0", "미분류", "제품분류 미확인"} else text
+
+
+def apply_api_product_categories(
+    df: pd.DataFrame, product_info: pd.DataFrame, item_col: str = "품목코드", product_col: str = "제품명"
+) -> pd.DataFrame:
+    """Use exact API codes first, then names whose API categories agree across codes."""
+    result = df.copy()
+    info = ensure_product_info_lookup_columns(product_info)
+    for col in ["API 제품분류", "분류별요약", "분류 출처", "제품분류 판단 근거"]:
+        if col not in result:
+            result[col] = ""
+    result["API 제품분류"] = result["API 제품분류"].map(clean_api_product_category)
+    if info.empty:
+        return result
+
+    info["_category"] = info["API 제품분류"].map(clean_api_product_category)
+    info["_name"] = info["API 제품명"].map(normalize_lookup_key)
+    # A conflicting code or name must never pick an arbitrary API category.
+    def category_map(key: str) -> dict[str, str]:
+        mapping = {}
+        for value, group in info.groupby(key, sort=False):
+            categories = set(group["_category"]) - {""}
+            if value and len(categories) == 1 and not group["API 매칭상태"].eq(API_PRODUCT_STATUS_DUPLICATE).any():
+                mapping[value] = next(iter(categories))
+        return mapping
+
+    code_map = category_map("제품명코드")
+    name_map = category_map("_name")
+    codes = result.get(item_col, pd.Series("", index=result.index)).map(normalize_item_code_value)
+    category = codes.map(code_map).fillna("")
+    reason = pd.Series("API full_gu_nm (nm_cd 완전 일치)", index=result.index)
+    for col in dict.fromkeys([product_col, "원본 제품명"]):
+        if col not in result:
+            continue
+        by_name = result[col].map(normalize_lookup_key).map(name_map).fillna("")
+        matched = category.eq("") & by_name.ne("")
+        category.loc[matched] = by_name.loc[matched]
+        reason.loc[matched] = "API full_gu_nm (제품명 완전 일치, 동일명 분류 일치)"
+    matched = category.ne("")
+    for col in ["API 제품분류", "분류별요약"]:
+        result.loc[matched, col] = category.loc[matched]
+    result.loc[matched, "분류 출처"] = "API full_gu_nm"
+    result.loc[matched, "제품분류 판단 근거"] = reason.loc[matched]
+    return result
+
+
 def apply_product_master_reference(
     df: pd.DataFrame,
     product_info: pd.DataFrame,
@@ -2815,7 +2864,10 @@ def apply_product_master_reference(
     result.loc[exact_category_mask, "분류 출처"] = "API full_gu_nm"
     result.loc[exact_category_mask, "제품분류 판단 근거"] = "API full_gu_nm"
 
-    missing_category = ~exact_category_mask
+    result = apply_api_product_categories(result, info, item_col, product_col)
+    # Preserve the existing reason for an exact product-code match.
+    result.loc[exact_category_mask, "제품분류 판단 근거"] = "API full_gu_nm"
+    missing_category = result["분류별요약"].map(clean_api_product_category).eq("")
     if missing_category.any():
         infer_cols = [col for col in [product_col, "원본 제품명", item_col, "R코드"] if col in result.columns]
         inferred = result.loc[missing_category, infer_cols].apply(
@@ -2856,6 +2908,7 @@ def enrich_loaded_shortage_snapshot_for_display(df: pd.DataFrame) -> pd.DataFram
     result = repair_korean_mojibake_dataframe(df.copy())
     result = ensure_plan_customer_column(result)
     result = ensure_order_status_display_columns(result)
+    result = apply_api_product_categories(result, load_product_names_api_lookup())
     return apply_customer_confirmation_columns(result)
 
 
@@ -8044,6 +8097,9 @@ def format_numeric_columns_for_display(df: pd.DataFrame) -> pd.DataFrame:
         display_df["비고"] = clean_display_text_series(display_df["비고"])
 
     for col in display_df.columns:
+        if col == "API 제품분류":
+            display_df[col] = display_df[col].map(clean_api_product_category)
+            continue
         if is_power_column(col):
             display_df[col] = display_df[col].map(format_power_value)
             continue
