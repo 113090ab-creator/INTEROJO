@@ -1,20 +1,20 @@
 {
-  "checked_at": "2026-10-23 04:55:23",
+  "checked_at": "2026-10-23 10:57:46",
   "status": "PUBLISHED",
-  "run_id": "39844151602",
+  "run_id": "39884826265",
   "run_attempt": "1",
-  "run_number": "416",
-  "workflow": "Keep Streamlit Alive",
-  "job": "refresh-aps-snapshots",
+  "run_number": "310",
+  "workflow": "Refresh APS snapshots",
+  "job": "refresh",
   "actor": "113090ab-creator",
   "ref_name": "main",
-  "sha": "979540c0ff097ee0e0ded2c4ec93fc05db7a0b01",
-  "run_url": "https://github.com/113090ab-creator/INTEROJO/actions/runs/39844151602",
-  "api_updated_at": "2026-10-22 14:58:15",
-  "wip_api_updated_at": "2026-10-22 15:09:19",
-  "slot_key": "2026-10-22 PM",
-  "set_id": "aps_20261022_pm_plan145815_wip150919_67278c51",
-  "published_at": "2026-10-22 16:53:58",
+  "sha": "458020851156fa3e65d6ed56864b9a22bf719992",
+  "run_url": "https://github.com/113090ab-creator/INTEROJO/actions/runs/39884826265",
+  "api_updated_at": "2026-10-23 07:27:44",
+  "wip_api_updated_at": "2026-10-23 07:38:12",
+  "slot_key": "2026-10-23 AM",
+  "set_id": "aps_20261023_am_plan072744_wip073812_1e877066",
+  "published_at": "2026-10-23 10:57:46",
   "storage": "로컬 cloud_snapshots 폴더",
   "sites": [
     "C관",
@@ -22,13 +22,18 @@
     "S관",
     "전체"
   ],
-  "skipped": true,
-  "reason": "target validated snapshot set is already published",
+  "results": {
+    "WIP": "staged rows=31,673 updated_at=2026-10-23 07:38:12",
+    "C관": "staged rows=3,037 updated_at=2026-10-23 07:27:44",
+    "A관": "staged rows=2,682 updated_at=2026-10-23 07:27:44",
+    "S관": "staged rows=19,131 updated_at=2026-10-23 07:27:44",
+    "전체": "staged rows=24,850 updated_at=2026-10-23 07:27:44"
+  },
   "current_set": {
-    "set_id": "aps_20261022_pm_plan145815_wip150919_67278c51",
-    "slot_key": "2026-10-22 PM",
-    "plan_updated_at": "2026-10-22 14:58:15",
-    "wip_updated_at": "2026-10-22 15:09:19",
-    "created_at": "2026-10-22 16:53:47"
+    "set_id": "aps_20261023_am_plan072744_wip073812_1e877066",
+    "slot_key": "2026-10-23 AM",
+    "plan_updated_at": "2026-10-23 07:27:44",
+    "wip_updated_at": "2026-10-23 07:38:12",
+    "created_at": "2026-10-23 10:57:37"
   }
 }
