@@ -20,6 +20,8 @@ jobs:
   refresh-aps-snapshots:
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    outputs:
+      snapshot_published: ${{ steps.publish.outputs.snapshot_published }}
     concurrency:
       group: refresh-aps-snapshots
       cancel-in-progress: false
@@ -76,10 +78,12 @@ jobs:
           exit "$status"
 
       - name: Commit refreshed snapshots and status
+        id: publish
         if: always()
         shell: bash
         run: |
           set -euo pipefail
+          echo "snapshot_published=false" >> "$GITHUB_OUTPUT"
           echo "Snapshot git status before commit:"
           git status --short -- cloud_snapshots || true
           python scripts/validate_snapshot_integrity.py
@@ -96,9 +100,18 @@ jobs:
           git commit -m "Refresh APS snapshots"
           echo "Created commit: $(git rev-parse --short HEAD)"
           git push origin HEAD:main
+          if git diff-tree --no-commit-id --name-only -r HEAD | grep -Fxq 'cloud_snapshots/current_snapshot_set.json'; then
+            echo "snapshot_published=true" >> "$GITHUB_OUTPUT"
+          fi
           echo "Pushed refreshed snapshots to main."
           python scripts/report_snapshot_status.py || true
 
       - name: Fail when refresh failed
         if: steps.refresh.outcome == 'failure'
         run: exit 1
+
+  verify-live-app:
+    needs: refresh-aps-snapshots
+    if: needs.refresh-aps-snapshots.outputs.snapshot_published == 'true'
+    uses: ./.github/workflows/verify_app_snapshot.yml
+    secrets: inherit

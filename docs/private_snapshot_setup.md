@@ -7,9 +7,8 @@
 ## 현재 적용 기준
 
 - 대상 저장소: `113090ab-creator/INTEROJO`
-- GitHub Actions 실행: 평일 한국시간 08:20, 16:30에 시작하고 실패 시 실행 내부에서 5분 간격으로 최대 30분 재시도
-- UTC cron: `20 23 * * 0-4`, `30 7 * * 1-5`
-- `Refresh APS snapshots` 예약이 GitHub 쪽에서 누락될 경우를 대비해 기존 `Keep Streamlit Alive` workflow도 평일 09:00, 17:00 KST에 백업 갱신을 시도함
+- GitHub Actions 실행: 매일 한국시간 08:20~09:20, 16:30~17:30에 여러 차례 예약하며 실패 시 실행 내부에서 5분 간격으로 최대 13회 시도
+- `Keep Streamlit Alive`도 8시간 간격 예약으로 빠진 목표 회차의 백업 갱신을 시도함
 - 이미 같은 APS 기준시각의 스냅샷이 있으면 다시 쓰지 않음
 - API 실패, 0건, 필수 컬럼 누락, 저장 실패 시 기존 정상 스냅샷을 덮어쓰지 않음
 
@@ -27,6 +26,16 @@ GitHub 저장소의 `Settings > Secrets and variables > Actions > Repository sec
 ## Streamlit Cloud 설정
 
 Streamlit 앱은 GitHub 저장소에 커밋된 `cloud_snapshots` 파일을 읽습니다. 별도 S3/R2 설정은 필요 없습니다.
+
+### 운영 화면 갱신 지연 방지
+
+- 클라우드 앱은 실행 시 및 사용 중 5분 간격으로 GitHub의 게시 포인터를 별도로 확인합니다. Streamlit의 코드 배포/저장소 동기화에 지연이 생겨도 게시된 데이터는 독립적으로 받아옵니다.
+- 전체 manifest와 데이터 파일의 SHA-256 체크섬을 검증한 뒤 읽기 대상을 전환합니다. 실패·일부 파일 누락 시 기존 정상 데이터를 유지하며, 과거 회차로 되돌아가지 않습니다.
+- 내려받은 파일은 `.local_cache/published_snapshots`에 저장합니다. Git 관리 파일을 수정하지 않으므로 앱 내 데이터 동기화가 Git pull 충돌을 만들지 않습니다. 오래된 캐시는 최근 정상본과 배포본을 보호하며 정리하고, 메모리 캐시 수도 제한합니다.
+- 새 게시본을 저장한 `Refresh APS snapshots`와 백업 작업은 `Verify live APS snapshot`을 이어서 실행합니다. 이 검사는 브라우저로 실제 운영 화면의 Set ID와 상태를 읽어 게시본과 대조합니다. HTTP 접속 성공만으로 통과하지 않습니다.
+- 별도로 `Verify live APS snapshot`을 매시 13분·43분에 예약합니다. 오전 09:55/오후 17:55까지의 갱신 허용시간을 고려하고, 허용시간 이후 게시 누락이나 운영 화면 반영 실패를 작업 실패로 남깁니다. GitHub 예약 실행 자체는 지연될 수 있습니다.
+- 검사 결과는 Actions 실행 요약과 `live-snapshot-check` artifact(JSON, 14일 보관)에 남습니다. 작업 실패 알림은 해당 저장소의 GitHub Actions 알림 설정을 따릅니다.
+- API HTTP 429 재시도는 `Retry-After`를 우선 적용하며, 안내가 없으면 10초·20초 대기를 사용합니다.
 
 Streamlit 화면에서 APS API를 직접 호출하지 않고 저장된 스냅샷만 빠르게 보여주려면 `PLAN_API_KEY`는 Streamlit Cloud에 등록하지 않아도 됩니다. APS 조회와 갱신은 GitHub Actions에서 수행합니다.
 

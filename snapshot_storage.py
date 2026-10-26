@@ -25,6 +25,7 @@ SNAPSHOT_GITHUB_TOKEN_ENV = "SNAPSHOT_GITHUB_TOKEN"
 SNAPSHOT_GITHUB_CACHE_TTL_SECONDS_ENV = "SNAPSHOT_GITHUB_CACHE_TTL_SECONDS"
 
 _secret_resolver: Callable[[str, str], str] | None = None
+_local_read_resolver: Callable[[Path, str], Path] | None = None
 _github_ref_cache: dict[str, tuple[float, str]] = {}
 
 
@@ -52,6 +53,18 @@ class GitHubSnapshotConfig:
 def configure_secret_resolver(resolver: Callable[[str, str], str]) -> None:
     global _secret_resolver
     _secret_resolver = resolver
+
+
+def configure_local_read_resolver(resolver: Callable[[Path, str], Path]) -> None:
+    global _local_read_resolver
+    _local_read_resolver = resolver
+
+
+def local_read_path(snapshot_dir: Path, name: str) -> Path:
+    snapshot_name = normalize_snapshot_name(name)
+    if _local_read_resolver is not None:
+        return _local_read_resolver(snapshot_dir, snapshot_name)
+    return snapshot_path(snapshot_dir, snapshot_name)
 
 
 def get_setting(name: str, default: str = "") -> str:
@@ -244,7 +257,7 @@ def snapshot_exists(snapshot_dir: Path, name: str) -> bool:
             return True
         except Exception:
             return snapshot_path(snapshot_dir, name).exists()
-    return snapshot_path(snapshot_dir, name).exists()
+    return local_read_path(snapshot_dir, name).exists()
 
 
 def snapshot_signature(snapshot_dir: Path, name: str) -> str:
@@ -268,12 +281,12 @@ def snapshot_signature(snapshot_dir: Path, name: str) -> str:
         except Exception:
             pass
 
-    path = snapshot_path(snapshot_dir, name)
+    path = local_read_path(snapshot_dir, name)
     try:
         stat = path.stat()
     except OSError:
         return f"{name}:missing"
-    return f"local:{name}:{stat.st_size}:{stat.st_mtime_ns}"
+    return f"local:{path}:{stat.st_size}:{stat.st_mtime_ns}"
 
 
 def read_snapshot_bytes(snapshot_dir: Path, name: str) -> bytes:
@@ -292,7 +305,7 @@ def read_snapshot_bytes(snapshot_dir: Path, name: str) -> bytes:
             if path.exists():
                 return path.read_bytes()
             raise
-    return snapshot_path(snapshot_dir, name).read_bytes()
+    return local_read_path(snapshot_dir, name).read_bytes()
 
 
 def guess_content_type(name: str) -> str:

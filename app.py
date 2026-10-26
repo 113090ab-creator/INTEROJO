@@ -21,6 +21,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import snapshot_storage
+import snapshot_mirror
 
 try:
     import requests
@@ -1297,6 +1298,36 @@ def get_snapshot_storage_setting(name: str, default: str = "") -> str:
 
 
 snapshot_storage.configure_secret_resolver(get_snapshot_storage_setting)
+
+
+def get_published_snapshot_mirror():
+    if not STREAMLIT_CLOUD_RUNTIME or snapshot_storage.get_snapshot_storage_backend() != "local":
+        return None
+    return snapshot_mirror.get_mirror(
+        CLOUD_SNAPSHOT_DIR, BASE_DIR / ".local_cache" / "published_snapshots",
+        "113090ab-creator/INTEROJO",
+    )
+
+
+def resolve_local_snapshot_read_path(snapshot_dir: Path, name: str) -> Path:
+    mirror = get_published_snapshot_mirror() if snapshot_dir == CLOUD_SNAPSHOT_DIR else None
+    return mirror.read_path(name) if mirror is not None else snapshot_dir / name
+
+
+snapshot_storage.configure_local_read_resolver(resolve_local_snapshot_read_path)
+
+
+@st.fragment(run_every=300)
+def refresh_published_snapshot_view() -> None:
+    mirror = get_published_snapshot_mirror()
+    if mirror is None:
+        return
+    version = mirror.refresh()
+    key = "published_snapshot_view_version"
+    previous = st.session_state.get(key)
+    st.session_state[key] = version
+    if previous is not None and previous != version:
+        st.rerun()
 
 
 def get_plan_api_base_url() -> str:
@@ -3946,7 +3977,7 @@ def build_cloud_snapshot_refresh_key(*names: str) -> str:
     return "|".join(parts)
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=32)
 def read_cloud_snapshot_csv(name: str, refresh_key: str) -> pd.DataFrame:
     _ = refresh_key
     with PerfTimer("snapshot_load", file=name):
@@ -4018,7 +4049,7 @@ def parse_cloud_snapshot_json_bytes(data: bytes) -> dict[str, object]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=8)
 def read_cloud_snapshot_context_cached(refresh_key: str) -> dict[str, object]:
     _ = refresh_key
     with PerfTimer("snapshot_context"):
@@ -4055,6 +4086,9 @@ def read_cloud_snapshot_context_cached(refresh_key: str) -> dict[str, object]:
 
 
 def get_cloud_snapshot_context() -> dict[str, object]:
+    mirror = get_published_snapshot_mirror()
+    if mirror is not None:
+        mirror.refresh()
     refresh_key = build_cloud_snapshot_context_refresh_key()
     return read_cloud_snapshot_context_cached(refresh_key)
 
@@ -17856,6 +17890,8 @@ def render_effective_production_dashboard() -> None:
 
 def main() -> None:
     main_start = time.perf_counter()
+    if STREAMLIT_CLOUD_RUNTIME:
+        refresh_published_snapshot_view()
     inject_dashboard_theme()
     st.markdown(
         """
