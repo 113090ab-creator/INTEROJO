@@ -76,6 +76,20 @@ class AppSnapshotProbeTests(unittest.TestCase):
             probe.refresh_expected_pointer(expected)
         self.assertEqual(expected["set_id"], "aps_evening")
 
+    def test_probe_rejects_old_app_code_even_if_its_snapshot_matches(self):
+        ok, _ = probe.check_rendered_snapshot(
+            {"set_id": "aps_new", "slot_key": "2026-10-26 AM"},
+            {"set_id": "aps_new", "display_status": "최신"},
+            datetime(2026, 10, 26, 11, tzinfo=probe.KST), require_sync=True)
+        self.assertFalse(ok)
+
+    def test_probe_confirms_recovery_code_is_live(self):
+        ok, _ = probe.check_rendered_snapshot(
+            {"set_id": "aps_new", "slot_key": "2026-10-26 AM"},
+            {"set_id": "aps_new", "display_status": "최신", "sync_revision": "validated-mirror-v1"},
+            datetime(2026, 10, 26, 11, tzinfo=probe.KST), require_sync=True)
+        self.assertTrue(ok)
+
 
 if __name__ == "__main__":
     unittest.main()

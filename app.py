@@ -4865,7 +4865,12 @@ def render_snapshot_status_caption(updated_at: str) -> None:
     if manifest:
         parts.append(f"Set: {clean_text_value(manifest.get('set_id', ''))}")
     parts.append(f"상태: {display_status}")
-    st.caption(" · ".join(parts))
+    # Keep the visible caption unchanged and expose a stable, machine-readable health marker.
+    caption = html.escape(" · ".join(parts))
+    st.caption(
+        f'<span data-testid="snapshot-health" data-sync-revision="validated-mirror-v1">{caption}</span>',
+        unsafe_allow_html=True,
+    )
 
 
 def load_cloud_shortage_snapshot(site_filter: str = "전체") -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:

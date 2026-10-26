@@ -42,11 +42,13 @@ def parse_rendered_snapshot(text: str) -> dict:
     return {"set_id": match.group(1), "display_status": status.group(1) if status else ""}
 
 
-def check_rendered_snapshot(expected: dict, observed: dict, now: datetime) -> tuple[bool, str]:
+def check_rendered_snapshot(expected: dict, observed: dict, now: datetime, require_sync: bool = False) -> tuple[bool, str]:
     if slot_order(expected["slot_key"]) < slot_order(required_slot(now)):
         return False, "published snapshot missed its operational deadline"
     if observed.get("set_id") != expected["set_id"]:
         return False, "app has not rendered the published snapshot"
+    if require_sync and observed.get("sync_revision") != "validated-mirror-v1":
+        return False, "app has not deployed the independent snapshot recovery code"
     minute = now.astimezone(KST).hour * 60 + now.astimezone(KST).minute
     target = f"{now.astimezone(KST):%Y-%m-%d} {'PM' if minute >= 16 * 60 else 'AM'}"
     if minute < 8 * 60:
@@ -90,9 +92,12 @@ async def verify(url: str, expected: dict, timeout: int) -> dict:
                             current = parse_rendered_snapshot(text)
                             if current:
                                 observed = current
+                                marker = frame.locator('[data-testid="snapshot-health"]')
+                                if await marker.count():
+                                    observed["sync_revision"] = await marker.get_attribute("data-sync-revision")
                                 if observed.get("set_id") != expected["set_id"]:
                                     await asyncio.to_thread(refresh_expected_pointer, expected)
-                                ok, reason = check_rendered_snapshot(expected, observed, datetime.now(KST))
+                                ok, reason = check_rendered_snapshot(expected, observed, datetime.now(KST), require_sync=True)
                                 if ok:
                                     return {"ok": True, "reason": reason, "observed": observed}
                         await asyncio.sleep(3)
