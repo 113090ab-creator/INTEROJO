@@ -8,8 +8,9 @@ import shutil
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from email.utils import parsedate_to_datetime
 from io import BytesIO
 from pathlib import Path
 from typing import Callable
@@ -1554,6 +1555,24 @@ def is_retryable_plan_api_status(status_code: int | None) -> bool:
     return status_code in PLAN_API_RETRY_STATUS_CODES
 
 
+def get_plan_api_retry_delay(response: object, attempt: int) -> float:
+    headers = getattr(response, "headers", {}) or {}
+    retry_after = str(headers.get("Retry-After", "")).strip()
+    if retry_after:
+        try:
+            if retry_after.isdigit():
+                return float(int(retry_after))
+            retry_at = parsedate_to_datetime(retry_after)
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=timezone.utc)
+            return max(0.0, retry_at.timestamp() - time.time())
+        except (TypeError, ValueError, OverflowError):
+            pass
+    if getattr(response, "status_code", None) == 429:
+        return 10.0 * (2 ** attempt)
+    return 0.4 * (attempt + 1)
+
+
 def format_plan_api_request_error(
     error: object,
     status_code: int | None = None,
@@ -1594,7 +1613,7 @@ def request_plan_api_payload(
             )
             status_code = response.status_code
             if is_retryable_plan_api_status(status_code) and attempt < PLAN_API_RETRY_ATTEMPTS - 1:
-                time.sleep(0.4 * (attempt + 1))
+                time.sleep(get_plan_api_retry_delay(response, attempt))
                 continue
             response.raise_for_status()
             return response.json(), ""
@@ -1603,7 +1622,7 @@ def request_plan_api_payload(
             status_code = getattr(response, "status_code", status_code)
             last_error = format_plan_api_request_error(exc, status_code, request_timeout)
             if is_retryable_plan_api_status(status_code) and attempt < PLAN_API_RETRY_ATTEMPTS - 1:
-                time.sleep(0.4 * (attempt + 1))
+                time.sleep(get_plan_api_retry_delay(response, attempt))
                 continue
             break
     return None, last_error
