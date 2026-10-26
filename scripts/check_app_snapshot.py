@@ -81,29 +81,41 @@ async def verify(url: str, expected: dict, timeout: int) -> dict:
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=True)
         page = await browser.new_page()
+        last_navigation = float("-inf")
+        last_pointer_check = float("-inf")
         try:
             while time.monotonic() < deadline:
+                rendered = False
                 try:
-                    await page.goto(url, wait_until="domcontentloaded", timeout=45000)
-                    wait_until = min(deadline, time.monotonic() + 35)
-                    while time.monotonic() < wait_until:
-                        for frame in page.frames:
-                            text = await frame.locator("body").inner_text(timeout=5000)
-                            current = parse_rendered_snapshot(text)
-                            if current:
-                                observed = current
-                                marker = frame.locator('[data-testid="snapshot-health"]')
-                                if await marker.count():
-                                    observed["sync_revision"] = await marker.get_attribute("data-sync-revision")
-                                if observed.get("set_id") != expected["set_id"]:
-                                    await asyncio.to_thread(refresh_expected_pointer, expected)
-                                ok, reason = check_rendered_snapshot(expected, observed, datetime.now(KST), require_sync=True)
-                                if ok:
-                                    return {"ok": True, "reason": reason, "observed": observed}
-                        await asyncio.sleep(3)
+                    if last_navigation == float("-inf"):
+                        last_navigation = time.monotonic()
+                        await page.goto(url, wait_until="domcontentloaded", timeout=45000)
+                    for frame in page.frames:
+                        text = await frame.locator("body").inner_text(timeout=5000)
+                        current = parse_rendered_snapshot(text)
+                        if not current:
+                            continue
+                        rendered = True
+                        observed = current
+                        marker = frame.locator('[data-testid="snapshot-health"]')
+                        if await marker.count():
+                            observed["sync_revision"] = await marker.get_attribute("data-sync-revision")
+                        if observed.get("set_id") != expected["set_id"] and time.monotonic() - last_pointer_check > 30:
+                            last_pointer_check = time.monotonic()
+                            await asyncio.to_thread(refresh_expected_pointer, expected)
+                        ok, reason = check_rendered_snapshot(expected, observed, datetime.now(KST), require_sync=True)
+                        if ok:
+                            return {"ok": True, "reason": reason, "observed": observed}
+                    # Let a running app finish its first render. Reload only a stale result
+                    # or a wrapper that has failed to connect to the app process.
+                    running_app = any("/~/+/" in frame.url for frame in page.frames)
+                    age = time.monotonic() - last_navigation
+                    if (rendered and age > 60) or (not running_app and age > 90):
+                        last_navigation = time.monotonic()
+                        await page.goto(url, wait_until="domcontentloaded", timeout=45000)
                 except Exception as exc:
                     reason = f"app probe could not read the rendered snapshot ({type(exc).__name__})"
-                await asyncio.sleep(min(15, max(0, deadline - time.monotonic())))
+                await asyncio.sleep(min(5, max(0, deadline - time.monotonic())))
         finally:
             await browser.close()
     return {"ok": False, "reason": reason, "observed": observed}
