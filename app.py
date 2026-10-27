@@ -62,6 +62,7 @@ REFRESH_STATUS_PUBLISHED = "PUBLISHED"
 REFRESH_STATUS_DELAYED = "DELAYED"
 REFRESH_STATUS_FAILED = "FAILED"
 SNAPSHOT_UI_STATUS_LATEST = "최신"
+SNAPSHOT_UI_STATUS_WAITING = "갱신 대기"
 SNAPSHOT_UI_STATUS_REFRESHING = "갱신 중"
 SNAPSHOT_UI_STATUS_DELAYED = "갱신 지연"
 SNAPSHOT_UI_STATUS_FAILED = "갱신 실패"
@@ -1802,7 +1803,7 @@ def render_api_unavailable_banner(message: str, title: str = "조회불가") -> 
         return
     title_text = clean_text_value(title) or "조회불가"
     severity_class = ""
-    if title_text == SNAPSHOT_UI_STATUS_REFRESHING:
+    if title_text in {SNAPSHOT_UI_STATUS_WAITING, SNAPSHOT_UI_STATUS_REFRESHING}:
         severity_class = " banner-info"
     elif title_text == SNAPSHOT_UI_STATUS_DELAYED:
         severity_class = " banner-warning"
@@ -4523,6 +4524,7 @@ def snapshot_slot_is_at_least(slot_key: object, target_slot_key: object) -> bool
 
 def build_snapshot_ui_state(display_status: str, target_slot: str = "", published_slot: str = "") -> dict[str, str]:
     banner_messages = {
+        SNAPSHOT_UI_STATUS_WAITING: "새로운 데이터의 갱신을 기다리고 있습니다.\n현재는 이전 정상 데이터를 표시하고 있습니다.",
         SNAPSHOT_UI_STATUS_REFRESHING: "새로운 데이터를 갱신하고 있습니다.\n현재는 이전 정상 데이터를 표시하고 있습니다.",
         SNAPSHOT_UI_STATUS_DELAYED: "데이터 갱신이 평소보다 지연되고 있습니다.\n현재는 이전 정상 데이터를 표시하고 있습니다.",
         SNAPSHOT_UI_STATUS_FAILED: "데이터 갱신에 실패했습니다.\n현재는 이전 정상 데이터를 표시하고 있습니다.",
@@ -4566,8 +4568,8 @@ def get_snapshot_operational_ui_state(now: datetime | None = None) -> dict[str, 
                 return build_snapshot_ui_state(SNAPSHOT_UI_STATUS_DELAYED, target_slot, published_slot)
             return build_snapshot_ui_state(SNAPSHOT_UI_STATUS_REFRESHING, target_slot, published_slot)
 
-    if bool(target.get("window_started")):
-        return build_snapshot_ui_state(SNAPSHOT_UI_STATUS_DELAYED, target_slot, published_slot)
+    if bool(target.get("window_started")) and not bool(target.get("window_expired")):
+        return build_snapshot_ui_state(SNAPSHOT_UI_STATUS_WAITING, target_slot, published_slot)
     return build_snapshot_ui_state(SNAPSHOT_UI_STATUS_DELAYED, target_slot, published_slot)
 
 

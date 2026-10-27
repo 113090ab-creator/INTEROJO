@@ -16,6 +16,10 @@ class AppSnapshotProbeTests(unittest.TestCase):
         actual = probe.parse_rendered_snapshot("PLAN: 2026-10-26 · Set: aps_new · 상태: 최신")
         self.assertEqual(actual, {"set_id": "aps_new", "display_status": "최신"})
 
+    def test_caption_parser_preserves_waiting_status(self):
+        actual = probe.parse_rendered_snapshot("Set: aps_previous · 상태: 갱신 대기")
+        self.assertEqual(actual, {"set_id": "aps_previous", "display_status": "갱신 대기"})
+
     def test_successful_http_page_without_snapshot_is_not_healthy(self):
         self.assertEqual(probe.parse_rendered_snapshot("생산현황 Loading"), {})
 
@@ -42,12 +46,13 @@ class AppSnapshotProbeTests(unittest.TestCase):
 
     def test_waiting_during_the_allowed_refresh_window_is_not_a_false_alarm(self):
         for hour in (8, 9):
-            with self.subTest(hour=hour):
-                ok, _ = probe.check_rendered_snapshot(
-                    {"set_id": "aps_previous", "slot_key": "2026-10-25 PM"},
-                    {"set_id": "aps_previous", "display_status": "갱신 중"},
-                    datetime(2026, 10, 26, hour, 30, tzinfo=probe.KST))
-                self.assertTrue(ok)
+            for status in ("갱신 대기", "갱신 중"):
+                with self.subTest(hour=hour, status=status):
+                    ok, _ = probe.check_rendered_snapshot(
+                        {"set_id": "aps_previous", "slot_key": "2026-10-25 PM"},
+                        {"set_id": "aps_previous", "display_status": status},
+                        datetime(2026, 10, 26, hour, 30, tzinfo=probe.KST))
+                    self.assertTrue(ok)
 
     def test_unhealthy_status_on_published_current_set_fails(self):
         ok, _ = probe.check_rendered_snapshot(

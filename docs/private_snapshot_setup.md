@@ -9,6 +9,7 @@
 - 대상 저장소: `113090ab-creator/INTEROJO`
 - GitHub Actions 실행: 매일 한국시간 08:20~09:20, 16:30~17:30에 여러 차례 예약하며 실패 시 실행 내부에서 5분 간격으로 최대 13회 시도
 - `Keep Streamlit Alive`도 8시간 간격 예약으로 빠진 목표 회차의 백업 갱신을 시도함
+- Windows PC의 `INTEROJO APS Snapshot Dispatch` 작업도 한국시간 08:20~09:20, 16:30~17:30에 10분 간격으로 공식 GitHub workflow를 직접 요청함. GitHub의 `schedule` 이벤트 지연을 우회하며, GitHub runner 배정이나 APS API 응답 시간은 별도로 소요됨.
 - 이미 같은 APS 기준시각의 스냅샷이 있으면 다시 쓰지 않음
 - API 실패, 0건, 필수 컬럼 누락, 저장 실패 시 기존 정상 스냅샷을 덮어쓰지 않음
 
@@ -29,6 +30,7 @@ Streamlit 앱은 GitHub 저장소에 커밋된 `cloud_snapshots` 파일을 읽�
 
 ### 운영 화면 갱신 지연 방지
 
+- 오전 08:00/오후 16:00에 새 회차로 전환된 뒤 해당 회차의 실행 상태가 없으면 `갱신 대기`를 표시합니다. 실행 중에는 `갱신 중`, 오전 09:55/오후 17:55가 지난 뒤에도 게시되지 않으면 `갱신 지연`을 표시합니다. 실제 실패나 명시적인 원본 지연 상태는 즉시 표시합니다.
 - 클라우드 앱은 실행 시 및 사용 중 5분 간격으로 GitHub의 게시 포인터를 별도로 확인합니다. Streamlit의 코드 배포/저장소 동기화에 지연이 생겨도 게시된 데이터는 독립적으로 받아옵니다.
 - 전체 manifest와 데이터 파일의 SHA-256 체크섬을 검증한 뒤 읽기 대상을 전환합니다. 실패·일부 파일 누락 시 기존 정상 데이터를 유지하며, 과거 회차로 되돌아가지 않습니다.
 - 내려받은 파일은 `.local_cache/published_snapshots`에 저장합니다. Git 관리 파일을 수정하지 않으므로 앱 내 데이터 동기화가 Git pull 충돌을 만들지 않습니다. 오래된 캐시는 최근 정상본과 배포본을 보호하며 정리하고, 메모리 캐시 수도 제한합니다.
@@ -38,6 +40,16 @@ Streamlit 앱은 GitHub 저장소에 커밋된 `cloud_snapshots` 파일을 읽�
 - API HTTP 429 재시도는 `Retry-After`를 우선 적용하며, 안내가 없으면 10초·20초 대기를 사용합니다.
 
 Streamlit 화면에서 APS API를 직접 호출하지 않고 저장된 스냅샷만 빠르게 보여주려면 `PLAN_API_KEY`는 Streamlit Cloud에 등록하지 않아도 됩니다. APS 조회와 갱신은 GitHub Actions에서 수행합니다.
+
+### Windows PC에서 예약 작업 시작
+
+- 등록 스크립트: `scripts/register_snapshot_dispatch_task.ps1`. 먼저 GitHub 접근을 확인한 후 하루 14개 트리거를 등록합니다. Windows 시간대는 UTC+09:00이어야 합니다.
+- 실행 프로그램: `scripts/dispatch_snapshot_refresh.py`. 같은 회차가 게시됐으면 종료하고, 공식 갱신이 실행 중이면 결과를 기다립니다. 새 실행이 필요하면 `main`의 `Refresh APS snapshots`를 직접 요청합니다. 기존 검증·게시 경로와 단일 게시자 규칙을 유지합니다.
+- 갱신 workflow와 연결된 운영 화면 검사가 성공하고 목표 회차가 실제 게시돼야 성공으로 기록합니다. 실패 시 Windows 작업도 실패로 종료하며 5분 간격으로 최대 3회 재시도합니다.
+- PC를 켜고 Windows에 로그인해 두어야 합니다. 화면 잠금은 가능합니다. 인터넷 연결과 GitHub 로그인을 유지하고, 전원 연결 상태에서 절전에 들어가지 않도록 합니다. 로그인 전·로그아웃 후 실행은 지원하지 않습니다.
+- 인증은 `GH_TOKEN`/`GITHUB_TOKEN` 환경변수 또는 해당 저장소에 저장된 Git 자격 증명을 사용합니다. 토큰을 코드나 로그에 저장하지 않습니다. 별도 콘솔 창 없이 `pythonw.exe`로 실행합니다.
+- 사용이 중단된 프로그램을 호출하던 `INTEROJO APS Snapshot Refresh` 예약은 비활성화합니다. 이전 예약 XML과 실행 로그는 Git에서 제외된 `outputs/snapshot_scheduler`에 보관합니다.
+- 접근 확인: `python scripts/dispatch_snapshot_refresh.py --check`. 이 명령은 갱신을 요청하지 않습니다.
 
 ## 최초 실행 확인
 

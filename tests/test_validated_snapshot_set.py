@@ -375,7 +375,7 @@ class ValidatedSnapshotSetTests(unittest.TestCase):
             "",
         )
 
-    def test_next_am_window_started_without_current_status_is_delayed(self) -> None:
+    def test_next_am_window_started_without_current_status_is_waiting(self) -> None:
         self.publish_current_set(
             "2026-09-06 15:51:50",
             "2026-09-06 16:06:04",
@@ -384,9 +384,9 @@ class ValidatedSnapshotSetTests(unittest.TestCase):
 
         state = self.operational_state_at("2026-09-07 08:05:00")
         loaded_shortage, _, _ = app.load_cloud_shortage_snapshot("전체")
-        self.assertEqual(state["display_status"], "갱신 지연")
-        self.assertEqual(state["banner_title"], "갱신 지연")
-        self.assertIn("평소보다 지연", state["banner_message"])
+        self.assertEqual(state["display_status"], "갱신 대기")
+        self.assertEqual(state["banner_title"], "갱신 대기")
+        self.assertIn("갱신을 기다리고", state["banner_message"])
         self.assertEqual(len(loaded_shortage), 1)
 
     def test_current_active_status_displays_refreshing_and_keeps_previous_set(self) -> None:
@@ -435,7 +435,7 @@ class ValidatedSnapshotSetTests(unittest.TestCase):
         self.assertEqual(self.operational_display_at("2026-09-07 10:30:00"), "최신")
         self.assertEqual(self.operational_display_at("2026-09-07 15:00:00"), "최신")
 
-    def test_pm_window_started_after_am_set_without_current_status_is_delayed(self) -> None:
+    def test_pm_window_started_after_am_set_without_current_status_is_waiting(self) -> None:
         self.publish_current_set(
             "2026-09-07 07:51:44",
             "2026-09-07 08:09:50",
@@ -443,8 +443,20 @@ class ValidatedSnapshotSetTests(unittest.TestCase):
         )
 
         state = self.operational_state_at("2026-09-07 16:05:00")
-        self.assertEqual(state["display_status"], "갱신 지연")
+        self.assertEqual(state["display_status"], "갱신 대기")
         self.assertEqual(state["target_slot"], "2026-09-07 PM")
+
+    def test_missing_current_status_becomes_delayed_only_after_each_deadline(self) -> None:
+        for plan, wip, published, waiting_at, delayed_at in (
+            ("2026-09-06 15:51:50", "2026-09-06 16:06:04", "2026-09-06 20:26:28",
+             "2026-09-07 09:55:00", "2026-09-07 09:56:00"),
+            ("2026-09-07 07:51:44", "2026-09-07 08:09:50", "2026-09-07 09:20:00",
+             "2026-09-07 17:55:00", "2026-09-07 17:56:00"),
+        ):
+            with self.subTest(waiting_at=waiting_at):
+                self.publish_current_set(plan, wip, published)
+                self.assertEqual(self.operational_display_at(waiting_at), "갱신 대기")
+                self.assertEqual(self.operational_display_at(delayed_at), "갱신 지연")
 
     def test_stale_running_status_is_displayed_as_failure(self) -> None:
         self.publish_current_set(

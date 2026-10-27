@@ -38,7 +38,7 @@ def parse_rendered_snapshot(text: str) -> dict:
     match = re.search(r"\bSet:\s*([A-Za-z0-9_-]+)", text)
     if not match:
         return {}
-    status = re.search(r"상태\s*:\s*(최신|갱신 중|갱신 지연|갱신 실패)", text[match.end():])
+    status = re.search(r"상태\s*:\s*(최신|갱신 대기|갱신 중|갱신 지연|갱신 실패)", text[match.end():])
     return {"set_id": match.group(1), "display_status": status.group(1) if status else ""}
 
 
