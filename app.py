@@ -12318,7 +12318,6 @@ def apply_filters(
             selected_site_option = st.pills(
                 "사이트코드",
                 options=site_options,
-                default=default_site_option,
                 key=site_pills_key,
                 format_func=lambda x: format_pill_label(x, site_count_map),
             )
