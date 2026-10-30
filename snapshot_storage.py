@@ -1,3 +1,4 @@
+from _common_data import COMMON
 import json
 import mimetypes
 import os
@@ -239,6 +240,11 @@ def snapshot_path(snapshot_dir: Path, name: str) -> Path:
 
 
 def snapshot_exists(snapshot_dir: Path, name: str) -> bool:
+    if COMMON is not None:
+        try:
+            return COMMON.file(snapshot_path(snapshot_dir, name)).is_file()
+        except FileNotFoundError:
+            return False
     backend = get_snapshot_storage_backend()
     if backend in {"s3", "r2"}:
         try:
@@ -261,6 +267,13 @@ def snapshot_exists(snapshot_dir: Path, name: str) -> bool:
 
 
 def snapshot_signature(snapshot_dir: Path, name: str) -> str:
+    if COMMON is not None:
+        try:
+            path = COMMON.file(snapshot_path(snapshot_dir, name))
+            stat = path.stat()
+            return f"common:{path}:{stat.st_size}:{stat.st_mtime_ns}"
+        except FileNotFoundError:
+            return f"common:{name}:missing"
     backend = get_snapshot_storage_backend()
     if backend in {"s3", "r2"}:
         try:
@@ -290,6 +303,8 @@ def snapshot_signature(snapshot_dir: Path, name: str) -> str:
 
 
 def read_snapshot_bytes(snapshot_dir: Path, name: str) -> bytes:
+    if COMMON is not None:
+        return COMMON.file(snapshot_path(snapshot_dir, name)).read_bytes()
     backend = get_snapshot_storage_backend()
     if backend in {"s3", "r2"}:
         config = get_s3_config()

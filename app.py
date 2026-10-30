@@ -1,3 +1,4 @@
+from _common_data import COMMON
 import hashlib
 import html
 import json
@@ -37,11 +38,29 @@ except Exception as exc:  # pragma: no cover - deployed without optional product
 
 st.set_page_config(page_title="생산현황", layout="wide")
 
+
+def read_common_excel(source, *args, **kwargs):
+    if COMMON is not None and isinstance(source, (str, Path)):
+        source = COMMON.file(source)
+    return pd.read_excel(source, *args, **kwargs)
+
+def read_common_pickle(source, *args, **kwargs):
+    if COMMON is not None and isinstance(source, (str, Path)):
+        source = COMMON.file(source)
+    return pd.read_pickle(source, *args, **kwargs)
+
+def common_excel_file(source, *args, **kwargs):
+    if COMMON is not None and isinstance(source, (str, Path)):
+        source = COMMON.file(source)
+    return pd.ExcelFile(source, *args, **kwargs)
+
+st.caption("공통 데이터 연결 · 수주·재고·APS · 원본 기준시각 유지")
+
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_WORKSPACE_ROOT = BASE_DIR / ".uploaded_workspaces"
 LATEST_UPLOAD_SESSION_FILE = UPLOAD_WORKSPACE_ROOT / "latest_session.txt"
 UPLOAD_SIGNATURE_FILE = "upload_signature.txt"
-CLOUD_SNAPSHOT_DIR = BASE_DIR / "cloud_snapshots"
+CLOUD_SNAPSHOT_DIR = COMMON.published_snapshot_root() if COMMON is not None else BASE_DIR / "cloud_snapshots"
 CLOUD_SNAPSHOT_META_NAME = "snapshot_meta.csv"
 CLOUD_SNAPSHOT_REFRESH_STATUS_NAME = "aps_snapshot_refresh_status.json"
 CURRENT_SNAPSHOT_SET_NAME = "current_snapshot_set.json"
@@ -1061,6 +1080,8 @@ def find_demand_update_file(base_dir: Path) -> Path | None:
 
 
 def load_openpyxl_workbook(*args, **kwargs):
+    if COMMON is not None and args and isinstance(args[0], (str, Path)):
+        args = (COMMON.file(args[0]), *args[1:])
     import openpyxl
 
     return openpyxl.load_workbook(*args, **kwargs)
@@ -1567,7 +1588,7 @@ def read_plan_api_disk_cache(cache_path: Path) -> pd.DataFrame | None:
     if not cache_path.exists():
         return None
     try:
-        cached = pd.read_pickle(cache_path, compression="gzip")
+        cached = read_common_pickle(cache_path, compression="gzip")
     except Exception:
         return None
     return cached if isinstance(cached, pd.DataFrame) else None
@@ -1865,6 +1886,11 @@ def fetch_plan_api_dataframe_cached(
     refresh_nonce: int,
     timeout_seconds: int = PLAN_API_TIMEOUT_SECONDS,
 ) -> tuple[pd.DataFrame, str]:
+    if COMMON is not None:
+        try:
+            return COMMON.frame(endpoint, dict(params_tuple)), ""
+        except Exception as exc:
+            return pd.DataFrame(), f"공통 원본 조회 실패: {exc}"
     _ = api_key_hash, refresh_nonce
     if requests is None:
         return pd.DataFrame(), "requests 패키지가 설치되어 있지 않습니다."
@@ -1908,6 +1934,11 @@ def fetch_plan_api_dataframe_direct(
     source_updated_at: str,
     timeout_seconds: int = PLAN_API_TIMEOUT_SECONDS,
 ) -> tuple[pd.DataFrame, str]:
+    if COMMON is not None:
+        try:
+            return COMMON.frame(endpoint, dict(params_tuple)), ""
+        except Exception as exc:
+            return pd.DataFrame(), f"공통 원본 조회 실패: {exc}"
     if requests is None:
         return pd.DataFrame(), "requests package is not installed."
     if not api_key:
@@ -1946,6 +1977,11 @@ def fetch_plan_api_meta_cached(
     api_key_hash: str,
     refresh_nonce: int,
 ) -> tuple[dict[str, object], str]:
+    if COMMON is not None:
+        try:
+            return COMMON.payload(endpoint, {}), ""
+        except Exception as exc:
+            return {}, f"공통 원본 메타 조회 실패: {exc}"
     _ = api_key_hash, refresh_nonce
     if requests is None:
         return {}, "requests 패키지가 설치되어 있지 않습니다."
@@ -1976,6 +2012,11 @@ def fetch_plan_api_meta_with_params_cached(
     api_key_hash: str,
     refresh_nonce: int,
 ) -> tuple[dict[str, object], str]:
+    if COMMON is not None:
+        try:
+            return COMMON.payload(endpoint, dict(params_tuple)), ""
+        except Exception as exc:
+            return {}, f"공통 원본 메타 조회 실패: {exc}"
     _ = api_key_hash, refresh_nonce
     if requests is None:
         return {}, "requests 패키지가 설치되어 있지 않습니다."
@@ -2439,7 +2480,7 @@ def read_order_status_master_cache() -> pd.DataFrame:
     if not ORDER_STATUS_MASTER_CACHE_FILE.exists():
         return empty_order_status_master()
     try:
-        cached = pd.read_pickle(ORDER_STATUS_MASTER_CACHE_FILE, compression="gzip")
+        cached = read_common_pickle(ORDER_STATUS_MASTER_CACHE_FILE, compression="gzip")
     except Exception:
         return empty_order_status_master()
     if not isinstance(cached, pd.DataFrame):
@@ -4087,6 +4128,8 @@ def read_cloud_snapshot_context_cached(refresh_key: str) -> dict[str, object]:
 
 
 def get_cloud_snapshot_context() -> dict[str, object]:
+    if COMMON is not None:
+        return read_cloud_snapshot_context_cached(build_cloud_snapshot_context_refresh_key())
     mirror = get_published_snapshot_mirror()
     if mirror is not None:
         mirror.refresh()
@@ -5104,7 +5147,7 @@ def read_all_item_status_disk_cache(refresh_key: str) -> tuple[pd.DataFrame, pd.
     if not cache_path.exists():
         return None
     try:
-        cached = pd.read_pickle(cache_path, compression="gzip")
+        cached = read_common_pickle(cache_path, compression="gzip")
     except Exception:
         return None
     if not isinstance(cached, dict):
@@ -5149,7 +5192,7 @@ def read_all_item_flow_status_disk_cache(refresh_key: str, site_filter: str) -> 
     if not cache_path.exists():
         return None
     try:
-        cached = pd.read_pickle(cache_path, compression="gzip")
+        cached = read_common_pickle(cache_path, compression="gzip")
     except Exception:
         return None
     if not isinstance(cached, pd.DataFrame):
@@ -5677,7 +5720,7 @@ def read_demand_excel_subset(dem_path: Path, usecols: list[int]) -> pd.DataFrame
     if isinstance(cached, pd.DataFrame):
         return cached.copy()
 
-    dem = pd.read_excel(dem_path, sheet_name=demand_sheet, header=None, skiprows=2, usecols=usecols)
+    dem = read_common_excel(dem_path, sheet_name=demand_sheet, header=None, skiprows=2, usecols=usecols)
     if len(dem.columns) == len(usecols):
         dem.columns = usecols
     write_pickle_cache(cache_path, dem)
@@ -6886,7 +6929,7 @@ def load_product_reference_maps(base_dir: Path) -> tuple[dict[str, str], dict[st
     if ref_path is None:
         return {}, {}
 
-    ref = pd.read_excel(ref_path, sheet_name=0)
+    ref = read_common_excel(ref_path, sheet_name=0)
     ref.columns = [str(c).strip() for c in ref.columns]
 
     code_col = "제품명코드" if "제품명코드" in ref.columns else ref.columns[0]
@@ -6933,7 +6976,7 @@ def find_reference_sheet_with_columns(
 
     for sheet_name in sheet_names:
         try:
-            preview = pd.read_excel(ref_path, sheet_name=sheet_name, nrows=0)
+            preview = read_common_excel(ref_path, sheet_name=sheet_name, nrows=0)
         except Exception:
             continue
         cols = {str(c).strip() for c in preview.columns}
@@ -6947,7 +6990,7 @@ def load_bom_base_code_maps(base_dir: Path) -> tuple[dict[str, str], dict[str, s
     if ref_path is None:
         return {}, {}, {}, {}
 
-    sheet_names = pd.ExcelFile(ref_path).sheet_names
+    sheet_names = common_excel_file(ref_path).sheet_names
     bom_sheet = find_reference_sheet_with_columns(
         ref_path, sheet_names, {"SALES_ITEM_CD", "FROM_ITEM_ID"}, preferred_name="BOM정보"
     )
@@ -6955,7 +6998,7 @@ def load_bom_base_code_maps(base_dir: Path) -> tuple[dict[str, str], dict[str, s
         return {}, {}, {}, {}
 
     use_cols = ["SALES_ITEM_CD", "TO_ITEM_ID", "FROM_ITEM_ID", "SEQ"]
-    bom = pd.read_excel(ref_path, sheet_name=bom_sheet, usecols=lambda c: str(c).strip() in set(use_cols))
+    bom = read_common_excel(ref_path, sheet_name=bom_sheet, usecols=lambda c: str(c).strip() in set(use_cols))
     bom.columns = [str(c).strip() for c in bom.columns]
     if not {"SALES_ITEM_CD", "FROM_ITEM_ID"}.issubset(bom.columns):
         return {}, {}, {}, {}
@@ -7031,7 +7074,7 @@ def load_sheet2_group_map(base_dir: Path) -> dict[str, str]:
     if ref_path is None:
         return {}
 
-    sheet_names = pd.ExcelFile(ref_path).sheet_names
+    sheet_names = common_excel_file(ref_path).sheet_names
     if len(sheet_names) < 2:
         return {}
 
@@ -7041,7 +7084,7 @@ def load_sheet2_group_map(base_dir: Path) -> dict[str, str]:
     if sheet_name is None:
         return {}
 
-    sheet2 = pd.read_excel(ref_path, sheet_name=sheet_name)
+    sheet2 = read_common_excel(ref_path, sheet_name=sheet_name)
     sheet2.columns = [str(c).strip() for c in sheet2.columns]
     if "코드" not in sheet2.columns or "시트이름" not in sheet2.columns:
         return {}
@@ -7065,7 +7108,7 @@ def load_rq_code_maps(base_dir: Path) -> tuple[dict[str, str], dict[str, str], d
     if ref_path is None:
         return {}, {}, {}
 
-    sheet_names = pd.ExcelFile(ref_path).sheet_names
+    sheet_names = common_excel_file(ref_path).sheet_names
     if len(sheet_names) < 2:
         return {}, {}, {}
 
@@ -7075,7 +7118,7 @@ def load_rq_code_maps(base_dir: Path) -> tuple[dict[str, str], dict[str, str], d
     if sheet_name is None:
         return {}, {}, {}
 
-    sheet2 = pd.read_excel(ref_path, sheet_name=sheet_name)
+    sheet2 = read_common_excel(ref_path, sheet_name=sheet_name)
     sheet2.columns = [str(c).strip() for c in sheet2.columns]
     required = {"코드", "Q코드", "R코드"}
     if not required.issubset(sheet2.columns):
@@ -7116,7 +7159,7 @@ def load_rq_code_maps(base_dir: Path) -> tuple[dict[str, str], dict[str, str], d
     # Fallback: enrich R코드5 -> 제품명 from sheet0(제품명정보).
     # 제품명코드가 P/Q/R/T/U + 4자리인 경우 모두 R + 4자리 키로 정규화한다.
     try:
-        sheet1 = pd.read_excel(ref_path, sheet_name=sheet_names[0])
+        sheet1 = read_common_excel(ref_path, sheet_name=sheet_names[0])
         sheet1.columns = [str(c).strip() for c in sheet1.columns]
         if len(sheet1.columns) >= 2:
             code_col = "제품명코드" if "제품명코드" in sheet1.columns else sheet1.columns[0]
@@ -7148,12 +7191,12 @@ def load_leadji_process_maps(base_dir: Path) -> tuple[dict[str, str], dict[str, 
     if ref_path is None:
         return {}, {}
 
-    sheet_names = pd.ExcelFile(ref_path).sheet_names
+    sheet_names = common_excel_file(ref_path).sheet_names
     if len(sheet_names) < 3:
         return {}, {}
 
     leadji_sheet = next((s for s in sheet_names if s.replace(" ", "") == "리드지정보"), sheet_names[2])
-    leadji = pd.read_excel(ref_path, sheet_name=leadji_sheet)
+    leadji = read_common_excel(ref_path, sheet_name=leadji_sheet)
     leadji.columns = [str(c).strip() for c in leadji.columns]
 
     prod_col = "생산" if "생산" in leadji.columns else (leadji.columns[3] if len(leadji.columns) > 3 else None)
@@ -7747,7 +7790,7 @@ def load_reference_maps_bundle(
         return cached
 
     try:
-        xls = pd.ExcelFile(ref_path)
+        xls = common_excel_file(ref_path)
     except Exception:
         return empty_bundle
 
@@ -10601,7 +10644,7 @@ def read_all_item_master(master_path_str: str, refresh_key: str) -> pd.DataFrame
         "신규분류",
     }
     try:
-        master = pd.read_excel(
+        master = read_common_excel(
             master_path,
             sheet_name=ALL_ITEM_MASTER_SHEET,
             usecols=lambda c: str(c).strip() in wanted_columns,
@@ -11355,7 +11398,7 @@ def read_finished_goods_stock_summary(stock_path_str: str, refresh_key: str) -> 
         return fast_summary
 
     try:
-        xls = pd.ExcelFile(stock_path)
+        xls = common_excel_file(stock_path)
     except Exception:
         return pd.DataFrame(columns=output_columns)
 
@@ -11379,7 +11422,7 @@ def read_finished_goods_stock_summary(stock_path_str: str, refresh_key: str) -> 
     ]
     for header_row in (1, 0, 2):
         try:
-            header_candidate = pd.read_excel(stock_path, sheet_name=sheet_name, header=header_row, nrows=0)
+            header_candidate = read_common_excel(stock_path, sheet_name=sheet_name, header=header_row, nrows=0)
         except Exception:
             continue
         header_candidate.columns = [str(col).strip() for col in header_candidate.columns]
@@ -11393,7 +11436,7 @@ def read_finished_goods_stock_summary(stock_path_str: str, refresh_key: str) -> 
             if selected_col is not None and selected_col not in selected_cols:
                 selected_cols.append(selected_col)
         try:
-            candidate = pd.read_excel(stock_path, sheet_name=sheet_name, header=header_row, usecols=selected_cols)
+            candidate = read_common_excel(stock_path, sheet_name=sheet_name, header=header_row, usecols=selected_cols)
         except Exception:
             continue
         candidate.columns = [str(col).strip() for col in candidate.columns]
@@ -12535,7 +12578,7 @@ def load_leadji_data(refresh_key: str, base_dir_str: str | None = None) -> tuple
     if ref_path is None:
         return pd.DataFrame(), pd.DataFrame()
 
-    xls = pd.ExcelFile(ref_path)
+    xls = common_excel_file(ref_path)
     sheet_names = xls.sheet_names
     leadji_info_sheet = next((s for s in sheet_names if s.replace(" ", "") == "리드지정보"), None)
     leadji_stock_sheet = next((s for s in sheet_names if s.replace(" ", "") == "리드지재고"), None)
@@ -12633,7 +12676,7 @@ def load_leadji_order_data(
 
     if order_path is not None:
         try:
-            sheet_names = pd.ExcelFile(order_path).sheet_names
+            sheet_names = common_excel_file(order_path).sheet_names
         except Exception:
             sheet_names = []
     else:
@@ -12654,7 +12697,7 @@ def load_leadji_order_data(
         try:
             # 구매발주현황 기준: J열(품목코드), O열(미입고수량), X열(납기일자).
             # 화면의 "발주수량"은 현재 남아 있는 입고 예정 수량이므로 미입고수량을 사용한다.
-            raw_order = pd.read_excel(order_path, sheet_name=purchase_order_sheet, header=0, usecols=[9, 11, 14, 23])
+            raw_order = read_common_excel(order_path, sheet_name=purchase_order_sheet, header=0, usecols=[9, 11, 14, 23])
         except Exception:
             raw_order = pd.DataFrame()
     else:
@@ -12683,7 +12726,7 @@ def load_leadji_order_data(
         if purchase_request_sheet is not None:
             try:
                 # 구매의뢰현황 기준: G열(품목코드), U열(발주잔량), Y열(요청일).
-                raw_request = pd.read_excel(
+                raw_request = read_common_excel(
                     order_path, sheet_name=purchase_request_sheet, header=0, usecols=[6, 7, 20, 24]
                 )
             except Exception:
@@ -17120,7 +17163,7 @@ def load_effective_sample_available_master_reference(master_path_str: str, maste
     if not master_path.exists():
         return pd.DataFrame(columns=["제품코드", EFFECTIVE_SAMPLE_AVAILABLE_COL, "샘플수량출처"])
     try:
-        source = pd.read_excel(
+        source = read_common_excel(
             master_path,
             sheet_name=ALL_ITEM_MASTER_SHEET,
             usecols=lambda column: str(column).strip() in {"품목코드", "샘플가능수량"},
