@@ -1,20 +1,20 @@
 {
-  "checked_at": "2026-10-30 09:22:50",
+  "checked_at": "2026-11-02 09:22:37",
   "status": "PUBLISHED",
-  "run_id": "40976840124",
+  "run_id": "41365791266",
   "run_attempt": "1",
-  "run_number": "358",
+  "run_number": "383",
   "workflow": "Refresh APS snapshots",
   "job": "refresh",
   "actor": "113090ab-creator",
   "ref_name": "main",
-  "sha": "196c3788d9a5e22aa4c514ce10d31381f9697843",
-  "run_url": "https://github.com/113090ab-creator/INTEROJO/actions/runs/40976840124",
-  "api_updated_at": "2026-10-30 07:27:48",
-  "wip_api_updated_at": "2026-10-30 07:39:01",
-  "slot_key": "2026-10-30 AM",
-  "set_id": "aps_20261030_am_plan072748_wip073901_7b72aa19",
-  "published_at": "2026-10-30 09:22:50",
+  "sha": "3eaa24efafe16acf3e535871f6bb01090ca36e24",
+  "run_url": "https://github.com/113090ab-creator/INTEROJO/actions/runs/41365791266",
+  "api_updated_at": "2026-11-02 07:31:24",
+  "wip_api_updated_at": "2026-11-02 07:43:41",
+  "slot_key": "2026-11-02 AM",
+  "set_id": "aps_20261102_am_plan073124_wip074341_e0e5ce81",
+  "published_at": "2026-11-02 09:22:37",
   "storage": "로컬 cloud_snapshots 폴더",
   "sites": [
     "C관",
@@ -23,17 +23,17 @@
     "전체"
   ],
   "results": {
-    "WIP": "staged rows=31,407 updated_at=2026-10-30 07:39:01",
-    "C관": "staged rows=2,475 updated_at=2026-10-30 07:27:48",
-    "A관": "staged rows=3,338 updated_at=2026-10-30 07:27:48",
-    "S관": "staged rows=18,986 updated_at=2026-10-30 07:27:48",
-    "전체": "staged rows=24,799 updated_at=2026-10-30 07:27:48"
+    "WIP": "staged rows=31,554 updated_at=2026-11-02 07:43:41",
+    "C관": "staged rows=5,815 updated_at=2026-11-02 07:31:24",
+    "A관": "staged rows=4,079 updated_at=2026-11-02 07:31:24",
+    "S관": "staged rows=19,061 updated_at=2026-11-02 07:31:24",
+    "전체": "staged rows=28,955 updated_at=2026-11-02 07:31:24"
   },
   "current_set": {
-    "set_id": "aps_20261030_am_plan072748_wip073901_7b72aa19",
-    "slot_key": "2026-10-30 AM",
-    "plan_updated_at": "2026-10-30 07:27:48",
-    "wip_updated_at": "2026-10-30 07:39:01",
-    "created_at": "2026-10-30 09:22:39"
+    "set_id": "aps_20261102_am_plan073124_wip074341_e0e5ce81",
+    "slot_key": "2026-11-02 AM",
+    "plan_updated_at": "2026-11-02 07:31:24",
+    "wip_updated_at": "2026-11-02 07:43:41",
+    "created_at": "2026-11-02 09:22:24"
   }
 }
