@@ -1,15 +1,15 @@
 {
-  "checked_at": "2026-11-03 08:30:22",
+  "checked_at": "2026-11-03 12:57:40",
   "status": "PUBLISHED",
-  "run_id": "41544613990",
+  "run_id": "41575169432",
   "run_attempt": "1",
-  "run_number": "392",
+  "run_number": "393",
   "workflow": "Refresh APS snapshots",
   "job": "refresh",
   "actor": "113090ab-creator",
   "ref_name": "main",
-  "sha": "ef5e760f966aa71d0c7f794607c7e147c42789c3",
-  "run_url": "https://github.com/113090ab-creator/INTEROJO/actions/runs/41544613990",
+  "sha": "bbaf0cf75e586e4677ecd9b3bb43409037778b8d",
+  "run_url": "https://github.com/113090ab-creator/INTEROJO/actions/runs/41575169432",
   "api_updated_at": "2026-11-03 07:14:46",
   "wip_api_updated_at": "2026-11-03 07:25:54",
   "slot_key": "2026-11-03 AM",
@@ -22,13 +22,8 @@
     "S관",
     "전체"
   ],
-  "results": {
-    "WIP": "staged rows=31,714 updated_at=2026-11-03 07:25:54",
-    "C관": "staged rows=12,314 updated_at=2026-11-03 07:14:46",
-    "A관": "staged rows=2,538 updated_at=2026-11-03 07:14:46",
-    "S관": "staged rows=18,135 updated_at=2026-11-03 07:14:46",
-    "전체": "staged rows=32,987 updated_at=2026-11-03 07:14:46"
-  },
+  "skipped": true,
+  "reason": "target validated snapshot set is already published",
   "current_set": {
     "set_id": "aps_20261103_am_plan071446_wip072554_799a655c",
     "slot_key": "2026-11-03 AM",
