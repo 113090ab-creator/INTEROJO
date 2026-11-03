@@ -7,6 +7,10 @@ on:
         description: "Comma-separated site filters"
         required: false
         default: "C관,A관,S관,전체"
+      planned_demand_reduction_slot:
+        description: "Confirmed planned demand reduction only: YYYY-MM-DD AM/PM (keeps WIP and source integrity checks)"
+        required: false
+        default: ""
   schedule:
     # KST 08:20 = UTC previous-day 23:20.
     - cron: "20 23 * * *"
@@ -45,6 +49,7 @@ jobs:
       SNAPSHOT_WAIT_DELAY_MINUTES: "60"
       SNAPSHOT_REFRESH_MAX_ATTEMPTS: "13"
       SNAPSHOT_REFRESH_RETRY_SECONDS: "300"
+      SNAPSHOT_PLANNED_DEMAND_REDUCTION_SLOT: ${{ github.event.inputs.planned_demand_reduction_slot || '' }}
 
     steps:
       - name: Check out repository

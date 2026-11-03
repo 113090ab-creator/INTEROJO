@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
+import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -108,6 +109,43 @@ class RefreshSnapshotStatusTests(unittest.TestCase):
 
     def test_http_429_is_transient_source_error(self) -> None:
         self.assertTrue(refresh_snapshot.is_transient_source_error("API 응답 오류(HTTP 429)"))
+
+    def test_unapproved_shortage_row_drop_is_rejected(self) -> None:
+        with mock.patch.dict(os.environ, {"SNAPSHOT_PLANNED_DEMAND_REDUCTION_SLOT": ""}):
+            with self.assertRaises(refresh_snapshot.SnapshotRefreshError):
+                refresh_snapshot.validate_shortage_row_count_guard(app, "C관", 5602, 12314, "2026-11-03 14:43:23")
+
+    def test_planned_demand_reduction_only_bypasses_shortage_history_guard(self) -> None:
+        with (
+            mock.patch.dict(os.environ, {"SNAPSHOT_PLANNED_DEMAND_REDUCTION_SLOT": "2026-11-03 PM"}),
+            mock.patch.object(app, "get_operational_target_snapshot_slot", return_value={"slot_key": "2026-11-03 PM"}),
+        ):
+            refresh_snapshot.validate_shortage_row_count_guard(app, "C관", 5602, 12314, "2026-11-03 14:43:23")
+            with self.assertRaises(refresh_snapshot.SnapshotRefreshError):
+                refresh_snapshot.validate_row_count_guard("WIP", 40, 100)
+            with self.assertRaises(refresh_snapshot.SnapshotRefreshError):
+                refresh_snapshot.validate_shortage_snapshot("C관", pd.DataFrame(), pd.DataFrame())
+
+    def test_planned_demand_reduction_cannot_be_reused_for_other_slots(self) -> None:
+        with (
+            mock.patch.dict(os.environ, {"SNAPSHOT_PLANNED_DEMAND_REDUCTION_SLOT": "2026-11-03 PM"}),
+            mock.patch.object(app, "get_operational_target_snapshot_slot", return_value={"slot_key": "2026-11-04 AM"}),
+        ):
+            for source_time in ("2026-11-03 14:43:23", "2026-11-04 07:30:00"):
+                with self.subTest(source_time=source_time), self.assertRaises(refresh_snapshot.SnapshotRefreshError):
+                    refresh_snapshot.validate_shortage_row_count_guard(app, "C관", 5602, 12314, source_time)
+
+    def test_planned_demand_reduction_rejects_previous_source_in_current_target(self) -> None:
+        with (
+            mock.patch.dict(os.environ, {"SNAPSHOT_PLANNED_DEMAND_REDUCTION_SLOT": "2026-11-03 PM"}),
+            mock.patch.object(app, "get_operational_target_snapshot_slot", return_value={"slot_key": "2026-11-03 PM"}),
+        ):
+            with self.assertRaises(refresh_snapshot.SnapshotRefreshError):
+                refresh_snapshot.validate_shortage_row_count_guard(app, "C관", 5602, 12314, "2026-11-03 07:14:46")
+
+    def test_planned_demand_reduction_slot_is_recorded_in_run_metadata(self) -> None:
+        with mock.patch.dict(os.environ, {"SNAPSHOT_PLANNED_DEMAND_REDUCTION_SLOT": "2026-11-03 PM"}):
+            self.assertEqual(refresh_snapshot.build_github_run_metadata()["planned_demand_reduction_slot"], "2026-11-03 PM")
 
     def test_snapshot_waiting_defaults_to_non_retryable(self) -> None:
         waiting = refresh_snapshot.SnapshotWaiting(

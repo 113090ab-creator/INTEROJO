@@ -123,6 +123,27 @@ def validate_row_count_guard(name: str, new_rows: int, existing_rows: int) -> No
         )
 
 
+def validate_shortage_row_count_guard(
+    app, site: str, new_rows: int, existing_rows: int, plan_updated_at: str
+) -> None:
+    approved_slot = os.environ.get("SNAPSHOT_PLANNED_DEMAND_REDUCTION_SLOT", "").strip()
+    if approved_slot:
+        source_slot = app.resolve_aps_snapshot_slot(plan_updated_at)
+        target_slot = get_operational_target_slot_key(app)
+        if approved_slot != source_slot or approved_slot != target_slot:
+            raise SnapshotRefreshError(
+                "계획된 수요 감소 허용 회차가 현재 PLAN/목표 회차와 다릅니다. "
+                f"approved={approved_slot}, source={source_slot}, target={target_slot}."
+            )
+        logging.warning(
+            "planned demand reduction approved for shortage rows only: slot=%s site=%s new=%s existing=%s; "
+            "WIP, empty response, required column, staged source and API completeness checks remain enabled",
+            approved_slot, site, new_rows, existing_rows,
+        )
+        return
+    validate_row_count_guard(f"{site} 생산부족", new_rows, existing_rows)
+
+
 def load_app_module():
     os.chdir(PROJECT_ROOT)
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -213,6 +234,7 @@ def build_github_run_metadata() -> dict[str, object]:
         "actor": "GITHUB_ACTOR",
         "ref_name": "GITHUB_REF_NAME",
         "sha": "GITHUB_SHA",
+        "planned_demand_reduction_slot": "SNAPSHOT_PLANNED_DEMAND_REDUCTION_SLOT",
     }
     for target_key, env_name in env_map.items():
         value = clean_status_value(os.environ.get(env_name, ""))
@@ -443,7 +465,7 @@ def build_validated_snapshot_set(
         validate_shortage_snapshot(site, df, file_info_df)
         validate_site_uses_staged_sources(app, site, file_info_df, plan_updated_at, wip_updated_at)
         existing_df, _, _ = app.load_cloud_shortage_snapshot(site)
-        validate_row_count_guard(f"{site} 생산부족", len(df), len(existing_df))
+        validate_shortage_row_count_guard(app, site, len(df), len(existing_df), plan_updated_at)
         shortage_results[site] = (df, file_info_df, process_map_df)
         results[site] = f"staged rows={len(df):,} updated_at={plan_updated_at}"
         logging.info("staged shortage snapshot site=%s rows=%s", site, f"{len(df):,}")
