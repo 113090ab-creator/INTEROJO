@@ -1,10 +1,10 @@
 ﻿key,value
-data_updated_at,2026-11-04 14:48:11
+data_updated_at,2026-11-05 07:15:57
 all_item_updated_at,2026-08-19 14:46:34
 leadji_updated_at,2026-08-21 09:08:00
-wip_inventory_updated_at,2026-11-04 15:14:02
-wip_inventory_source_label,"APS WIP 정리 스냅샷 (2026-11-04 15:14:02; WH_NAME 사출창고, 분리창고, 검사접착, 누수규격검사)"
-wip_inventory_refreshed_at,2026-11-04 16:40:39
-data_updated_at_C관,2026-11-04 14:48:11
-data_updated_at_A관,2026-11-04 14:48:11
-data_updated_at_S관,2026-11-04 14:48:11
+wip_inventory_updated_at,2026-11-05 07:26:14
+wip_inventory_source_label,"APS WIP 정리 스냅샷 (2026-11-05 07:26:14; WH_NAME 사출창고, 분리창고, 검사접착, 누수규격검사)"
+wip_inventory_refreshed_at,2026-11-05 08:31:32
+data_updated_at_C관,2026-11-05 07:15:57
+data_updated_at_A관,2026-11-05 07:15:57
+data_updated_at_S관,2026-11-05 07:15:57
