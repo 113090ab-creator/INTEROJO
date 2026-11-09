@@ -2690,7 +2690,26 @@ def resolve_api_product_code_for_item(item_code: object, api_codes: set[str]) ->
         return "", "API 제품명 기준 없음"
     if code in api_codes:
         return code, "품목코드가 API nm_cd와 완전 일치"
+
+    # APS 품목코드는 도수·재질 등의 변형값을 포함하지만, 제품명 기준정보는
+    # 하이픈 앞의 모델코드 또는 P + 4자리 기본코드로 관리되는 경우가 많다.
+    # 변형코드가 기준정보에 있으면 우선 사용하고, 없을 때만 기본코드로
+    # 내려가야 P1234A 계열이 P1234 기준정보로 안전하게 연결된다.
+    hyphen_base = code.split("-", 1)[0]
+    if hyphen_base != code and hyphen_base in api_codes:
+        return hyphen_base, "하이픈 앞 품목 기본코드가 API nm_cd와 일치"
+
+    base_code = code[:5]
+    if len(code) > len(base_code) and re.fullmatch(r"P\d{4}", base_code) and base_code in api_codes:
+        return base_code, "품목코드 앞 5자리 기본코드가 API nm_cd와 일치"
+
     return "", "API nm_cd 완전 일치 없음"
+
+
+def is_product_code_like_text(value: object) -> bool:
+    """Return whether a displayed product name is actually a P-product code."""
+    text = normalize_item_code_value(value)
+    return bool(text and re.fullmatch(r"P\d{4}[A-Z0-9.]*?(?:-[A-Z0-9.]+)?", text))
 
 
 def build_product_names_api_reference_key() -> str:
@@ -2966,7 +2985,16 @@ def apply_product_master_reference(
     result = apply_customer_confirmation_columns(result)
 
     api_name_valid = result["API 제품명"].map(is_valid_reference_text)
-    exact_name_mask = result["API 매칭상태"].eq(API_PRODUCT_STATUS_EXACT) & api_name_valid
+    current_name_is_code = result[product_col].map(is_product_code_like_text)
+    base_code_match = result["API 매칭근거"].str.contains("기본코드", na=False)
+    # Exact API item codes retain the established replacement behavior. For a
+    # base-code fallback, replace only code-like/empty labels; a meaningful
+    # variant name from the demand source is more specific than the base name.
+    exact_name_mask = (
+        result["API 매칭상태"].eq(API_PRODUCT_STATUS_EXACT)
+        & api_name_valid
+        & (~base_code_match | current_name_is_code)
+    )
     result.loc[exact_name_mask, product_col] = result.loc[exact_name_mask, "API 제품명"]
     result[product_col] = result[product_col].replace({"": "-", "nan": "-", "None": "-"}).fillna("-")
 
@@ -3022,7 +3050,13 @@ def enrich_loaded_shortage_snapshot_for_display(df: pd.DataFrame) -> pd.DataFram
     result = repair_korean_mojibake_dataframe(df.copy())
     result = ensure_plan_customer_column(result)
     result = ensure_order_status_display_columns(result)
-    result = apply_api_product_categories(result, load_product_names_api_lookup())
+    product_info = load_product_names_api_lookup()
+    if not product_info.empty:
+        # Older cloud snapshots may have captured sale_cd (for example P0013)
+        # as 제품명. Re-apply the current product master at display time so
+        # those rows are corrected without requiring a snapshot rebuild.
+        result = apply_product_master_reference(result, product_info)
+    result = apply_api_product_categories(result, product_info)
     return apply_customer_confirmation_columns(result)
 
 

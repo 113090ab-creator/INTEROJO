@@ -27,8 +27,8 @@ class ProductApiReferenceTests(unittest.TestCase):
         self.assertEqual(result["API 제품분류"].tolist(), ["1-Day_Sph"] * 2)
         self.assertEqual(result["분류별요약"].tolist(), ["1-Day_Sph"] * 2)
         self.assertEqual(result["제품명"].tolist(), demand["제품명"].tolist())
-        self.assertEqual(result["API 제품명코드"].tolist(), ["", ""])
-        self.assertTrue(result["제품분류 판단 근거"].str.contains("제품명 완전 일치").all())
+        self.assertEqual(result["API 제품명코드"].tolist(), ["P3015", "P3015"])
+        self.assertTrue(result["제품분류 판단 근거"].eq("API full_gu_nm").all())
 
     def test_ambiguous_api_name_does_not_assign_category(self) -> None:
         info = app.normalize_product_names_api_lookup(pd.DataFrame({
@@ -73,7 +73,7 @@ class ProductApiReferenceTests(unittest.TestCase):
         self.assertEqual(set(lookup["제품명코드"]), {"P1234", "P1234A"})
         self.assertEqual(dict(zip(lookup["제품명코드"], lookup["제품명_기준"])), {"P1234": "BASE", "P1234A": "VARIANT"})
 
-    def test_demand_code_resolves_only_against_actual_api_codes(self) -> None:
+    def test_demand_code_resolves_exact_then_variant_or_base_api_codes(self) -> None:
         code, reason = app.resolve_api_product_code_for_item("P1100", {"P1100", "P1200"})
 
         self.assertEqual(code, "P1100")
@@ -81,8 +81,37 @@ class ProductApiReferenceTests(unittest.TestCase):
 
         code, reason = app.resolve_api_product_code_for_item("P1100S8.90-00.00", {"P1100", "P1200"})
 
-        self.assertEqual(code, "")
-        self.assertIn("완전 일치 없음", reason)
+        self.assertEqual(code, "P1100")
+        self.assertIn("기본코드", reason)
+
+        code, reason = app.resolve_api_product_code_for_item("P1234A-02.50", {"P1234", "P1234A"})
+
+        self.assertEqual(code, "P1234A")
+        self.assertIn("하이픈 앞", reason)
+
+    def test_base_product_code_replaces_code_like_product_name(self) -> None:
+        api_info = app.normalize_product_names_api_lookup(
+            pd.DataFrame(
+                {
+                    "nm_cd": ["P0013"],
+                    "nm_nm": ["1-Day_Contakt(5팩)"],
+                    "full_gu_nm": ["1-Day_Color_Sph"],
+                }
+            )
+        )
+        demand = pd.DataFrame(
+            {
+                "품목코드": ["P0013A-02.50", "P0013A-02.00"],
+                "제품명": ["P0013", "읽을 수 있는 변형 제품명"],
+            }
+        )
+
+        enriched = app.apply_product_master_reference(demand, api_info)
+
+        self.assertEqual(enriched.loc[0, "제품명"], "1-Day_Contakt(5팩)")
+        self.assertEqual(enriched.loc[0, "API 제품명코드"], "P0013")
+        self.assertEqual(enriched.loc[1, "제품명"], "읽을 수 있는 변형 제품명")
+        self.assertEqual(enriched["API 매칭상태"].tolist(), [app.API_PRODUCT_STATUS_EXACT] * 2)
 
     def test_product_master_enrichment_marks_unmatched_and_preserves_original_name(self) -> None:
         api_info = app.normalize_product_names_api_lookup(
@@ -114,8 +143,9 @@ class ProductApiReferenceTests(unittest.TestCase):
         self.assertEqual(enriched.loc[0, "제품분류 판단 근거"], "API full_gu_nm")
         self.assertEqual(enriched.loc[0, "시트분류"], "PIA 종합")
         self.assertEqual(enriched.loc[1, "제품명"], "VARIANT_NAME")
-        self.assertEqual(enriched.loc[1, "API 매칭상태"], app.API_PRODUCT_STATUS_UNMATCHED)
-        self.assertEqual(enriched.loc[1, "API 제품명코드"], "")
+        self.assertEqual(enriched.loc[1, "API 매칭상태"], app.API_PRODUCT_STATUS_EXACT)
+        self.assertEqual(enriched.loc[1, "API 매칭근거"], "품목코드 앞 5자리 기본코드가 API nm_cd와 일치")
+        self.assertEqual(enriched.loc[1, "API 제품명코드"], "P1100")
         self.assertEqual(enriched.loc[2, "제품명"], "UNMATCHED_NAME")
         self.assertEqual(enriched.loc[2, "API 매칭상태"], app.API_PRODUCT_STATUS_UNMATCHED)
 
@@ -244,6 +274,32 @@ class ProductApiReferenceTests(unittest.TestCase):
         self.assertEqual(enriched.loc[1, app.OPERATION_SEGMENT_COL], "기타")
         self.assertEqual(enriched.loc[1, app.CUSTOMER_CONFIRMATION_STATUS_COL], app.CUSTOMER_STATUS_SOURCE_MISSING)
         self.assertEqual(enriched.loc[1, "API 매칭상태"], app.API_PRODUCT_STATUS_EXACT)
+
+    def test_loaded_snapshot_display_replaces_code_like_product_name(self) -> None:
+        snapshot = pd.DataFrame(
+            {
+                "품목코드": ["P0013A-02.50"],
+                "제품명": ["P0013"],
+                "거래처": ["OPTIC CENTER"],
+                "API 매칭상태": [app.API_PRODUCT_STATUS_UNMATCHED],
+                "부족수량": [100],
+            }
+        )
+        info = app.normalize_product_names_api_lookup(
+            pd.DataFrame(
+                {
+                    "nm_cd": ["P0013"],
+                    "nm_nm": ["1-Day_Contakt(5팩)"],
+                    "full_gu_nm": ["1-Day_Color_Sph"],
+                }
+            )
+        )
+
+        with mock.patch.object(app, "load_product_names_api_lookup", return_value=info):
+            enriched = app.enrich_loaded_shortage_snapshot_for_display(snapshot)
+
+        self.assertEqual(enriched.loc[0, "제품명"], "1-Day_Contakt(5팩)")
+        self.assertEqual(enriched.loc[0, "API 제품명코드"], "P0013")
 
 
 if __name__ == "__main__":
