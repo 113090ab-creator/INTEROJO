@@ -444,7 +444,7 @@ def build_validated_snapshot_set(
     for site in sites:
         plan_raw, plan_error = app.read_aps_plan_operations_dataframe(app.APS_PLAN_SHORTAGE_OPERATIONS, site)
         if plan_error:
-            raise SnapshotRefreshError(f"{site}: APS PLAN API 조회 실패: {clean_log_text(plan_error)}")
+            raise SnapshotRefreshError(f"{site}: APS Backward API 조회 실패: {clean_log_text(plan_error)}")
         validate_plan_snapshot(site, plan_raw)
         plan_frames[site] = plan_raw
 
@@ -507,7 +507,7 @@ def refresh_snapshots(
         app.PLAN_API_RETRY_ATTEMPTS,
     )
 
-    plan_updated_at = app.get_plan_api_updated_at()
+    plan_updated_at = app.get_shortage_api_updated_at()
     wip_updated_at = app.get_aps_wip_api_updated_at()
     try:
         existing_status = snapshot_storage.read_json_snapshot(app.CLOUD_SNAPSHOT_DIR, STATUS_SNAPSHOT_NAME)
@@ -523,11 +523,11 @@ def refresh_snapshots(
     plan_updated_at = clean_status_value(observed_metadata.get("api_updated_at", ""))
     wip_updated_at = clean_status_value(observed_metadata.get("wip_api_updated_at", ""))
     observed_slot_key = clean_status_value(observed_metadata.get("slot_key", "")) or target_slot_key
-    logging.info("APS PLAN updated_at=%s APS WIP updated_at=%s", plan_updated_at, wip_updated_at)
+    logging.info("APS Backward updated_at=%s APS WIP updated_at=%s", plan_updated_at, wip_updated_at)
     if not plan_updated_at or plan_updated_at == "-":
         raise SnapshotWaiting(
             app.REFRESH_STATUS_WAITING_FOR_PLAN,
-            "APS PLAN API 기준시각을 확인하지 못했습니다. PLAN 데이터 갱신 대기 중입니다.",
+            "APS Backward API 기준시각을 확인하지 못했습니다. Backward 데이터 갱신 대기 중입니다.",
             plan_updated_at,
             wip_updated_at,
             observed_slot_key,

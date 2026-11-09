@@ -247,7 +247,7 @@ TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 4000
 DISPLAY_ROW_LIMIT = 200
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20260831-mojibake-repair-v1"
+APP_CACHE_VERSION = "20261109-backward-qty-v1"
 DATA_SOURCE_DEFAULT_VERSION = "20260821-bom-api-rq-match-v1"
 DEBUG_PERFORMANCE = os.getenv("DEBUG_PERFORMANCE", "").strip().lower() in {"1", "true", "yes", "on"}
 PLAN_API_BASE_URL_DEFAULT = "https://plan.interojo.net"
@@ -277,6 +277,7 @@ ALL_ITEM_STATUS_DISK_CACHE_DIR = LOCAL_CACHE_DIR / "all_item_status"
 ALL_ITEM_FLOW_STATUS_DISK_CACHE_DIR = LOCAL_CACHE_DIR / "all_item_flow_status"
 FINISHED_GOODS_STOCK_DISK_CACHE_DIR = LOCAL_CACHE_DIR / "finished_goods_stock"
 APS_PLAN_ENDPOINT = "/api/aps-plan"
+APS_BACKWARD_PLAN_ENDPOINT = "/api/aps-backward-plan"
 APS_WIP_ENDPOINT = "/api/aps-wip"
 APS_WIP_RAW_DIR = BASE_DIR / "outputs" / "aps_wip_raw"
 WIP_INVENTORY_SNAPSHOT_FILE = "wip_inventory_snapshot.csv.gz"
@@ -1558,7 +1559,23 @@ def build_plan_api_refresh_key() -> str:
         return "plan-api:disabled"
     key_hash = hashlib.sha256(get_plan_api_key().encode("utf-8")).hexdigest()[:12]
     source_updated_at = get_plan_api_updated_at()
-    return f"plan-api:{get_plan_api_base_url()}:{key_hash}:{source_updated_at}:{get_plan_api_refresh_nonce()}"
+    shortage_source_updated_at = get_shortage_api_updated_at()
+    return (
+        f"plan-api:{get_plan_api_base_url()}:{key_hash}:"
+        f"aps-plan={source_updated_at}:aps-backward-plan={shortage_source_updated_at}:"
+        f"{get_plan_api_refresh_nonce()}"
+    )
+
+
+def build_shortage_api_refresh_key(site_filter: str = "전체") -> str:
+    if not is_plan_api_enabled():
+        return "aps-backward-plan:disabled"
+    key_hash = hashlib.sha256(get_plan_api_key().encode("utf-8")).hexdigest()[:12]
+    return (
+        f"aps-backward-plan:{get_plan_api_base_url()}:{key_hash}:"
+        f"site={clean_text_value(site_filter) or '전체'}:"
+        f"{get_shortage_api_updated_at(site_filter)}:{get_plan_api_refresh_nonce()}"
+    )
 
 
 def build_local_cache_hash(*parts: object) -> str:
@@ -1876,6 +1893,11 @@ def normalize_api_records(payload: object) -> list[dict[str, object]]:
     return []
 
 
+def should_use_common_api_source(endpoint: str) -> bool:
+    """Use the local common source only for endpoints it already supports."""
+    return COMMON is not None and endpoint != APS_BACKWARD_PLAN_ENDPOINT
+
+
 @st.cache_data(show_spinner=False, ttl=PLAN_API_CACHE_TTL_SECONDS, max_entries=CACHE_MAX_ENTRIES)
 def fetch_plan_api_dataframe_cached(
     base_url: str,
@@ -1886,7 +1908,7 @@ def fetch_plan_api_dataframe_cached(
     refresh_nonce: int,
     timeout_seconds: int = PLAN_API_TIMEOUT_SECONDS,
 ) -> tuple[pd.DataFrame, str]:
-    if COMMON is not None:
+    if should_use_common_api_source(endpoint):
         try:
             return COMMON.frame(endpoint, dict(params_tuple)), ""
         except Exception as exc:
@@ -1934,7 +1956,7 @@ def fetch_plan_api_dataframe_direct(
     source_updated_at: str,
     timeout_seconds: int = PLAN_API_TIMEOUT_SECONDS,
 ) -> tuple[pd.DataFrame, str]:
-    if COMMON is not None:
+    if should_use_common_api_source(endpoint):
         try:
             return COMMON.frame(endpoint, dict(params_tuple)), ""
         except Exception as exc:
@@ -1977,7 +1999,7 @@ def fetch_plan_api_meta_cached(
     api_key_hash: str,
     refresh_nonce: int,
 ) -> tuple[dict[str, object], str]:
-    if COMMON is not None:
+    if should_use_common_api_source(endpoint):
         try:
             return COMMON.payload(endpoint, {}), ""
         except Exception as exc:
@@ -2012,7 +2034,7 @@ def fetch_plan_api_meta_with_params_cached(
     api_key_hash: str,
     refresh_nonce: int,
 ) -> tuple[dict[str, object], str]:
-    if COMMON is not None:
+    if should_use_common_api_source(endpoint):
         try:
             return COMMON.payload(endpoint, dict(params_tuple)), ""
         except Exception as exc:
@@ -3004,6 +3026,41 @@ def enrich_loaded_shortage_snapshot_for_display(df: pd.DataFrame) -> pd.DataFram
     return apply_customer_confirmation_columns(result)
 
 
+def normalize_aps_backward_plan_dataframe(raw: pd.DataFrame) -> pd.DataFrame:
+    """Adapt APS Backward rows to the existing shortage pipeline contract."""
+    if not isinstance(raw, pd.DataFrame) or raw.empty:
+        return raw.copy() if isinstance(raw, pd.DataFrame) else pd.DataFrame()
+
+    result = raw.copy()
+    result.columns = [str(column).strip() for column in result.columns]
+    backward_col = pick_api_column(
+        result.columns.tolist(),
+        ["backward_qty", "BACKWARD_QTY", "Backward 필요수량"],
+    )
+    if backward_col is None:
+        raise ValueError("APS Backward API 응답에서 backward_qty 컬럼을 찾지 못했습니다.")
+    for required in ("item_id", "oper_id"):
+        if required not in result.columns:
+            raise ValueError(f"APS Backward API 응답에서 {required} 컬럼을 찾지 못했습니다.")
+
+    backward_qty = parse_mixed_numeric(result[backward_col]).fillna(0.0)
+    result["backward_qty"] = backward_qty
+    # The existing shortage pipeline calls its primary quantity plan_qty.
+    # For this dashboard, backward_qty is intentionally the shortage basis.
+    result["plan_qty"] = backward_qty
+    if "demand_qty" not in result.columns:
+        result["demand_qty"] = backward_qty
+    if "so_id" not in result.columns:
+        result["so_id"] = result.get("demand_id", "")
+    if "seq" not in result.columns:
+        result["seq"] = ""
+    if "demand_item_name" not in result.columns:
+        result["demand_item_name"] = result.get("item_name", result.get("sale_cd", ""))
+    if "item_name" not in result.columns:
+        result["item_name"] = result.get("sale_cd", "")
+    return result
+
+
 def read_aps_plan_operations_dataframe(
     operations: tuple[str, ...],
     site_filter: str = "전체",
@@ -3013,7 +3070,7 @@ def read_aps_plan_operations_dataframe(
     api_key = get_plan_api_key()
     api_key_hash = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:12]
     base_url = get_plan_api_base_url()
-    source_updated_at = get_plan_api_updated_at()
+    source_updated_at = get_shortage_api_updated_at(site_filter)
     frames: list[pd.DataFrame] = []
     errors: list[str] = []
     site_param = build_plan_api_site_param(site_filter)
@@ -3028,7 +3085,7 @@ def read_aps_plan_operations_dataframe(
         params_tuple = tuple(sorted(params.items(), key=lambda item: item[0]))
         frame, error = fetch_plan_api_dataframe_direct(
             base_url,
-            APS_PLAN_ENDPOINT,
+            APS_BACKWARD_PLAN_ENDPOINT,
             params_tuple,
             api_key,
             api_key_hash,
@@ -3052,7 +3109,8 @@ def read_aps_plan_operations_dataframe(
             summary = f"{summary}; 일부 공정 API만 응답해 결과를 사용하지 않았습니다."
         return pd.DataFrame(), summary
     if frames:
-        return pd.concat(frames, ignore_index=True, sort=False), ""
+        combined = pd.concat(frames, ignore_index=True, sort=False)
+        return normalize_aps_backward_plan_dataframe(combined), ""
     return pd.DataFrame(), ""
 
 
@@ -3288,6 +3346,15 @@ def get_plan_endpoint_updated_at(endpoint: str, params: dict[str, object] | None
     return value
 
 
+def get_shortage_api_updated_at(site_filter: str = "전체") -> str:
+    """Return the source timestamp for the APS Backward shortage feed."""
+    if not is_plan_api_configured():
+        return "-"
+    site_param = build_plan_api_site_param(site_filter)
+    params = {"site": site_param} if site_param else None
+    return get_plan_endpoint_updated_at(APS_BACKWARD_PLAN_ENDPOINT, params)
+
+
 def read_plan_endpoint_dataframe(endpoint: str, params: dict[str, object] | None = None) -> tuple[pd.DataFrame, str]:
     if not is_plan_api_enabled():
         return pd.DataFrame(), "API 자동조회가 꺼져 있습니다."
@@ -3315,7 +3382,7 @@ def get_leadji_api_updated_at() -> str:
     )
 
 
-def render_plan_api_status() -> None:
+def render_plan_api_status(shortage_view: bool = False) -> None:
     if requests is None:
         st.warning("API 자동조회 불가: requests 패키지가 설치되어 있지 않습니다.")
         return
@@ -3323,9 +3390,10 @@ def render_plan_api_status() -> None:
         st.caption(f"API 자동조회 비활성: {PLAN_API_KEY_ENV} 설정 필요")
         return
     st.caption(f"API 기준: {get_plan_api_base_url()}")
-    updated_at = get_plan_api_updated_at()
+    updated_at = get_shortage_api_updated_at() if shortage_view else get_plan_api_updated_at()
     if updated_at != "-":
-        st.caption(f"APS API 갱신시각: {updated_at}")
+        source_label = "APS Backward API 갱신시각" if shortage_view else "APS API 갱신시각"
+        st.caption(f"{source_label}: {updated_at}")
     if should_use_aps_wip_api_for_inventory():
         st.caption(f"APS WIP API 기준시각: {format_reference_timestamp(get_aps_wip_api_updated_at())}")
     if is_plan_api_enabled():
@@ -3764,28 +3832,52 @@ def select_data_source(base_dir: Path, selected_top_view: str = "") -> tuple[Pat
         if use_quick_shortage_snapshot and DEBUG_PERFORMANCE:
             st.caption("빠른 조회: 저장된 스냅샷을 즉시 표시합니다.")
         elif not use_quick_shortage_snapshot:
-            render_plan_api_status()
+            render_plan_api_status(shortage_view=selected_top_view == "생산 부족 현황")
         if api_configured:
             if use_quick_shortage_snapshot:
                 if DEBUG_PERFORMANCE:
                     st.caption("저장된 스냅샷은 cron 자동갱신 결과입니다. 수동 복구는 GitHub Actions의 Run workflow를 사용하세요.")
             elif should_use_aps_wip_api_for_inventory():
-                st.caption(
-                    "APS 수요는 API로 조회하고, WIP/공정재고는 예약 작업이 만든 APS WIP 정리 스냅샷을 사용합니다. "
-                    "WIP 정리 스냅샷이 없거나 오래되면 오류로 안내합니다."
-                )
+                if selected_top_view == "생산 부족 현황":
+                    st.caption(
+                        "생산 부족수량은 APS Backward API의 backward_qty 기준으로 조회하고, "
+                        "WIP/공정재고는 예약 작업이 만든 APS WIP 정리 스냅샷을 사용합니다. "
+                        "WIP 정리 스냅샷이 없거나 오래되면 오류로 안내합니다."
+                    )
+                else:
+                    st.caption(
+                        "APS 수요는 API로 조회하고, WIP/공정재고는 예약 작업이 만든 APS WIP 정리 스냅샷을 사용합니다. "
+                        "WIP 정리 스냅샷이 없거나 오래되면 오류로 안내합니다."
+                    )
             else:
-                st.caption("APS 수요는 API로 조회하고, WIP/공정재고는 기존 WIP 엑셀 파일 기준으로 계산합니다.")
+                if selected_top_view == "생산 부족 현황":
+                    st.caption(
+                        "생산 부족수량은 APS Backward API의 backward_qty 기준으로 조회하고, "
+                        "WIP/공정재고는 기존 WIP 엑셀 파일 기준으로 계산합니다."
+                    )
+                else:
+                    st.caption("APS 수요는 API로 조회하고, WIP/공정재고는 기존 WIP 엑셀 파일 기준으로 계산합니다.")
             if use_quick_shortage_snapshot:
                 updated_at = get_cloud_snapshot_meta_value("data_updated_at", "-")
                 return base_dir, "Cloud 스냅샷 우선", updated_at
-            api_updated_at = get_plan_api_updated_at()
-            updated_at = api_updated_at if api_updated_at != "-" else get_data_updated_at(base_dir)
-            source_name = (
-                "APS API 수요 + WIP 정리 스냅샷"
-                if should_use_aps_wip_api_for_inventory()
-                else "APS API 수요 + WIP 엑셀"
+            api_updated_at = (
+                get_shortage_api_updated_at()
+                if selected_top_view == "생산 부족 현황"
+                else get_plan_api_updated_at()
             )
+            updated_at = api_updated_at if api_updated_at != "-" else get_data_updated_at(base_dir)
+            if selected_top_view == "생산 부족 현황":
+                source_name = (
+                    "APS Backward API backward_qty + WIP 정리 스냅샷"
+                    if should_use_aps_wip_api_for_inventory()
+                    else "APS Backward API backward_qty + WIP 엑셀"
+                )
+            else:
+                source_name = (
+                    "APS API 수요 + WIP 정리 스냅샷"
+                    if should_use_aps_wip_api_for_inventory()
+                    else "APS API 수요 + WIP 엑셀"
+                )
             return base_dir, source_name, updated_at
     elif use_quick_shortage_snapshot:
         if DEBUG_PERFORMANCE:
@@ -7325,7 +7417,11 @@ def build_data_refresh_key(base_dir: Path) -> str:
 
 
 def build_api_shortage_refresh_key(base_dir: Path, site_filter: str = "전체") -> str:
-    parts = [f"api-shortage:{APP_CACHE_VERSION}", f"site:{clean_text_value(site_filter) or '전체'}", build_plan_api_refresh_key()]
+    parts = [
+        f"api-shortage:{APP_CACHE_VERSION}",
+        f"site:{clean_text_value(site_filter) or '전체'}",
+        build_shortage_api_refresh_key(site_filter),
+    ]
     if should_use_aps_wip_api_for_inventory():
         parts.append(f"wip-snapshot:{build_cloud_snapshot_refresh_key(CURRENT_SNAPSHOT_SET_NAME, WIP_INVENTORY_SNAPSHOT_FILE)}")
     else:
@@ -9764,7 +9860,7 @@ def load_api_shortage_data(
         refresh_key,
         str(data_base_dir),
         site_filter,
-        plan_updated_at=get_plan_api_updated_at(),
+        plan_updated_at=get_shortage_api_updated_at(site_filter),
     )
 
 
@@ -9778,8 +9874,8 @@ def build_api_shortage_data_from_frames(
     inventory_source_label: str = "",
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     data_base_dir = Path(base_dir_str) if base_dir_str else BASE_DIR
-    plan_source_updated_at = clean_text_value(plan_updated_at) or get_plan_api_updated_at()
-    plan_source_label = f"APS API ({format_reference_timestamp(plan_source_updated_at)})"
+    plan_source_updated_at = clean_text_value(plan_updated_at) or get_shortage_api_updated_at(site_filter)
+    plan_source_label = f"APS Backward API · backward_qty ({format_reference_timestamp(plan_source_updated_at)})"
     active_inventory_source_label = clean_text_value(inventory_source_label)
     if not active_inventory_source_label:
         active_inventory_source_label = format_active_wip_source_label(data_base_dir)
@@ -10464,7 +10560,17 @@ def load_api_demand_like_df(site_filter: str = "전체") -> pd.DataFrame:
     oper_col = pick_api_column(columns, ["OPER_ID", "oper_id", "공정코드", "공정"])
     shortage_col = pick_api_column(
         columns,
-        ["부족수량", "생산부족수량", "생산필요수량", "총합계 생산 수량", "총생산필요수량", "REQUIRED_QTY"],
+        [
+            "backward_qty",
+            "BACKWARD_QTY",
+            "Backward 필요수량",
+            "부족수량",
+            "생산부족수량",
+            "생산필요수량",
+            "총합계 생산 수량",
+            "총생산필요수량",
+            "REQUIRED_QTY",
+        ],
     )
     inj_col = pick_api_column(
         columns,
