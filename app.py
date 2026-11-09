@@ -286,7 +286,8 @@ WIP_INVENTORY_SOURCE_LABEL_META_KEY = "wip_inventory_source_label"
 WIP_INVENTORY_REFRESHED_AT_META_KEY = "wip_inventory_refreshed_at"
 WIP_INVENTORY_COLUMNS = ["품목코드", "창고", "재공코드", "재고량"]
 APS_PLAN_META_ENDPOINT = "/api/aps-plan/meta"
-PRODUCT_NAMES_ENDPOINT = "/api/product-names"
+PRODUCT_NAMES_ENDPOINT = "/api/product-name"
+PRODUCT_NAMES_FALLBACK_ENDPOINT = "/api/product-names"
 ORDER_STATUS_DETAIL_ENDPOINT = "/api/order-status-detail"
 BOM_EXPLOSION_ENDPOINT = "/api/bom-explosion"
 PRODUCTION_PERFORMANCE_ENDPOINT = "/api/production-performance"
@@ -2714,15 +2715,15 @@ def is_product_code_like_text(value: object) -> bool:
 
 def build_product_names_api_reference_key() -> str:
     if not is_plan_api_configured():
-        return "product-names-api:disabled"
+        return "product-name-api:disabled"
     api_key_hash = hashlib.sha256(get_plan_api_key().encode("utf-8")).hexdigest()[:12]
     return (
-        f"product-names-api-v2-name-category:{get_plan_api_base_url()}:{api_key_hash}:"
+        f"product-name-api-v3-name-category:{get_plan_api_base_url()}:{api_key_hash}:"
         f"{get_plan_api_updated_at()}:{get_plan_api_refresh_nonce()}"
     )
 
 
-def normalize_product_names_api_lookup(raw: pd.DataFrame) -> pd.DataFrame:
+def normalize_product_names_api_lookup(raw: pd.DataFrame, endpoint: str = PRODUCT_NAMES_ENDPOINT) -> pd.DataFrame:
     if raw.empty:
         return empty_product_info_lookup()
 
@@ -2772,7 +2773,7 @@ def normalize_product_names_api_lookup(raw: pd.DataFrame) -> pd.DataFrame:
     info.loc[~info["신규분류_기준"].map(is_valid_reference_text), "분류 출처"] = ""
     info[CUSTOMER_GROUP_COL] = info["거래처_기준"].map(lambda value: build_customer_group_from_exact_rule(value)[0])
     info["API 매칭상태"] = API_PRODUCT_STATUS_EXACT
-    info["API 매칭근거"] = "API /api/product-names nm_cd"
+    info["API 매칭근거"] = f"API {endpoint} nm_cd"
 
     info["_use_rank"] = (
         0
@@ -2841,9 +2842,23 @@ def load_product_names_api_lookup() -> pd.DataFrame:
         get_plan_api_updated_at(),
         get_plan_api_refresh_nonce(),
     )
-    if error or raw.empty:
-        return empty_product_info_lookup()
-    return normalize_product_names_api_lookup(raw)
+    if not error and not raw.empty:
+        return normalize_product_names_api_lookup(raw, PRODUCT_NAMES_ENDPOINT)
+
+    # The singular endpoint is the intended source. Keep a temporary fallback
+    # while the backend route is being rolled out so a 404 does not cause the
+    # dashboard to show product codes as product names again.
+    fallback_raw, fallback_error = fetch_plan_api_dataframe_cached(
+        get_plan_api_base_url(),
+        PRODUCT_NAMES_FALLBACK_ENDPOINT,
+        params_tuple,
+        api_key_hash,
+        get_plan_api_updated_at(),
+        get_plan_api_refresh_nonce(),
+    )
+    if not fallback_error and not fallback_raw.empty:
+        return normalize_product_names_api_lookup(fallback_raw, PRODUCT_NAMES_FALLBACK_ENDPOINT)
+    return empty_product_info_lookup()
 
 
 def merge_product_info_lookups(local_info: pd.DataFrame, api_info: pd.DataFrame) -> pd.DataFrame:
@@ -7939,7 +7954,7 @@ def load_reference_maps_bundle(
     empty_bundle = ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
     if ref_path is None:
         return empty_bundle
-    cache_key = hashlib.sha256(f"reference-bundle-v5-product-names-api|{reference_refresh_key}".encode("utf-8")).hexdigest()[:24]
+    cache_key = hashlib.sha256(f"reference-bundle-v5-product-name-api|{reference_refresh_key}".encode("utf-8")).hexdigest()[:24]
     cache_path = ref_path.resolve().parent / ".dashboard_cache" / f"reference_bundle_{cache_key}.pkl"
     cached = read_pickle_cache(cache_path)
     if isinstance(cached, tuple) and len(cached) == 13 and all(isinstance(part, dict) for part in cached):
@@ -8037,7 +8052,7 @@ def load_reference_maps_bundle(
             & (ref_df[name_col] != "")
             & (ref_df[name_col].str.lower() != "nan")
         ]
-        # 제품명/제품분류는 /api/product-names만 기준으로 사용한다.
+        # 제품명/제품분류는 /api/product-name만 기준으로 사용한다.
         # 로컬 기준 엑셀의 첫 번째 행 강제 매핑은 유지하지 않는다.
 
     api_product_info = load_product_names_api_lookup()
