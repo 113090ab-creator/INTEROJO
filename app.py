@@ -8264,7 +8264,13 @@ def build_shortage_excel_download_frame(df: pd.DataFrame) -> pd.DataFrame:
     output = pd.DataFrame(index=source.index)
     source_columns = source.columns.tolist()
     for target_col in SHORTAGE_EXCEL_DOWNLOAD_COLUMNS:
-        candidate_columns = [target_col, *SHORTAGE_EXCEL_DOWNLOAD_ALIAS_COLUMNS.get(target_col, [])]
+        if target_col == "원본 제품명":
+            # The screen uses the API-enriched 제품명. Keep the legacy Excel
+            # header for compatibility, but export the same displayed name
+            # instead of the pre-enrichment 원본 제품명 (often P0013/P3016).
+            candidate_columns = ["제품명", target_col, *SHORTAGE_EXCEL_DOWNLOAD_ALIAS_COLUMNS.get(target_col, [])]
+        else:
+            candidate_columns = [target_col, *SHORTAGE_EXCEL_DOWNLOAD_ALIAS_COLUMNS.get(target_col, [])]
         source_col = pick_first_existing_column(source_columns, candidate_columns)
         if source_col is None:
             output[target_col] = ""

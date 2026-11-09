@@ -63,6 +63,19 @@ class ShortageExcelDownloadTests(unittest.TestCase):
         self.assertEqual(result.loc[0, "품목코드"], "")
         self.assertEqual(result.loc[0, "비고"], "")
 
+    def test_download_uses_displayed_product_name_over_original_code_name(self) -> None:
+        source = pd.DataFrame(
+            {
+                "품목코드": ["P0013A-02.50"],
+                "제품명": ["1-Day_Contakt(5팩)"],
+                "원본 제품명": ["P0013"],
+            }
+        )
+
+        result = app.build_shortage_excel_download_frame(source)
+
+        self.assertEqual(result.loc[0, "원본 제품명"], "1-Day_Contakt(5팩)")
+
 
 if __name__ == "__main__":
     unittest.main()
