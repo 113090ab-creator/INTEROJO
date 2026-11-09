@@ -3984,10 +3984,22 @@ def can_use_cloud_shortage_snapshot(data_base_dir: Path) -> bool:
         has_shortage_snapshot = snapshot_storage.snapshot_exists(CLOUD_SNAPSHOT_DIR, "shortage_snapshot.csv.gz")
     except Exception:
         has_shortage_snapshot = False
+    has_backward_source = False
+    if has_shortage_snapshot:
+        try:
+            info_df = load_cloud_snapshot_csv("shortage_file_info.csv.gz")
+            source_text = " ".join(
+                clean_text_value(value)
+                for value in info_df.get("수요파일", pd.Series(dtype=object)).tolist()
+            )
+            has_backward_source = "APS Backward API" in source_text and "backward_qty" in source_text
+        except Exception:
+            has_backward_source = False
     return (
         is_default_source
         and live_data_override not in {"1", "true", "yes", "on"}
         and has_shortage_snapshot
+        and has_backward_source
     )
 
 
