@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 import os
 import re
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -24,6 +26,10 @@ try:
     SNAPSHOT_WAIT_DELAY_MINUTES = int(os.getenv("SNAPSHOT_WAIT_DELAY_MINUTES", "60"))
 except ValueError:
     SNAPSHOT_WAIT_DELAY_MINUTES = 60
+try:
+    SNAPSHOT_PLAN_SITE_WORKERS = max(1, min(int(os.getenv("SNAPSHOT_PLAN_SITE_WORKERS", "3")), 4))
+except ValueError:
+    SNAPSHOT_PLAN_SITE_WORKERS = 3
 SHORTAGE_REQUIRED_COLUMNS = {
     "거래처",
     "이니셜",
@@ -396,6 +402,45 @@ def validate_site_uses_staged_sources(
         raise SnapshotRefreshError(f"{site}: 생산부족 결과가 staged WIP 기준시각을 기록하지 않았습니다.")
 
 
+def fetch_plan_frames_for_sites(app, sites: list[str]) -> dict[str, pd.DataFrame]:
+    """Fetch independent site PLAN frames concurrently, preserving site order."""
+    if not sites:
+        return {}
+
+    started = time.perf_counter()
+    frames: dict[str, pd.DataFrame] = {}
+    errors: dict[str, str] = {}
+    worker_count = min(SNAPSHOT_PLAN_SITE_WORKERS, len(sites))
+
+    def fetch_site(site: str) -> tuple[str, pd.DataFrame, str]:
+        frame, error = app.read_aps_plan_operations_dataframe(app.APS_PLAN_SHORTAGE_OPERATIONS, site)
+        return site, frame, error
+
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = [executor.submit(fetch_site, site) for site in sites]
+        for future in as_completed(futures):
+            site, frame, error = future.result()
+            if error:
+                errors[site] = error
+            else:
+                frames[site] = frame
+
+    for site in sites:
+        if site in errors:
+            raise SnapshotRefreshError(f"{site}: APS Backward API 조회 실패: {clean_log_text(errors[site])}")
+        frame = frames.get(site, pd.DataFrame())
+        validate_plan_snapshot(site, frame)
+
+    logging.info(
+        "staged PLAN fetch complete sites=%s workers=%s elapsed=%.1fs rows=%s",
+        ",".join(sites),
+        worker_count,
+        time.perf_counter() - started,
+        ",".join(f"{site}:{len(frames[site]):,}" for site in sites),
+    )
+    return {site: frames[site] for site in sites}
+
+
 def is_transient_source_error(error_text: object) -> bool:
     text = str(error_text or "")
     transient_tokens = [
@@ -438,15 +483,12 @@ def build_validated_snapshot_set(
         clean_log_text(raw_snapshot_dir),
     )
 
-    plan_frames: dict[str, pd.DataFrame] = {}
+    plan_frames = fetch_plan_frames_for_sites(app, sites)
     shortage_results: dict[str, tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]] = {}
     results: dict[str, str] = {"WIP": f"staged rows={len(inventory):,} updated_at={wip_updated_at}"}
     for site in sites:
-        plan_raw, plan_error = app.read_aps_plan_operations_dataframe(app.APS_PLAN_SHORTAGE_OPERATIONS, site)
-        if plan_error:
-            raise SnapshotRefreshError(f"{site}: APS Backward API 조회 실패: {clean_log_text(plan_error)}")
-        validate_plan_snapshot(site, plan_raw)
-        plan_frames[site] = plan_raw
+        site_started = time.perf_counter()
+        plan_raw = plan_frames[site]
 
         refresh_key = app.build_api_shortage_refresh_key(app.BASE_DIR, site)
         refresh_key = (
@@ -468,7 +510,12 @@ def build_validated_snapshot_set(
         validate_shortage_row_count_guard(app, site, len(df), len(existing_df), plan_updated_at)
         shortage_results[site] = (df, file_info_df, process_map_df)
         results[site] = f"staged rows={len(df):,} updated_at={plan_updated_at}"
-        logging.info("staged shortage snapshot site=%s rows=%s", site, f"{len(df):,}")
+        logging.info(
+            "staged shortage snapshot site=%s rows=%s elapsed=%.1fs",
+            site,
+            f"{len(df):,}",
+            time.perf_counter() - site_started,
+        )
     return inventory, source_label, plan_frames, shortage_results, results
 
 

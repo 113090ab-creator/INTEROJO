@@ -100,6 +100,10 @@ class RefreshSnapshotStatusTests(unittest.TestCase):
         self.assertNotIn("status=$?\n            if [ \"$status\" -eq 0 ]", workflow)
         self.assertIn("--only-if-stale", workflow)
 
+    def test_plan_site_fetch_workers_are_configurable_and_bounded(self) -> None:
+        self.assertGreaterEqual(refresh_snapshot.SNAPSHOT_PLAN_SITE_WORKERS, 1)
+        self.assertLessEqual(refresh_snapshot.SNAPSHOT_PLAN_SITE_WORKERS, 4)
+
     def test_keepalive_refresh_workflow_retries_under_bash_errexit(self) -> None:
         workflow = (PROJECT_ROOT / ".github" / "workflows" / "keepalive.yml").read_text(encoding="utf-8")
         self.assertIn("SNAPSHOT_REFRESH_MAX_ATTEMPTS", workflow)
