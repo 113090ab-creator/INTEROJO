@@ -8924,18 +8924,33 @@ def build_synthetic_p_rows_for_process_scope(
 
     p_ref["P코드5"] = p_ref["품목코드"].astype(str).str.upper().str[:5]
     p_ref_name_cols = ["품목코드", "제품명"] if "제품명" in p_ref.columns else ["품목코드"]
-    p_by_rq = (
-        p_ref.drop_duplicates(subset=["R코드", "Q코드"], keep="first")[["R코드", "Q코드", *p_ref_name_cols]]
-        .rename(columns={"품목코드": "_derived_p_code", "제품명": "_derived_p_name"})
-        if {"R코드", "Q코드"}.issubset(p_ref.columns)
-        else pd.DataFrame()
-    )
-    p_by_q = (
-        p_ref.drop_duplicates(subset=["Q코드"], keep="first")[["Q코드", *p_ref_name_cols]]
-        .rename(columns={"품목코드": "_derived_p_code", "제품명": "_derived_p_name"})
-        if "Q코드" in p_ref.columns
-        else pd.DataFrame()
-    )
+
+    # R/Q is not a unique parent-product key. For example, P0010 and P0108
+    # can both explode to Q0108 -> R0108. Never reverse-map an R/Q row to an
+    # arbitrary P product; retain the original demand identity (order,
+    # customer, initial, and power when available) and only derive a P row
+    # from an exact P reference row in that same scope.
+    def build_exact_p_lookup(source_frame: pd.DataFrame, process_columns: list[str]) -> tuple[pd.DataFrame, list[str]]:
+        # The order number is deliberately excluded here. A process-only row
+        # may need a display P row based on another order in the same initial,
+        # but it must never borrow a P parent from another initial/customer.
+        # Existing P rows for the same order are still protected by the
+        # actual_r/actual_q checks below.
+        identity_columns = ["거래처", "이니셜", "파워", *process_columns]
+        match_columns = [
+            col
+            for col in identity_columns
+            if col in source_frame.columns and col in p_ref.columns
+        ]
+        if not match_columns:
+            return pd.DataFrame(), []
+        reference = normalize_flow_link_key_columns(p_ref, match_columns)
+        lookup_columns = [*match_columns, *p_ref_name_cols]
+        reference = reference[lookup_columns].drop_duplicates(subset=match_columns, keep="first")
+        reference = reference.rename(
+            columns={"품목코드": "_derived_p_code", "제품명": "_derived_p_name"}
+        )
+        return reference, match_columns
 
     actual_r_keys = [c for c in [ORDER_NO_COL, "거래처", "이니셜", "R코드", "Q코드"] if c in p_ref.columns]
     actual_q_keys = [c for c in [ORDER_NO_COL, "거래처", "이니셜", "Q코드"] if c in p_ref.columns]
@@ -8950,7 +8965,10 @@ def build_synthetic_p_rows_for_process_scope(
         r_source = r_source[r_source["사출생산필요수량"] > 0]
         r_keys = [c for c in [ORDER_NO_COL, "거래처", "이니셜", "R코드", "Q코드"] if c in r_source.columns]
         if r_keys and not r_source.empty:
-            r_source = r_source.merge(p_by_rq, on=["R코드", "Q코드"], how="left") if not p_by_rq.empty else r_source
+            p_lookup, p_match_columns = build_exact_p_lookup(r_source, ["R코드", "Q코드"])
+            if not p_lookup.empty:
+                r_source = normalize_flow_link_key_columns(r_source, p_match_columns)
+                r_source = r_source.merge(p_lookup, on=p_match_columns, how="left")
             if "_derived_p_code" not in r_source.columns:
                 r_source["_derived_p_code"] = ""
             r_code_text = r_source["_derived_p_code"].astype(str).str.strip()
@@ -8970,7 +8988,10 @@ def build_synthetic_p_rows_for_process_scope(
         q_source = q_source[q_source[SEPARATION_REQUIRED_QTY_COL] > 0]
         q_keys = [c for c in [ORDER_NO_COL, "거래처", "이니셜", "Q코드"] if c in q_source.columns]
         if q_keys and not q_source.empty:
-            q_source = q_source.merge(p_by_q, on=["Q코드"], how="left") if not p_by_q.empty else q_source
+            p_lookup, p_match_columns = build_exact_p_lookup(q_source, ["Q코드"])
+            if not p_lookup.empty:
+                q_source = normalize_flow_link_key_columns(q_source, p_match_columns)
+                q_source = q_source.merge(p_lookup, on=p_match_columns, how="left")
             if "_derived_p_code" not in q_source.columns:
                 q_source["_derived_p_code"] = ""
             q_code_text = q_source["_derived_p_code"].astype(str).str.strip()
