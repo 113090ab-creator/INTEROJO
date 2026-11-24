@@ -3064,6 +3064,75 @@ def apply_product_master_reference(
     return result
 
 
+def refresh_snapshot_process_codes_from_bom_api(df: pd.DataFrame) -> pd.DataFrame:
+    """Refresh stored snapshot R/Q codes from the current BOM API.
+
+    This is a targeted repair helper for callers that intentionally need to
+    inspect an already-loaded snapshot. The normal production path avoids
+    making hundreds of per-code API calls: a stale snapshot is bypassed and
+    rebuilt through the live shortage pipeline instead. Existing stored values
+    are retained when the API has no mapping for a code or is unavailable.
+    """
+    if not isinstance(df, pd.DataFrame) or df.empty or not is_plan_api_configured():
+        return df
+
+    result = df.copy()
+    item_col = pick_first_existing_column(result.columns.tolist(), ["품목코드", "생산코드"])
+    if item_col is None:
+        return result
+
+    item_codes = result[item_col].map(normalize_item_code_value)
+    code5 = item_codes.str[:5]
+    api_maps = load_api_bom_maps_for_code5s(code5.tolist())
+    bom_r_base_map, bom_q_base_map, bom_r_exact_map, bom_q_exact_map = api_maps
+    if not any(api_maps):
+        return result
+
+    current_r = (
+        result["R코드"].map(clean_text_value)
+        if "R코드" in result.columns
+        else pd.Series("", index=result.index, dtype="object")
+    )
+    current_q = (
+        result["Q코드"].map(clean_text_value)
+        if "Q코드" in result.columns
+        else pd.Series("", index=result.index, dtype="object")
+    )
+    inferred_r = item_codes.map(lambda value: map_demand_code_to_process_code(value, "R"))
+    inferred_q = item_codes.map(lambda value: map_demand_code_to_process_code(value, "Q"))
+
+    def refresh_code(
+        item_code: str,
+        code5_value: str,
+        inferred: str,
+        current: str,
+        base_map: dict[str, str],
+        exact_map: dict[str, str],
+        prefix: str,
+    ) -> str:
+        exact = clean_text_value(exact_map.get(item_code, ""))
+        mapped_base = clean_text_value(base_map.get(code5_value, ""))
+        if exact:
+            return exact
+        if mapped_base:
+            return merge_mapped_base_code(inferred, mapped_base, prefix)
+        return current or inferred
+
+    result["R코드"] = [
+        refresh_code(item, base, inferred, current, bom_r_base_map, bom_r_exact_map, "R")
+        for item, base, inferred, current in zip(item_codes, code5, inferred_r, current_r)
+    ]
+    result["Q코드"] = [
+        refresh_code(item, base, inferred, current, bom_q_base_map, bom_q_exact_map, "Q")
+        for item, base, inferred, current in zip(item_codes, code5, inferred_q, current_q)
+    ]
+    if "R코드 제품명" in result.columns:
+        result["R코드 제품명"] = result["R코드 제품명"].where(
+            result["R코드 제품명"].map(clean_text_value).ne(""), result.get("제품명", "-")
+        )
+    return result
+
+
 def enrich_loaded_shortage_snapshot_for_display(df: pd.DataFrame) -> pd.DataFrame:
     if not isinstance(df, pd.DataFrame) or df.empty:
         return df
@@ -4060,7 +4129,30 @@ def should_use_cloud_snapshots(data_base_dir: Path) -> bool:
 
 
 def should_use_shortage_snapshot_first(data_base_dir: Path) -> bool:
-    return SHORTAGE_SNAPSHOT_FIRST and can_use_cloud_shortage_snapshot(data_base_dir)
+    return (
+        SHORTAGE_SNAPSHOT_FIRST
+        and can_use_cloud_shortage_snapshot(data_base_dir)
+        and not published_shortage_snapshot_needs_bom_refresh()
+    )
+
+
+def published_shortage_snapshot_needs_bom_refresh() -> bool:
+    """Return whether the published shortage snapshot predates the BOM API.
+
+    A validated snapshot is a precomputed view. If the BOM endpoint changes
+    while APS PLAN/WIP timestamps do not, the normal snapshot freshness check
+    considers the old file current and keeps serving stale R/Q codes. The
+    snapshot publisher records the BOM endpoint timestamp in the manifest;
+    until that metadata catches up, use the live API pipeline instead.
+    """
+    if not is_plan_api_configured():
+        return False
+    manifest = get_published_snapshot_set_manifest()
+    current_bom_updated_at = clean_text_value(get_plan_endpoint_updated_at(BOM_EXPLOSION_ENDPOINT))
+    if not current_bom_updated_at or current_bom_updated_at == "-":
+        return False
+    published_bom_updated_at = clean_text_value(manifest.get("bom_updated_at", ""))
+    return published_bom_updated_at != current_bom_updated_at
 
 
 def normalize_shortage_snapshot_site_filter(site_filter: str = "전체") -> str:
@@ -4430,7 +4522,11 @@ def get_latest_aps_snapshot_slot(plan_updated_at: object, wip_updated_at: object
     return max(slots, key=aps_snapshot_slot_sort_key)
 
 
-def build_snapshot_set_id(plan_updated_at: object, wip_updated_at: object) -> str:
+def build_snapshot_set_id(
+    plan_updated_at: object,
+    wip_updated_at: object,
+    bom_updated_at: object = "",
+) -> str:
     plan_dt = parse_updated_at_value(plan_updated_at)
     wip_dt = parse_updated_at_value(wip_updated_at)
     slot_key = resolve_aps_snapshot_slot(plan_updated_at) or get_latest_aps_snapshot_slot(plan_updated_at, wip_updated_at)
@@ -4441,7 +4537,10 @@ def build_snapshot_set_id(plan_updated_at: object, wip_updated_at: object) -> st
         period_part = match.group(4).lower()
     plan_part = plan_dt.strftime("%H%M%S") if plan_dt else "unknown"
     wip_part = wip_dt.strftime("%H%M%S") if wip_dt else "unknown"
-    digest = hashlib.sha256(f"{slot_key}|{plan_updated_at}|{wip_updated_at}".encode("utf-8")).hexdigest()[:8]
+    digest_source = f"{slot_key}|{plan_updated_at}|{wip_updated_at}"
+    if clean_text_value(bom_updated_at):
+        digest_source += f"|bom={clean_text_value(bom_updated_at)}"
+    digest = hashlib.sha256(digest_source.encode("utf-8")).hexdigest()[:8]
     return f"aps_{date_part}_{period_part}_plan{plan_part}_wip{wip_part}_{digest}"
 
 
@@ -5158,6 +5257,7 @@ def build_validated_snapshot_set_manifest(
     shortage_results: dict[str, tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]],
     wip_source_label: str,
     created_at: str,
+    bom_updated_at: str = "",
 ) -> dict[str, object]:
     slot_key = resolve_aps_snapshot_slot(plan_updated_at)
     files: dict[str, object] = {}
@@ -5185,11 +5285,13 @@ def build_validated_snapshot_set_manifest(
         "slot_key": slot_key,
         "plan_updated_at": clean_text_value(plan_updated_at),
         "wip_updated_at": clean_text_value(wip_updated_at),
+        "bom_updated_at": clean_text_value(bom_updated_at),
         "created_at": clean_text_value(created_at),
         "sites": sites,
         "sources": {
             "plan": {"label": f"APS API ({format_reference_timestamp(plan_updated_at)})"},
             "wip": {"label": clean_text_value(wip_source_label)},
+            "bom": {"endpoint": BOM_EXPLOSION_ENDPOINT, "updated_at": clean_text_value(bom_updated_at)},
         },
         "files": files,
         "row_counts": row_counts,
@@ -5214,7 +5316,8 @@ def _write_validated_snapshot_set_impl(
     if missing_sites:
         raise ValueError(f"snapshot set site results missing: {', '.join(missing_sites)}")
 
-    set_id = build_snapshot_set_id(plan_updated_at, wip_updated_at)
+    bom_updated_at = get_plan_endpoint_updated_at(BOM_EXPLOSION_ENDPOINT)
+    set_id = build_snapshot_set_id(plan_updated_at, wip_updated_at, bom_updated_at)
     created_at = datetime.now(DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S")
     manifest = build_validated_snapshot_set_manifest(
         set_id,
@@ -5226,6 +5329,7 @@ def _write_validated_snapshot_set_impl(
         shortage_results,
         wip_source_label,
         created_at,
+        bom_updated_at=bom_updated_at,
     )
 
     files = manifest.get("files", {})
@@ -5263,6 +5367,7 @@ def _write_validated_snapshot_set_impl(
         "manifest_path": snapshot_set_file_name(set_id, SNAPSHOT_SET_MANIFEST_NAME),
         "plan_updated_at": clean_text_value(plan_updated_at),
         "wip_updated_at": clean_text_value(wip_updated_at),
+        "bom_updated_at": clean_text_value(bom_updated_at),
         "published_at": datetime.now(DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S"),
     }
     snapshot_storage.write_json_snapshot_atomic(CLOUD_SNAPSHOT_DIR, CURRENT_SNAPSHOT_SET_NAME, current_payload)

@@ -136,6 +136,40 @@ class ProductApiReferenceTests(unittest.TestCase):
             "R0108-02.75SOB",
         )
 
+    def test_loaded_snapshot_rq_codes_are_refreshed_from_current_bom_api(self) -> None:
+        snapshot = pd.DataFrame(
+            {
+                "품목코드": ["P0038A-02.75SOB"],
+                "제품명": ["IRIS_Soul Brown(NEW)"],
+                "R코드": ["R0010-02.75SOB"],
+                "Q코드": ["Q0010-02.75SOB"],
+            }
+        )
+        with (
+            mock.patch.object(app, "is_plan_api_configured", return_value=True),
+            mock.patch.object(
+                app,
+                "load_api_bom_maps_for_code5s",
+                return_value=({"P0038": "R0108"}, {"P0038": "Q0108"}, {}, {}),
+            ),
+        ):
+            refreshed = app.refresh_snapshot_process_codes_from_bom_api(snapshot)
+
+        self.assertEqual(refreshed.loc[0, "R코드"], "R0108-02.75SOB")
+        self.assertEqual(refreshed.loc[0, "Q코드"], "Q0108-02.75SOB")
+
+    def test_old_snapshot_is_not_considered_current_when_bom_timestamp_changed(self) -> None:
+        with (
+            mock.patch.object(app, "is_plan_api_configured", return_value=True),
+            mock.patch.object(
+                app,
+                "get_published_snapshot_set_manifest",
+                return_value={"set_id": "old", "bom_updated_at": "2026-11-23 09:00:00"},
+            ),
+            mock.patch.object(app, "get_plan_endpoint_updated_at", return_value="2026-11-24 09:00:00"),
+        ):
+            self.assertTrue(app.published_shortage_snapshot_needs_bom_refresh())
+
     def test_demand_code_resolves_exact_then_variant_or_base_api_codes(self) -> None:
         code, reason = app.resolve_api_product_code_for_item("P1100", {"P1100", "P1200"})
 

@@ -346,13 +346,21 @@ def raise_if_slots_not_ready(app, plan_updated_at: str, wip_updated_at: str) -> 
     raise SnapshotWaiting(status, message, plan_updated_at, wip_updated_at, slot_key)
 
 
-def current_snapshot_set_matches(app, sites: list[str], plan_updated_at: str, wip_updated_at: str) -> bool:
+def current_snapshot_set_matches(
+    app,
+    sites: list[str],
+    plan_updated_at: str,
+    wip_updated_at: str,
+    bom_updated_at: str = "",
+) -> bool:
     manifest = app.get_published_snapshot_set_manifest()
     if not manifest:
         return False
     if str(manifest.get("plan_updated_at", "")).strip() != str(plan_updated_at).strip():
         return False
     if str(manifest.get("wip_updated_at", "")).strip() != str(wip_updated_at).strip():
+        return False
+    if bom_updated_at and str(manifest.get("bom_updated_at", "")).strip() != str(bom_updated_at).strip():
         return False
     for site in sites:
         snapshot_df, file_info_df, _ = app.load_cloud_shortage_snapshot(site)
@@ -584,7 +592,14 @@ def refresh_snapshots(
         raise_if_slots_not_ready(app, plan_updated_at, wip_updated_at)
         slot_key = app.resolve_aps_snapshot_slot(plan_updated_at)
 
-        if only_if_stale and current_snapshot_set_matches(app, sites, plan_updated_at, wip_updated_at):
+        bom_updated_at = app.get_plan_endpoint_updated_at(app.BOM_EXPLOSION_ENDPOINT)
+        if only_if_stale and current_snapshot_set_matches(
+            app,
+            sites,
+            plan_updated_at,
+            wip_updated_at,
+            bom_updated_at,
+        ):
             manifest = app.get_published_snapshot_set_manifest()
             current_set = app.get_published_snapshot_set_pointer()
             logging.info("validated snapshot set already current set=%s", manifest.get("set_id", ""))
