@@ -247,7 +247,7 @@ TARGET_WAREHOUSES = list(WAREHOUSE_MAP.keys())
 TABLE_STYLE_CELL_LIMIT = 4000
 DISPLAY_ROW_LIMIT = 200
 CACHE_MAX_ENTRIES = 64
-APP_CACHE_VERSION = "20261123-bom-scope-v2"
+APP_CACHE_VERSION = "20261124-api-product-names-v1"
 DATA_SOURCE_DEFAULT_VERSION = "20260821-bom-api-rq-match-v1"
 DEBUG_PERFORMANCE = os.getenv("DEBUG_PERFORMANCE", "").strip().lower() in {"1", "true", "yes", "on"}
 PLAN_API_BASE_URL_DEFAULT = "https://plan.interojo.net"
@@ -286,8 +286,8 @@ WIP_INVENTORY_SOURCE_LABEL_META_KEY = "wip_inventory_source_label"
 WIP_INVENTORY_REFRESHED_AT_META_KEY = "wip_inventory_refreshed_at"
 WIP_INVENTORY_COLUMNS = ["품목코드", "창고", "재공코드", "재고량"]
 APS_PLAN_META_ENDPOINT = "/api/aps-plan/meta"
-PRODUCT_NAMES_ENDPOINT = "/api/product-name"
-PRODUCT_NAMES_FALLBACK_ENDPOINT = "/api/product-names"
+PRODUCT_NAMES_ENDPOINT = "/api/product-names"
+PRODUCT_NAMES_FALLBACK_ENDPOINT = "/api/product-name"
 ORDER_STATUS_DETAIL_ENDPOINT = "/api/order-status-detail"
 BOM_EXPLOSION_ENDPOINT = "/api/bom-explosion"
 PRODUCTION_PERFORMANCE_ENDPOINT = "/api/production-performance"
@@ -2717,9 +2717,12 @@ def build_product_names_api_reference_key() -> str:
     if not is_plan_api_configured():
         return "product-name-api:disabled"
     api_key_hash = hashlib.sha256(get_plan_api_key().encode("utf-8")).hexdigest()[:12]
+    source_updated_at = get_plan_endpoint_updated_at(PRODUCT_NAMES_ENDPOINT)
+    if source_updated_at == "-":
+        source_updated_at = get_plan_api_updated_at()
     return (
-        f"product-name-api-v3-name-category:{get_plan_api_base_url()}:{api_key_hash}:"
-        f"{get_plan_api_updated_at()}:{get_plan_api_refresh_nonce()}"
+        f"product-names-api-v4-name-category:{get_plan_api_base_url()}:{api_key_hash}:"
+        f"{source_updated_at}:{get_plan_api_refresh_nonce()}"
     )
 
 
@@ -2834,26 +2837,28 @@ def load_product_names_api_lookup() -> pd.DataFrame:
         return empty_product_info_lookup()
     api_key_hash = hashlib.sha256(get_plan_api_key().encode("utf-8")).hexdigest()[:12]
     params_tuple = (("limit", PLAN_API_DEFAULT_ROW_LIMIT),)
+    source_updated_at = get_plan_endpoint_updated_at(PRODUCT_NAMES_ENDPOINT)
+    if source_updated_at == "-":
+        source_updated_at = get_plan_api_updated_at()
     raw, error = fetch_plan_api_dataframe_cached(
         get_plan_api_base_url(),
         PRODUCT_NAMES_ENDPOINT,
         params_tuple,
         api_key_hash,
-        get_plan_api_updated_at(),
+        source_updated_at,
         get_plan_api_refresh_nonce(),
     )
     if not error and not raw.empty:
         return normalize_product_names_api_lookup(raw, PRODUCT_NAMES_ENDPOINT)
 
-    # The singular endpoint is the intended source. Keep a temporary fallback
-    # while the backend route is being rolled out so a 404 does not cause the
-    # dashboard to show product codes as product names again.
+    # Keep the legacy singular route only as a compatibility fallback. The
+    # plural endpoint above is the authoritative product-name source.
     fallback_raw, fallback_error = fetch_plan_api_dataframe_cached(
         get_plan_api_base_url(),
         PRODUCT_NAMES_FALLBACK_ENDPOINT,
         params_tuple,
         api_key_hash,
-        get_plan_api_updated_at(),
+        source_updated_at,
         get_plan_api_refresh_nonce(),
     )
     if not fallback_error and not fallback_raw.empty:
@@ -3457,10 +3462,9 @@ def get_data_updated_at(base_dir: Path) -> str:
     except Exception:
         inv_path = None
         dem_path = find_demand_update_file(base_dir)
-    ref_path = find_product_name_reference_file(base_dir)
     rework_source_path = find_rework_production_source_file(base_dir)
 
-    return get_latest_files_updated_at(unique_existing_paths([inv_path, dem_path, ref_path, rework_source_path]))
+    return get_latest_files_updated_at(unique_existing_paths([inv_path, dem_path, rework_source_path]))
 
 
 def get_wip_updated_at(base_dir: Path) -> str:
@@ -3622,7 +3626,6 @@ def get_all_item_updated_at(base_dir: Path) -> str:
         [
             inv_path,
             dem_path,
-            find_product_name_reference_file(base_dir),
             find_all_item_master_file(base_dir),
             find_finished_goods_stock_file(base_dir),
         ]
@@ -3637,7 +3640,7 @@ def get_leadji_status_updated_at(base_dir: Path) -> str:
         inv_path = None
         dem_path = find_demand_update_file(base_dir)
     paths = unique_existing_paths(
-        [inv_path, dem_path, find_product_name_reference_file(base_dir), find_leadji_order_status_file(base_dir)]
+        [inv_path, dem_path, find_leadji_order_status_file(base_dir)]
     )
     updated_values = [get_latest_files_updated_at(paths)]
     if is_plan_api_enabled():
@@ -7472,12 +7475,9 @@ def normalize_leadji_code_key(value: object) -> str:
 
 def build_data_refresh_key(base_dir: Path) -> str:
     inv_path, dem_path = find_excel_files(base_dir)
-    ref_path = find_product_name_reference_file(base_dir)
     rework_source_path = find_rework_production_source_file(base_dir)
 
     paths = [inv_path, dem_path]
-    if ref_path is not None:
-        paths.append(ref_path)
     if rework_source_path is not None:
         paths.append(rework_source_path)
 
@@ -7507,12 +7507,6 @@ def build_api_shortage_refresh_key(base_dir: Path, site_filter: str = "전체") 
         except Exception as exc:
             parts.append(f"wip-error:{exc}")
 
-    ref_path = find_product_name_reference_file(base_dir)
-    if ref_path is None:
-        parts.append("reference:missing")
-    else:
-        stat = ref_path.stat()
-        parts.append(f"reference:{ref_path.name}:{stat.st_size}:{stat.st_mtime_ns}")
     rework_source_path = find_rework_production_source_file(base_dir)
     if rework_source_path is None:
         parts.append("rework-production:missing")
@@ -7523,15 +7517,8 @@ def build_api_shortage_refresh_key(base_dir: Path, site_filter: str = "전체") 
 
 
 def build_reference_refresh_key(base_dir: Path) -> str:
-    parts: list[str] = []
-    ref_path = find_product_name_reference_file(base_dir)
-    if ref_path is None:
-        parts.append("reference-file:missing")
-    else:
-        stat = ref_path.stat()
-        parts.append(f"reference-file:{ref_path.name}:{stat.st_size}:{stat.st_mtime_ns}")
-    parts.append(build_product_names_api_reference_key())
-    return "|".join(parts)
+    _ = base_dir
+    return build_product_names_api_reference_key()
 
 
 def build_leadji_order_refresh_key(base_dir: Path) -> str:
@@ -7866,7 +7853,9 @@ def load_api_bom_maps_for_code5s(
     attempted_codes = {code for codes in prefix_groups.values() for code in codes}
 
     api_key_hash = hashlib.sha256(get_plan_api_key().encode("utf-8")).hexdigest()[:12]
-    source_updated_at = get_plan_api_updated_at()
+    source_updated_at = get_plan_endpoint_updated_at(BOM_EXPLOSION_ENDPOINT)
+    if source_updated_at == "-":
+        source_updated_at = get_plan_api_updated_at()
     refresh_nonce = get_plan_api_refresh_nonce()
     combined_maps = ({}, {}, {}, {})
     covered_codes: set[str] = set()
@@ -7949,9 +7938,40 @@ def load_reference_maps_bundle(
     dict[str, str],
     dict[str, str],
 ]:
-    _ = reference_refresh_key
-    ref_path = find_product_name_reference_file(base_dir)
     empty_bundle = ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
+
+    # Product identity and category are API-owned. Do not read the legacy
+    # 제품명 기준 정보 workbook here; BOM/process mappings are filled from
+    # /api/bom-explosion at the point where the active product-code scope is
+    # known. The refresh key is kept in the signature for cache-callers and
+    # compatibility with existing callers.
+    _ = base_dir
+    _ = reference_refresh_key
+    api_product_info = load_product_names_api_lookup()
+    if api_product_info.empty:
+        return empty_bundle
+
+    product_name_map, product_group_map = build_product_info_lookup_maps(api_product_info)
+    return (
+        product_name_map,
+        product_group_map,
+        {},
+        {},
+        {},
+        {},
+        {},
+        {},
+        {},
+        {},
+        {},
+        {},
+        {},
+    )
+
+    # The legacy workbook-based implementation below is intentionally kept
+    # unreachable for one release so existing cache files can be inspected or
+    # removed safely without making the workbook an active data source.
+    ref_path = find_product_name_reference_file(base_dir)
     if ref_path is None:
         return empty_bundle
     cache_key = hashlib.sha256(f"reference-bundle-v5-product-name-api|{reference_refresh_key}".encode("utf-8")).hexdigest()[:24]
@@ -10922,6 +10942,17 @@ def build_process_code_scope(
 
     scope = all_items[["생산코드"]].copy()
     scope["코드5"] = scope["생산코드"].str[:5]
+
+    api_bom_maps = load_api_bom_maps_for_code5s(
+        scope["코드5"].tolist(),
+        bom_r_base_map,
+        bom_q_base_map,
+    )
+    bom_r_base_map, bom_q_base_map, bom_r_exact_map, bom_q_exact_map = merge_bom_map_sets(
+        (bom_r_base_map, bom_q_base_map, bom_r_exact_map, bom_q_exact_map),
+        api_bom_maps,
+    )
+
     inferred_r = scope["생산코드"].map(lambda x: map_demand_code_to_process_code(x, "R"))
     inferred_q = scope["생산코드"].map(lambda x: map_demand_code_to_process_code(x, "Q"))
 

@@ -73,9 +73,9 @@ class ProductApiReferenceTests(unittest.TestCase):
         self.assertEqual(set(lookup["제품명코드"]), {"P1234", "P1234A"})
         self.assertEqual(dict(zip(lookup["제품명코드"], lookup["제품명_기준"])), {"P1234": "BASE", "P1234A": "VARIANT"})
 
-    def test_product_name_endpoint_is_singular_and_fallback_keeps_source_provenance(self) -> None:
-        self.assertEqual(app.PRODUCT_NAMES_ENDPOINT, "/api/product-name")
-        self.assertEqual(app.PRODUCT_NAMES_FALLBACK_ENDPOINT, "/api/product-names")
+    def test_product_name_endpoint_uses_plural_api_and_legacy_fallback_keeps_source_provenance(self) -> None:
+        self.assertEqual(app.PRODUCT_NAMES_ENDPOINT, "/api/product-names")
+        self.assertEqual(app.PRODUCT_NAMES_FALLBACK_ENDPOINT, "/api/product-name")
 
         lookup = app.normalize_product_names_api_lookup(
             pd.DataFrame(
@@ -87,7 +87,54 @@ class ProductApiReferenceTests(unittest.TestCase):
             app.PRODUCT_NAMES_FALLBACK_ENDPOINT,
         )
 
-        self.assertEqual(lookup.loc[0, "API 매칭근거"], "API /api/product-names nm_cd")
+        self.assertEqual(lookup.loc[0, "API 매칭근거"], "API /api/product-name nm_cd")
+
+    def test_reference_bundle_is_api_only_and_does_not_open_product_workbook(self) -> None:
+        info = app.normalize_product_names_api_lookup(
+            pd.DataFrame(
+                {
+                    "nm_cd": ["P0013"],
+                    "nm_nm": ["API_PRODUCT"],
+                    "full_gu_nm": ["1-Day_Sph"],
+                }
+            )
+        )
+        with mock.patch.object(app, "load_product_names_api_lookup", return_value=info), mock.patch.object(
+            app,
+            "find_product_name_reference_file",
+            side_effect=AssertionError("product-name workbook must not be opened"),
+        ):
+            bundle = app.load_reference_maps_bundle(Path("C:/unused"), "api-refresh")
+
+        self.assertEqual(bundle[0]["P0013"], "API_PRODUCT")
+        self.assertEqual(bundle[1]["P0013"], "1-Day_Sph")
+        self.assertTrue(all(not part for part in bundle[2:]))
+
+    def test_bom_api_mapping_overrides_stale_local_mapping(self) -> None:
+        raw = pd.DataFrame(
+            {
+                "root_cd": ["P0038"],
+                "parent_cd": ["P0038"],
+                "child_cd": ["Q0108"],
+                "lvl": [1],
+            }
+        )
+        maps = app.build_bom_maps_from_api_rows(raw)
+        merged = app.merge_bom_map_sets(
+            ({"P0038": "R0010"}, {"P0038": "Q0010"}, {}, {}),
+            maps,
+        )
+
+        self.assertEqual(merged[0]["P0038"], "R0108")
+        self.assertEqual(merged[1]["P0038"], "Q0108")
+        self.assertEqual(
+            app.merge_mapped_base_code(
+                app.map_demand_code_to_process_code("P0038A-02.75SOB", "R"),
+                merged[0]["P0038"],
+                "R",
+            ),
+            "R0108-02.75SOB",
+        )
 
     def test_demand_code_resolves_exact_then_variant_or_base_api_codes(self) -> None:
         code, reason = app.resolve_api_product_code_for_item("P1100", {"P1100", "P1200"})
