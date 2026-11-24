@@ -18295,7 +18295,9 @@ def main() -> None:
         """,
         unsafe_allow_html=True,
     )
-    top_views = ["생산 부족 현황", "리드지 현황", "생산코드별 리드지", "생산유효도 분석"]
+    # 리드지/생산유효도 화면은 기능을 유지하되 기본 메뉴에서는 숨깁니다.
+    # 현재 사용자 조회 흐름은 생산 부족 현황을 기본 화면으로 단순화합니다.
+    top_views = ["생산 부족 현황"]
     all_item_site_filter = "전체"
     shortage_api_site_filter = "전체"
     shortage_locked_site_filter: str | None = None
