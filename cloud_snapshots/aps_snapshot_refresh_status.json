@@ -1,20 +1,20 @@
 {
-  "checked_at": "2026-11-24 15:59:08",
+  "checked_at": "2026-11-24 16:22:29",
   "status": "PUBLISHED",
-  "run_id": "45344380051",
+  "run_id": "45344896534",
   "run_attempt": "1",
-  "run_number": "568",
+  "run_number": "569",
   "workflow": "Refresh APS snapshots",
   "job": "refresh",
   "actor": "113090ab-creator",
   "ref_name": "main",
-  "sha": "db9805c73a2c901e20503cf07a392b8cd374dc09",
-  "run_url": "https://github.com/113090ab-creator/INTEROJO/actions/runs/45344380051",
-  "api_updated_at": "2026-11-24 07:01:22",
-  "wip_api_updated_at": "2026-11-24 07:10:56",
-  "slot_key": "2026-11-24 AM",
-  "set_id": "aps_20261124_am_plan070122_wip071056_2f511f76",
-  "published_at": "2026-11-24 08:29:47",
+  "sha": "80979959482dc183f2c9b9711dfb22d310c41fcb",
+  "run_url": "https://github.com/113090ab-creator/INTEROJO/actions/runs/45344896534",
+  "api_updated_at": "2026-11-24 14:33:27",
+  "wip_api_updated_at": "2026-11-24 14:43:23",
+  "slot_key": "2026-11-24 PM",
+  "set_id": "aps_20261124_pm_plan143327_wip144323_6f4acad0",
+  "published_at": "2026-11-24 16:22:29",
   "storage": "로컬 cloud_snapshots 폴더",
   "sites": [
     "C관",
@@ -22,13 +22,18 @@
     "S관",
     "전체"
   ],
-  "skipped": true,
-  "reason": "target validated snapshot set is already published",
+  "results": {
+    "WIP": "staged rows=32,417 updated_at=2026-11-24 14:43:23",
+    "C관": "staged rows=6,917 updated_at=2026-11-24 14:33:27",
+    "A관": "staged rows=4,571 updated_at=2026-11-24 14:33:27",
+    "S관": "staged rows=20,202 updated_at=2026-11-24 14:33:27",
+    "전체": "staged rows=32,294 updated_at=2026-11-24 14:33:27"
+  },
   "current_set": {
-    "set_id": "aps_20261124_am_plan070122_wip071056_2f511f76",
-    "slot_key": "2026-11-24 AM",
-    "plan_updated_at": "2026-11-24 07:01:22",
-    "wip_updated_at": "2026-11-24 07:10:56",
-    "created_at": "2026-11-24 08:29:36"
+    "set_id": "aps_20261124_pm_plan143327_wip144323_6f4acad0",
+    "slot_key": "2026-11-24 PM",
+    "plan_updated_at": "2026-11-24 14:33:27",
+    "wip_updated_at": "2026-11-24 14:43:23",
+    "created_at": "2026-11-24 16:22:18"
   }
 }
