@@ -1,11 +1,22 @@
 """Connect to local common sources when they are available on this machine."""
 
 import json
+import os
 import sys
 from pathlib import Path
 
 
 def _load_common_client():
+    # The connection file is intentionally kept for the desktop app, but its
+    # Windows path must never be considered by Streamlit Cloud. Cloud runs
+    # from the repository checkout and should use the checked-in snapshots.
+    if (
+        os.environ.get("STREAMLIT_CLOUD")
+        or os.environ.get("STREAMLIT_SHARING_MODE")
+        or Path("/mount/src").exists()
+    ):
+        return None
+
     app_dir = Path(__file__).resolve().parent
     config_path = next(
         (

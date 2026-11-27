@@ -268,6 +268,12 @@ SHORTAGE_SNAPSHOT_FIRST = os.getenv("INTEROJO_SHORTAGE_SNAPSHOT_FIRST", "1").str
     "off",
 }
 SHORTAGE_SNAPSHOT_REFRESH_GRACE_MINUTES = int(os.getenv("INTEROJO_SHORTAGE_SNAPSHOT_REFRESH_GRACE_MINUTES", "60"))
+SNAPSHOT_MIRROR_ENABLED = os.getenv("INTEROJO_SNAPSHOT_MIRROR_ENABLED", "0").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
 LOCAL_CACHE_DIR = BASE_DIR / ".local_cache"
 PLAN_API_DISK_CACHE_DIR = LOCAL_CACHE_DIR / "plan_api"
 ORDER_STATUS_DISK_CACHE_DIR = LOCAL_CACHE_DIR / "order_status"
@@ -1325,7 +1331,14 @@ snapshot_storage.configure_secret_resolver(get_snapshot_storage_setting)
 
 
 def get_published_snapshot_mirror():
-    if not STREAMLIT_CLOUD_RUNTIME or snapshot_storage.get_snapshot_storage_backend() != "local":
+    # The checked-out repository already contains the validated snapshot set.
+    # Do not block the first Streamlit render on a network mirror refresh;
+    # enable the recovery mirror explicitly when the deployment needs it.
+    if (
+        not STREAMLIT_CLOUD_RUNTIME
+        or not SNAPSHOT_MIRROR_ENABLED
+        or snapshot_storage.get_snapshot_storage_backend() != "local"
+    ):
         return None
     return snapshot_mirror.get_mirror(
         CLOUD_SNAPSHOT_DIR, BASE_DIR / ".local_cache" / "published_snapshots",
