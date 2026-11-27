@@ -1,9 +1,9 @@
 {
-  "set_id": "aps_20261127_pm_plan143326_wip145441_765969a9",
-  "slot_key": "2026-11-27 PM",
-  "manifest_path": "sets/aps_20261127_pm_plan143326_wip145441_765969a9/manifest.json",
-  "plan_updated_at": "2026-11-27 14:33:26",
-  "wip_updated_at": "2026-11-27 14:54:41",
-  "bom_updated_at": "2026-11-27 16:43:42",
-  "published_at": "2026-11-27 16:43:48"
+  "set_id": "aps_20261128_am_plan070124_wip071538_6c35c81d",
+  "slot_key": "2026-11-28 AM",
+  "manifest_path": "sets/aps_20261128_am_plan070124_wip071538_6c35c81d/manifest.json",
+  "plan_updated_at": "2026-11-28 07:01:24",
+  "wip_updated_at": "2026-11-28 07:15:38",
+  "bom_updated_at": "2026-11-28 08:33:51",
+  "published_at": "2026-11-28 08:38:21"
 }
