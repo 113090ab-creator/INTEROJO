@@ -3932,6 +3932,13 @@ def sync_plan_api_data_mode() -> bool:
         set_session_value("use_plan_api_data_mode", api_configured and not STREAMLIT_CLOUD_RUNTIME)
         set_session_value("use_uploaded_data_mode", False)
         set_session_value("data_source_default_version", DATA_SOURCE_DEFAULT_VERSION)
+    if STREAMLIT_CLOUD_RUNTIME and not is_plan_api_force_enabled() and not get_session_value(
+        "cloud_api_mode_initialized", False
+    ):
+        # Reset stale widget state from a previous deployment once, then let
+        # the user opt into live API mode from the rendered sidebar.
+        set_session_value("use_plan_api_data_mode", False)
+        set_session_value("cloud_api_mode_initialized", True)
     set_session_value("plan_api_key_available", api_configured)
     if not api_configured and get_session_value("use_plan_api_data_mode", False):
         set_session_value("use_plan_api_data_mode", False)
