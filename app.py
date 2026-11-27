@@ -3926,7 +3926,10 @@ def stage_uploaded_data_files(
 def sync_plan_api_data_mode() -> bool:
     api_configured = is_plan_api_configured()
     if get_session_value("data_source_default_version") != DATA_SOURCE_DEFAULT_VERSION:
-        set_session_value("use_plan_api_data_mode", api_configured)
+        # Cloud must boot from the published snapshot. The API key may exist
+        # in Streamlit secrets for refresh jobs, but live API calls are
+        # opt-in after the first screen is available.
+        set_session_value("use_plan_api_data_mode", api_configured and not STREAMLIT_CLOUD_RUNTIME)
         set_session_value("use_uploaded_data_mode", False)
         set_session_value("data_source_default_version", DATA_SOURCE_DEFAULT_VERSION)
     set_session_value("plan_api_key_available", api_configured)
@@ -4158,7 +4161,10 @@ def published_shortage_snapshot_needs_bom_refresh() -> bool:
     snapshot publisher records the BOM endpoint timestamp in the manifest;
     until that metadata catches up, use the live API pipeline instead.
     """
-    if not is_plan_api_configured():
+    # Do not make a live BOM metadata request while Cloud is booting from a
+    # published snapshot. The refresh workflow records BOM time in the
+    # validated manifest; live comparison is available only in API mode.
+    if not is_plan_api_configured() or (STREAMLIT_CLOUD_RUNTIME and not is_plan_api_enabled()):
         return False
     manifest = get_published_snapshot_set_manifest()
     current_bom_updated_at = clean_text_value(get_plan_endpoint_updated_at(BOM_EXPLOSION_ENDPOINT))
@@ -4294,7 +4300,12 @@ def read_cloud_snapshot_csv(name: str, refresh_key: str) -> pd.DataFrame:
             raise
         compression = "gzip" if name.endswith(".gz") else None
         return repair_korean_mojibake_dataframe(
-            pd.read_csv(BytesIO(data), encoding="utf-8-sig", compression=compression)
+            pd.read_csv(
+                BytesIO(data),
+                encoding="utf-8-sig",
+                compression=compression,
+                low_memory=False,
+            )
         )
 
 
@@ -18312,7 +18323,10 @@ def main() -> None:
     # 현재 사용자 조회 흐름은 생산 부족 현황을 기본 화면으로 단순화합니다.
     top_views = ["생산 부족 현황"]
     all_item_site_filter = "전체"
-    shortage_api_site_filter = "전체"
+    # Start with one site's validated snapshot so the first render stays small
+    # enough for Streamlit Cloud. Users can switch to another site or 전체
+    # after the app is up.
+    shortage_api_site_filter = EFFECTIVE_PRODUCTION_DEFAULT_SITE
     shortage_locked_site_filter: str | None = None
     sidebar_start = time.perf_counter()
     with st.sidebar:
@@ -18353,6 +18367,17 @@ def main() -> None:
             sidebar_status_caption = "API 모드: APS 수요 2026-08-06부터"
         else:
             data_base_dir, source_label, updated_at = select_data_source(BASE_DIR, selected_top_view)
+            if selected_top_view == "생산 부족 현황" and not is_plan_api_enabled():
+                shortage_api_site_filter = (
+                    st.pills(
+                        "사이트코드",
+                        options=[*SITE_GROUP_ORDER, "전체"],
+                        default=EFFECTIVE_PRODUCTION_DEFAULT_SITE,
+                        key="shortage_snapshot_site_prefilter_v1",
+                        help="기본값은 빠른 단일 관 조회입니다. 전체를 선택하면 전체 스냅샷을 읽습니다.",
+                    )
+                    or EFFECTIVE_PRODUCTION_DEFAULT_SITE
+                )
             if selected_top_view == "생산 부족 현황" and is_plan_api_enabled():
                 shortage_api_site_options = [*SITE_GROUP_ORDER, "전체"]
                 shortage_api_site_key = "shortage_api_site_prefilter_v1"
@@ -18601,7 +18626,7 @@ def main() -> None:
                     "data_updated_at", data_live_updated_at
                 )
                 if use_data_cloud_snapshot:
-                    df, file_info_df, _ = load_cloud_shortage_snapshot()
+                    df, file_info_df, _ = load_cloud_shortage_snapshot(shortage_api_site_filter)
                     updated_at = get_cloud_snapshot_meta_value("data_updated_at", data_live_updated_at)
                 else:
                     try:
@@ -18612,7 +18637,7 @@ def main() -> None:
                         if not cloud_snapshots_available:
                             raise
                         st.warning(f"원본 엑셀 자동 반영 실패로 기존 스냅샷을 표시합니다: {live_exc}")
-                        df, file_info_df, _ = load_cloud_shortage_snapshot()
+                        df, file_info_df, _ = load_cloud_shortage_snapshot(shortage_api_site_filter)
                         updated_at = get_cloud_snapshot_meta_value("data_updated_at", data_live_updated_at)
 
         leadji_info = pd.DataFrame()
